@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <h2>Edit Category</h2>
+  <form method="post" class="form-grid">
+    <label>Name
+      <input name="name" value="{{ category.name }}" required>
+    </label>
+    <button type="submit">Save</button>
+  </form>
+</section>
+{% endblock %}
