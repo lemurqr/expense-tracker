@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -62,7 +63,9 @@ def test_category_expense_crud_and_export(client):
         follow_redirects=True,
     )
     assert b"Expense added" in add_response.data
-    assert b"Medicine" in add_response.data
+
+    dashboard_response = client.get("/dashboard?month=2026-01")
+    assert b"Medicine" in dashboard_response.data
 
     with client.application.app_context():
         db = client.application.get_db()
@@ -102,3 +105,110 @@ def test_dashboard_month_filter(client):
     response = client.get("/dashboard?month=2026-02")
     assert b"$20.00" in response.data
     assert b"$30.00" not in response.data
+
+
+def test_import_cibc_headerless_csv(client):
+    register(client)
+    login(client)
+
+    fixture = Path(__file__).parent / "fixtures" / "cibc_headerless.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={"action": "preview", "csv_file": (f, "cibc_headerless.csv")},
+            content_type="multipart/form-data",
+        )
+
+    assert b"Detected format: <strong>headerless</strong>" in preview_response.data
+    assert b"Coffee Shop" in preview_response.data
+    assert b"Payroll" in preview_response.data
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "date": "2026-01-10",
+            "amount": -5.5,
+            "description": "Coffee Shop",
+            "normalized_description": "coffee shop",
+            "category": "",
+        },
+        {
+            "user_id": 1,
+            "date": "2026-01-11",
+            "amount": 1200.0,
+            "description": "Payroll",
+            "normalized_description": "payroll",
+            "category": "",
+        },
+    ]
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
+        follow_redirects=True,
+    )
+    assert b"Imported 2 transaction(s)." in confirm_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute(
+            "SELECT date, amount, description FROM expenses ORDER BY date ASC"
+        ).fetchall()
+    assert rows[0]["amount"] == -5.5
+    assert rows[1]["amount"] == 1200.0
+
+
+def test_import_header_based_csv_with_mapping(client):
+    register(client)
+    login(client)
+
+    fixture = Path(__file__).parent / "fixtures" / "header_based.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={
+                "action": "preview",
+                "map_date": "0",
+                "map_description": "1",
+                "map_amount": "",
+                "map_debit": "2",
+                "map_credit": "3",
+                "map_category": "4",
+                "csv_file": (f, "header_based.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert b"Detected format: <strong>header</strong>" in preview_response.data
+    assert b"Grocery Store" in preview_response.data
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "date": "2026-02-01",
+            "amount": -45.1,
+            "description": "Grocery Store",
+            "normalized_description": "grocery store",
+            "category": "Food",
+        },
+        {
+            "user_id": 1,
+            "date": "2026-02-02",
+            "amount": 12.34,
+            "description": "Refund",
+            "normalized_description": "refund",
+            "category": "Other",
+        },
+    ]
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
+        follow_redirects=True,
+    )
+    assert b"Imported 2 transaction(s)." in confirm_response.data
+
+    duplicate_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
+        follow_redirects=True,
+    )
+    assert b"Imported 0 transaction(s)." in duplicate_response.data
