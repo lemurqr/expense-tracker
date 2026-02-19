@@ -2,6 +2,8 @@ import csv
 import io
 import os
 import sqlite3
+import json
+import re
 from datetime import date
 from functools import wraps
 
@@ -20,6 +22,101 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 
 DEFAULT_CATEGORIES = ["Food", "Transport", "Housing", "Utilities", "Entertainment", "Other"]
+HEADER_ALIASES = {
+    "date": ["date", "transaction date", "posting date"],
+    "amount": ["amount"],
+    "debit": ["debit"],
+    "credit": ["credit"],
+    "description": ["description", "merchant", "payee"],
+    "category": ["category"],
+}
+
+
+def normalize_header_name(value):
+    return " ".join((value or "").strip().lower().split())
+
+
+def parse_money(value):
+    text = (value or "").strip()
+    if not text:
+        return None
+    cleaned = text.replace(",", "").replace("$", "")
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        cleaned = f"-{cleaned[1:-1]}"
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def normalize_description(value):
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def detect_header_and_mapping(rows):
+    first_row = rows[0] if rows else []
+    normalized = [normalize_header_name(col) for col in first_row]
+    mapping = {"date": "", "description": "", "amount": "", "debit": "", "credit": "", "category": ""}
+
+    for field, aliases in HEADER_ALIASES.items():
+        for idx, value in enumerate(normalized):
+            if value in aliases:
+                mapping[field] = str(idx)
+                break
+
+    has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
+    if not has_header:
+        first_date = first_row[0].strip() if len(first_row) > 0 else ""
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", first_date):
+            mapping.update({"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": ""})
+    return has_header, mapping
+
+
+def parse_csv_transactions(rows, mapping, user_id):
+    parsed_rows = []
+    for raw_row in rows:
+        row = [cell.strip() for cell in raw_row]
+
+        def get_value(field):
+            column = mapping.get(field, "")
+            if column == "":
+                return ""
+            try:
+                idx = int(column)
+            except ValueError:
+                return ""
+            return row[idx] if idx < len(row) else ""
+
+        row_date = get_value("date")
+        row_description = get_value("description")
+        row_category = get_value("category")
+
+        amount = None
+        amount_col = mapping.get("amount", "")
+        if amount_col != "":
+            amount = parse_money(get_value("amount"))
+        else:
+            debit_value = parse_money(get_value("debit"))
+            credit_value = parse_money(get_value("credit"))
+            if debit_value is not None:
+                amount = -abs(debit_value)
+            elif credit_value is not None:
+                amount = abs(credit_value)
+
+        if not row_date or amount is None:
+            continue
+
+        parsed_rows.append(
+            {
+                "user_id": user_id,
+                "date": row_date,
+                "amount": round(amount, 2),
+                "description": row_description,
+                "normalized_description": normalize_description(row_description),
+                "category": row_category,
+            }
+        )
+    return parsed_rows
 
 
 def create_app(test_config=None):
@@ -383,6 +480,100 @@ def create_app(test_config=None):
             headers={
                 "Content-Disposition": f"attachment; filename=expenses-{selected_month or 'all'}.csv"
             },
+        )
+
+    @app.route("/import/csv", methods=("GET", "POST"))
+    @login_required
+    def import_csv():
+        if request.method == "POST":
+            action = request.form.get("action", "preview")
+
+            if action == "confirm":
+                parsed_rows = json.loads(request.form.get("parsed_rows", "[]"))
+                db = get_db()
+                imported_count = 0
+
+                category_lookup = {
+                    row["name"].lower(): row["id"]
+                    for row in db.execute(
+                        "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
+                    ).fetchall()
+                }
+
+                for row in parsed_rows:
+                    candidates = db.execute(
+                        """
+                        SELECT description FROM expenses
+                        WHERE user_id = ? AND date = ? AND amount = ?
+                        """,
+                        (g.user["id"], row["date"], row["amount"]),
+                    ).fetchall()
+                    if any(
+                        normalize_description(item["description"]) == row["normalized_description"]
+                        for item in candidates
+                    ):
+                        continue
+
+                    category_id = None
+                    if row.get("category"):
+                        category_id = category_lookup.get(row["category"].strip().lower())
+
+                    db.execute(
+                        """
+                        INSERT INTO expenses (user_id, date, amount, category_id, description)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (g.user["id"], row["date"], row["amount"], category_id, row["description"]),
+                    )
+                    imported_count += 1
+
+                db.commit()
+                flash(f"Imported {imported_count} transaction(s).")
+                return redirect(url_for("dashboard"))
+
+            file = request.files.get("csv_file")
+            if file is None or not file.filename:
+                flash("Please choose a CSV file.")
+                return render_template("import_csv.html", preview_rows=[], mapping={}, columns=[])
+
+            content = file.read().decode("utf-8-sig")
+            rows = list(csv.reader(io.StringIO(content)))
+            rows = [row for row in rows if any(cell.strip() for cell in row)]
+            if not rows:
+                flash("CSV is empty.")
+                return render_template("import_csv.html", preview_rows=[], mapping={}, columns=[])
+
+            has_header, inferred_mapping = detect_header_and_mapping(rows)
+            mapping = {
+                "date": request.form.get("map_date", inferred_mapping["date"]),
+                "description": request.form.get("map_description", inferred_mapping["description"]),
+                "amount": request.form.get("map_amount", inferred_mapping["amount"]),
+                "debit": request.form.get("map_debit", inferred_mapping["debit"]),
+                "credit": request.form.get("map_credit", inferred_mapping["credit"]),
+                "category": request.form.get("map_category", inferred_mapping["category"]),
+            }
+
+            data_rows = rows[1:] if has_header else rows
+            parsed_rows = parse_csv_transactions(data_rows, mapping, g.user["id"])
+            preview_rows = parsed_rows[:20]
+            columns = rows[0] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
+
+            return render_template(
+                "import_csv.html",
+                preview_rows=preview_rows,
+                mapping=mapping,
+                columns=columns,
+                parsed_rows_json=json.dumps(parsed_rows),
+                detected_mode="header" if has_header else "headerless",
+            )
+
+        return render_template(
+            "import_csv.html",
+            preview_rows=[],
+            mapping={"date": "", "description": "", "amount": "", "debit": "", "credit": "", "category": ""},
+            columns=[],
+            parsed_rows_json="[]",
+            detected_mode=None,
         )
 
     app.get_db = get_db
