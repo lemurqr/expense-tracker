@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <h2>Learning Rules</h2>
+  <p>These rules are learned from your category corrections and import overrides.</p>
+  {% if rules %}
+  <table>
+    <thead>
+      <tr><th>Pattern</th><th>Category</th><th>Hits</th><th>Last used</th><th>Source</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for rule in rules %}
+      <tr>
+        <td>{{ rule.pattern }}</td>
+        <td>
+          <form method="post" action="{{ url_for('update_rule', rule_id=rule.id) }}" class="inline-form">
+            <select name="category_id">
+              {% for category in categories %}
+              <option value="{{ category.id }}" {% if category.name == rule.category %}selected{% endif %}>{{ category.name }}</option>
+              {% endfor %}
+            </select>
+            <select name="is_enabled">
+              <option value="1" {% if rule.is_enabled %}selected{% endif %}>Enabled</option>
+              <option value="0" {% if not rule.is_enabled %}selected{% endif %}>Disabled</option>
+            </select>
+            <button type="submit">Save</button>
+          </form>
+        </td>
+        <td>{{ rule.hits }}</td>
+        <td>{{ rule.last_used_at or '-' }}</td>
+        <td>{{ rule.source }}</td>
+        <td>
+          <form method="post" action="{{ url_for('delete_rule', rule_id=rule.id) }}" class="inline-form" onsubmit="return confirm('Delete this rule?');">
+            <button type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No rules learned yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
