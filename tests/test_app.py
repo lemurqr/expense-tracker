@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from expense_tracker import create_app
+from expense_tracker import create_app, infer_category
 
 
 @pytest.fixture()
@@ -339,5 +339,32 @@ def test_legacy_category_mapping_and_transfer_mapping_on_import(client):
 
     assert rows[0]["category"] == "Groceries"
     assert rows[0]["is_transfer"] == 0
-    assert rows[1]["category"] == "Transfers"
+    assert rows[1]["category"] == "Credit Card Payments"
     assert rows[1]["is_transfer"] == 1
+
+
+def test_accent_insensitive_cafe_maps_to_bakery_and_coffee():
+    category = infer_category("Café latte", "", ["Bakery & Coffee", "Restaurants"])
+    assert category == "Bakery & Coffee"
+
+
+def test_openai_maps_to_personal():
+    category = infer_category("OpenAI monthly", "", ["Personal", "Subscriptions"])
+    assert category == "Personal"
+
+
+def test_apple_bill_maps_to_subscriptions_case_insensitive():
+    category = infer_category("APPLE.COM/BILL", "", ["Subscriptions", "Electronics"])
+    assert category == "Subscriptions"
+
+
+def test_apple_store_prefers_electronics_then_general_shopping_fallback():
+    preferred = infer_category("APPLE STORE TORONTO", "", ["Electronics", "General Shopping"])
+    fallback = infer_category("APPLE ONLINE STORE", "", ["General Shopping"])
+    assert preferred == "Electronics"
+    assert fallback == "General Shopping"
+
+
+def test_metro_maps_to_groceries():
+    category = infer_category("METRO", "", ["Groceries", "General Shopping"])
+    assert category == "Groceries"

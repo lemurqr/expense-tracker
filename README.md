@@ -44,15 +44,23 @@ Legacy category names are mapped into this structure during import and login-tim
 Import and manual entry use keyword-based auto-categorization when category is missing.
 
 Examples:
-- Restaurants: `restaurant`, `resto`, `cafe`, `sushi`, `mcdonald`, `tim hortons`, `starbucks`
-- Bakery & Coffee: `boulangerie`, `bakery`, `patisserie`
+- Bakery & Coffee: `cafe`/`café`, `coffee`, `starbucks`, `tim hortons`, `boulangerie`, `bakery`, `patisserie`
+- Groceries: `metro`, `iga`, `provigo`, `loblaws`, `super c`, `costco` (when Groceries exists)
+- Gas & Fuel: `gas`, `esso`, `shell`, `petro`
+- Public Transit: `stm`
+- General Shopping: `amazon`, `shop`, `walmart`, `canadian tire`, `ikea` (unless Furniture & Appliances exists)
 - Utilities: `hydro`, `bell`, `videotron`, `virgin`
 - Sports & Activities: `hockey`, `tennis`, `ski`, `camp`, `piano`
-- Subscriptions: `netflix`, `disney`, `spotify`
+- Subscriptions: `apple.com/bill`, `apple bill`, `itunes`, `icloud`, `apple music`, `apple tv`, `netflix`, `disney`, `spotify`
+
+Special handling:
+- Matching is case-insensitive and accent-insensitive (for example, `Café` matches `cafe`).
+- `apple store` / `apple online store` are treated as **Electronics** (or **General Shopping** fallback if Electronics does not exist).
+- `payment` and `payment thank you` are classified as **Credit Card Payments** (transfer/non-spending).
 
 Transfer detection keywords include: `payment thank you`, `payment received`, `credit card payment`, `transfer`, `e-transfer`, `direct deposit`, `refund`, `return`, `points`.
 
-Personal auto-detect keywords include: `salon`, `spa`, `barber`, `gym`, `hobby`, `massage`.
+Personal auto-detect keywords include: `salon`, `spa`, `barber`, `gym`, `hobby`, `massage`, `openai`, `open ai`, `chatgpt`.
 
 ## Quickstart
 ```bash

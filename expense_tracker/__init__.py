@@ -4,6 +4,7 @@ import os
 import sqlite3
 import json
 import re
+import unicodedata
 from datetime import date
 from functools import wraps
 
@@ -101,7 +102,6 @@ LEGACY_CATEGORY_MAPPING = {
     "points": "Transfers",
 }
 TRANSFER_KEYWORDS = [
-    "payment thank you",
     "payment received",
     "credit card payment",
     "transfer",
@@ -111,14 +111,18 @@ TRANSFER_KEYWORDS = [
     "return",
     "points",
 ]
-PERSONAL_KEYWORDS = ["salon", "spa", "barber", "gym", "hobby", "massage"]
+PAYMENT_KEYWORDS = ["payment thank you", "payment"]
+PERSONAL_KEYWORDS = ["salon", "spa", "barber", "gym", "hobby", "massage", "openai", "open ai", "chatgpt"]
 TAG_KEYWORDS = {"david": "David", "denys": "Denys", "cookie": "Cookie"}
 MERCHANT_RULES = [
-    ("Restaurants", ["restaurant", "resto", "cafe", "sushi", "mcdonald", "tim hortons", "starbucks"]),
-    ("Bakery & Coffee", ["boulangerie", "bakery", "patisserie"]),
+    ("Groceries", ["metro", "iga", "provigo", "loblaws", "super c"]),
+    ("Bakery & Coffee", ["boulangerie", "bakery", "patisserie", "cafe", "coffee", "starbucks", "tim hortons"]),
+    ("Gas & Fuel", ["gas", "esso", "shell", "petro"]),
+    ("Public Transit", ["stm"]),
+    ("General Shopping", ["amazon", "shop", "walmart", "canadian tire"]),
     ("Utilities", ["hydro", "bell", "videotron", "virgin"]),
     ("Sports & Activities", ["hockey", "tennis", "ski", "camp", "piano"]),
-    ("Subscriptions", ["netflix", "disney", "spotify"]),
+    ("Subscriptions", ["apple.com/bill", "apple bill", "itunes", "icloud", "apple music", "apple tv", "netflix", "disney", "spotify"]),
 ]
 HEADER_ALIASES = {
     "date": ["date", "transaction date", "posting date"],
@@ -148,7 +152,30 @@ def parse_money(value):
 
 
 def normalize_description(value):
-    return re.sub(r"\s+", " ", (value or "").strip().lower())
+    normalized = unicodedata.normalize("NFKD", (value or "").strip().lower())
+    no_accents = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", no_accents)
+
+
+def pick_existing_category(preferred, available_categories, fallback=None):
+    if not preferred and not fallback:
+        return ""
+
+    if not available_categories:
+        return preferred or fallback or ""
+
+    available_lookup = {
+        normalize_description(category_name): category_name for category_name in available_categories
+    }
+
+    for choice in [preferred, fallback]:
+        if not choice:
+            continue
+        found = available_lookup.get(normalize_description(choice))
+        if found:
+            return found
+
+    return ""
 
 
 def derive_tags(description):
@@ -168,31 +195,44 @@ def map_category_name(raw_category):
     return LEGACY_CATEGORY_MAPPING.get(normalized, cleaned)
 
 
-def infer_category(description, raw_category):
+def infer_category(description, raw_category, available_categories=None):
     mapped = map_category_name(raw_category)
     normalized_desc = normalize_description(description)
 
     if mapped:
-        return mapped
+        return pick_existing_category(mapped, available_categories) or mapped
+
+    if any(keyword in normalized_desc for keyword in PAYMENT_KEYWORDS):
+        return pick_existing_category("Credit Card Payments", available_categories, "Transfers")
 
     for keyword in PERSONAL_KEYWORDS:
         if keyword in normalized_desc:
-            return "Personal"
+            return pick_existing_category("Personal", available_categories)
+
+    if "apple online store" in normalized_desc or "apple store" in normalized_desc:
+        return pick_existing_category("Electronics", available_categories, "General Shopping")
+
+    if "ikea" in normalized_desc:
+        return pick_existing_category("Furniture & Appliances", available_categories, "General Shopping")
+
+    if "costco" in normalized_desc and pick_existing_category("Groceries", available_categories):
+        return pick_existing_category("Groceries", available_categories)
 
     for category, keywords in MERCHANT_RULES:
         if any(keyword in normalized_desc for keyword in keywords):
-            return category
+            return pick_existing_category(category, available_categories)
 
     if any(keyword in normalized_desc for keyword in TRANSFER_KEYWORDS):
-        return "Transfers"
+        return pick_existing_category("Transfers", available_categories)
 
     return ""
 
 
 def is_transfer_transaction(description, category_name):
-    if category_name in {"Transfers", "Credit Card Payments"}:
+    normalized_category = normalize_description(category_name)
+    if normalized_category in {"transfers", "credit card payments"}:
         return True
-    if category_name and category_name not in {"Transfers", "Credit Card Payments"}:
+    if normalized_category and normalized_category not in {"transfers", "credit card payments"}:
         return False
     normalized_desc = normalize_description(description)
     return any(keyword in normalized_desc for keyword in TRANSFER_KEYWORDS)
@@ -532,7 +572,8 @@ def create_app(test_config=None):
             ).fetchone()
             resolved_category = category_name["name"] if category_name else ""
             if not resolved_category:
-                resolved_category = infer_category(description, "")
+                available_category_names = [row["name"] for row in categories]
+                resolved_category = infer_category(description, "", available_category_names)
                 if resolved_category:
                     found = db.execute(
                         "SELECT id FROM categories WHERE user_id = ? AND name = ?",
@@ -601,7 +642,8 @@ def create_app(test_config=None):
                 "SELECT name FROM categories WHERE id = ? AND user_id = ?",
                 (category_id, g.user["id"]),
             ).fetchone()
-            resolved_category = category_name["name"] if category_name else infer_category(description, "")
+            available_category_names = [row["name"] for row in categories]
+            resolved_category = category_name["name"] if category_name else infer_category(description, "", available_category_names)
             if category_name is None and resolved_category:
                 found = db.execute(
                     "SELECT id FROM categories WHERE user_id = ? AND name = ?",
@@ -762,12 +804,11 @@ def create_app(test_config=None):
                 db = get_db()
                 imported_count = 0
 
-                category_lookup = {
-                    row["name"].lower(): row["id"]
-                    for row in db.execute(
-                        "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
-                    ).fetchall()
-                }
+                category_rows = db.execute(
+                    "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
+                ).fetchall()
+                category_lookup = {normalize_description(row["name"]): row["id"] for row in category_rows}
+                available_category_names = [row["name"] for row in category_rows]
 
                 for row in parsed_rows:
                     candidates = db.execute(
@@ -784,9 +825,13 @@ def create_app(test_config=None):
                         continue
 
                     category_id = None
-                    assigned_category = infer_category(row.get("description", ""), row.get("category", ""))
+                    assigned_category = infer_category(
+                        row.get("description", ""),
+                        row.get("category", ""),
+                        available_category_names,
+                    )
                     if assigned_category:
-                        category_id = category_lookup.get(assigned_category.strip().lower())
+                        category_id = category_lookup.get(normalize_description(assigned_category))
                     is_personal = assigned_category == "Personal"
                     is_transfer = is_transfer_transaction(row.get("description", ""), assigned_category)
 
