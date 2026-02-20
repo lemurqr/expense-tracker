@@ -6,11 +6,12 @@
   {% if rules %}
   <table>
     <thead>
-      <tr><th>Pattern</th><th>Category</th><th>Hits</th><th>Last used</th><th>Source</th><th>Actions</th></tr>
+      <tr><th>Key Type</th><th>Pattern</th><th>Category</th><th>Hits</th><th>Last used</th><th>Source</th><th>Actions</th></tr>
     </thead>
     <tbody>
       {% for rule in rules %}
       <tr>
+        <td>{{ "Vendor" if rule.key_type == "vendor" else "Description" }}</td>
         <td>{{ rule.pattern }}</td>
         <td>
           <form method="post" action="{{ url_for('update_rule', rule_id=rule.id) }}" class="inline-form">

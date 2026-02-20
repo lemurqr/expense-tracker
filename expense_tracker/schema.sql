@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS expenses (
     amount REAL NOT NULL,
     category_id INTEGER,
     description TEXT,
+    vendor TEXT,
+    paid_by TEXT NOT NULL DEFAULT 'DK',
     is_transfer INTEGER NOT NULL DEFAULT 0,
     is_personal INTEGER NOT NULL DEFAULT 0,
     tags TEXT,
@@ -29,6 +31,7 @@ CREATE TABLE IF NOT EXISTS expenses (
 CREATE TABLE IF NOT EXISTS category_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
+    key_type TEXT NOT NULL DEFAULT 'description',
     pattern TEXT NOT NULL,
     category_id INTEGER NOT NULL,
     priority INTEGER NOT NULL DEFAULT 100,
@@ -38,7 +41,7 @@ CREATE TABLE IF NOT EXISTS category_rules (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at TEXT,
-    UNIQUE(user_id, pattern),
+    UNIQUE(user_id, key_type, pattern),
     FOREIGN KEY (user_id) REFERENCES users (id),
     FOREIGN KEY (category_id) REFERENCES categories (id)
 );
