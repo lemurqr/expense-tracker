@@ -124,7 +124,7 @@ LEARNING_STOPLIST = {
     "interest",
 }
 LEARNING_SPECIAL_PATTERNS = ["apple.com/bill"]
-PAYMENT_KEYWORDS = ["payment thank you", "payment"]
+PAYMENT_KEYWORDS = ["payment received", "thank you", "online payment", "autopay", "payment thank you", "payment"]
 PERSONAL_KEYWORDS = ["salon", "spa", "barber", "gym", "hobby", "massage", "openai", "open ai", "chatgpt"]
 TAG_KEYWORDS = {"david": "David", "denys": "Denys", "cookie": "Cookie"}
 MERCHANT_RULES = [
@@ -174,6 +174,28 @@ def parse_money(value):
         return float(cleaned)
     except ValueError:
         return None
+
+
+def extract_embedded_amount(description):
+    text = (description or "").strip()
+    match = re.search(r"(?<!\d)([-+]?\d[\d,]*\.\d{1,2})(?!\d)", text)
+    if not match:
+        return None, text
+
+    amount = parse_money(match.group(1))
+    if amount is None:
+        return None, text
+
+    cleaned_description = f"{text[:match.start()]} {text[match.end():]}"
+    cleaned_description = re.sub(r"\s+", " ", cleaned_description).strip(" -\t")
+    return amount, cleaned_description
+
+
+def detect_bank_type(header_row):
+    normalized_headers = {normalize_header_name(col) for col in (header_row or [])}
+    if {"date", "description", "amount"}.issubset(normalized_headers):
+        return "amex"
+    return "default"
 
 
 def normalize_description(value):
@@ -323,7 +345,7 @@ def detect_header_and_mapping(rows):
     return has_header, mapping
 
 
-def parse_csv_transactions(rows, mapping, user_id):
+def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
     parsed_rows = []
     for raw_row in rows:
         row = [cell.strip() for cell in raw_row]
@@ -341,6 +363,7 @@ def parse_csv_transactions(rows, mapping, user_id):
         row_date = get_value("date")
         row_description = get_value("description")
         row_category = get_value("category")
+        normalized_description = normalize_description(row_description)
         row_vendor = get_value("vendor") or derive_vendor(row_description)
 
         amount = None
@@ -355,6 +378,17 @@ def parse_csv_transactions(rows, mapping, user_id):
             elif credit_value is not None:
                 amount = abs(credit_value)
 
+        if amount is None and bank_type == "amex" and any(keyword in normalized_description for keyword in PAYMENT_KEYWORDS):
+            extracted_amount, cleaned_description = extract_embedded_amount(row_description)
+            if extracted_amount is not None:
+                amount = extracted_amount
+                row_description = cleaned_description
+                normalized_description = normalize_description(row_description)
+                row_vendor = get_value("vendor") or derive_vendor(row_description)
+
+        if amount is not None and bank_type == "amex":
+            amount = -amount
+
         if not row_date or amount is None:
             continue
 
@@ -365,7 +399,7 @@ def parse_csv_transactions(rows, mapping, user_id):
                 "amount": round(amount, 2),
                 "description": row_description,
                 "vendor": row_vendor,
-                "normalized_description": normalize_description(row_description),
+                "normalized_description": normalized_description,
                 "category": infer_category(row_description, row_category),
                 "tags": derive_tags(row_description),
             }
@@ -1165,7 +1199,8 @@ def create_app(test_config=None):
             }
 
             data_rows = rows[1:] if has_header else rows
-            parsed_rows = parse_csv_transactions(data_rows, mapping, g.user["id"])
+            bank_type = detect_bank_type(rows[0] if has_header else [])
+            parsed_rows = parse_csv_transactions(data_rows, mapping, g.user["id"], bank_type=bank_type)
             db = get_db()
             category_rows = db.execute(
                 "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)

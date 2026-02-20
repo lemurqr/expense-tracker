@@ -554,6 +554,23 @@ def test_signed_amount_from_debit_credit_mapping():
     assert parsed[1]["amount"] == 11.25
 
 
+def test_amex_amount_is_normalized_to_canonical_sign_for_charges():
+    rows = [["2026-09-10", "Restaurant", "20.00"]]
+    mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": ""}
+    parsed = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
+    assert parsed[0]["amount"] == -20.0
+
+
+def test_amex_payment_amount_embedded_in_description_is_extracted_and_cleaned():
+    rows = [["2026-09-11", "Online payment -162.67", ""]]
+    mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": ""}
+    parsed = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
+
+    assert parsed[0]["amount"] == 162.67
+    assert parsed[0]["description"] == "Online payment"
+    assert parsed[0]["category"] == "Credit Card Payments"
+
+
 def test_vendor_mapped_column_is_stored_on_import(client):
     register(client)
     login(client)
