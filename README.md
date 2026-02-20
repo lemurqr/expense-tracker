@@ -32,6 +32,10 @@ flask --app app init-db
 ## CSV import
 Use **Import CSV** in the app navigation to upload transactions.
 
+Encoding support:
+- The importer tries `utf-8-sig`, `utf-8`, `cp1252` (Windows-1252), then `latin-1`.
+- If decoding fails, re-save the file as **CSV UTF-8** and upload again.
+
 Supported formats:
 - Header-based bank CSVs with inferred mapping for date, amount, debit, credit, description, and category.
 - Headerless CIBC-style CSV rows where:

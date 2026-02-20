@@ -157,6 +157,22 @@ def test_import_cibc_headerless_csv(client):
     assert rows[1]["amount"] == 1200.0
 
 
+def test_import_cp1252_csv_fallback(client):
+    register(client)
+    login(client)
+
+    fixture = Path(__file__).parent / "fixtures" / "cp1252_import.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={"action": "preview", "csv_file": (f, "cp1252_import.csv")},
+            content_type="multipart/form-data",
+        )
+
+    assert preview_response.status_code == 200
+    assert "Café" in preview_response.get_data(as_text=True)
+
+
 def test_import_header_based_csv_with_mapping(client):
     register(client)
     login(client)

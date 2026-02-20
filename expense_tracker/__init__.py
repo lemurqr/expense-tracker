@@ -119,6 +119,15 @@ def parse_csv_transactions(rows, mapping, user_id):
     return parsed_rows
 
 
+def decode_csv_bytes(file_bytes):
+    for encoding in ["utf-8-sig", "utf-8", "cp1252", "latin-1"]:
+        try:
+            return file_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
@@ -536,7 +545,12 @@ def create_app(test_config=None):
                 flash("Please choose a CSV file.")
                 return render_template("import_csv.html", preview_rows=[], mapping={}, columns=[])
 
-            content = file.read().decode("utf-8-sig")
+            file_bytes = file.read()
+            content = decode_csv_bytes(file_bytes)
+            if content is None:
+                flash("Could not read file encoding. Please re-save as CSV UTF-8.")
+                return render_template("import_csv.html", preview_rows=[], mapping={}, columns=[])
+
             rows = list(csv.reader(io.StringIO(content)))
             rows = [row for row in rows if any(cell.strip() for cell in row)]
             if not rows:
