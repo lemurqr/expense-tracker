@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from expense_tracker import create_app, infer_category
+from expense_tracker import create_app, infer_category, normalize_text, extract_pattern
 
 
 @pytest.fixture()
@@ -368,3 +368,176 @@ def test_apple_store_prefers_electronics_then_general_shopping_fallback():
 def test_metro_maps_to_groceries():
     category = infer_category("METRO", "", ["Groceries", "General Shopping"])
     assert category == "Groceries"
+
+
+def test_normalize_text_is_accent_and_punctuation_insensitive():
+    assert normalize_text("  Café,   Dépôt!!  ") == "cafe depot"
+
+
+def test_stoplist_prevents_learning_generic_patterns(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+
+    add = client.post(
+        "/expenses/new",
+        data={"date": "2026-07-01", "amount": "25", "category_id": "", "description": "shop"},
+        follow_redirects=True,
+    )
+    assert b"Expense added" in add.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'shop'").fetchone()["id"]
+
+    client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-07-01", "amount": "25", "category_id": str(groceries_id), "description": "shop"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rule = db.execute("SELECT * FROM category_rules WHERE pattern = 'shop'").fetchone()
+    assert rule is None
+
+
+def test_learn_rule_create_and_update_via_manual_edits(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        subscriptions_id = db.execute("SELECT id FROM categories WHERE name = 'Subscriptions'").fetchone()["id"]
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-07-02", "amount": "10", "category_id": "", "description": "Apple"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Apple'").fetchone()["id"]
+
+    client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-07-02", "amount": "10", "category_id": str(groceries_id), "description": "Apple"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rule = db.execute("SELECT pattern, category_id, source FROM category_rules WHERE pattern = ?", (extract_pattern("Apple"),)).fetchone()
+    assert rule["category_id"] == groceries_id
+    assert rule["source"] == "manual_edit"
+
+    client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-07-02", "amount": "10", "category_id": str(subscriptions_id), "description": "Apple"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        updated = db.execute("SELECT category_id FROM category_rules WHERE pattern = ?", (extract_pattern("Apple"),)).fetchone()
+    assert updated["category_id"] == subscriptions_id
+
+
+def test_categorizer_prefers_learned_rule_before_heuristics(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        subscriptions_id = db.execute("SELECT id FROM categories WHERE name = 'Subscriptions'").fetchone()["id"]
+        electronics_id = db.execute("SELECT id FROM categories WHERE name = 'Electronics'").fetchone()["id"]
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-07-03", "amount": "99", "category_id": str(subscriptions_id), "description": "Apple Store Downtown"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Apple Store Downtown'").fetchone()["id"]
+
+    client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-07-03", "amount": "99", "category_id": str(electronics_id), "description": "Apple Store Downtown"},
+        follow_redirects=True,
+    )
+
+    preview = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-07-04", "amount": -15.0, "description": "Apple Store Downtown", "normalized_description": "apple store downtown", "category": ""}
+            ]),
+        },
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in preview.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            """
+            SELECT c.name as category FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description = 'Apple Store Downtown' AND e.date = '2026-07-04'
+            """
+        ).fetchone()
+        assert row["category"] == "Electronics"
+
+
+def test_import_learning_integration_apple_to_subscriptions(client):
+    register(client)
+    login(client)
+
+    first_import = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-08-01", "amount": -9.99, "description": "Apple", "normalized_description": "apple", "category": ""}
+            ]),
+            "override_category_0": "Subscriptions",
+        },
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in first_import.data
+
+    second_import = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-08-02", "amount": -9.99, "description": "Apple", "normalized_description": "apple", "category": ""}
+            ]),
+        },
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in second_import.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            """
+            SELECT c.name as category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description = 'Apple' AND e.date = '2026-08-02'
+            """
+        ).fetchone()
+        rule = db.execute("SELECT hits, source FROM category_rules WHERE pattern = ?", ("apple",)).fetchone()
+
+    assert row["category"] == "Subscriptions"
+    assert rule["source"] == "import_override"
+    assert rule["hits"] >= 1

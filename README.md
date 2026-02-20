@@ -62,6 +62,30 @@ Transfer detection keywords include: `payment thank you`, `payment received`, `c
 
 Personal auto-detect keywords include: `salon`, `spa`, `barber`, `gym`, `hobby`, `massage`, `openai`, `open ai`, `chatgpt`.
 
+
+## Learning Rules
+The app includes a per-user learning system that remembers category corrections and reuses them in future imports and categorization.
+
+How it works:
+- Descriptions are normalized to lowercase, accent-insensitive text, punctuation removed, and whitespace collapsed.
+- A pattern key is extracted (special patterns like `apple.com/bill`, otherwise first words).
+- Transfer/payment-like transactions are excluded from learning.
+- Generic stoplisted patterns (for example `shop`, `payment`, `service`, `transaction`) are not learned.
+- Rules are applied after transfer detection and before keyword heuristics.
+
+Where learning comes from:
+- Editing a transaction category in the expense edit flow (`source=manual_edit`).
+- Overriding a suggested category in CSV import preview (`source=import_override`).
+
+Managing rules:
+- Open **Rules** in the navigation (`/rules`) to view learned patterns, hit counts, last use, source, and update/delete/disable rules.
+
+Resetting rules:
+- Delete rows from `category_rules` in SQLite, or remove the DB file for a full reset.
+
+Configuration:
+- `ENABLE_LEARNING_RULES` Flask setting (default `True`).
+
 ## Quickstart
 ```bash
 python -m venv .venv

@@ -74,23 +74,30 @@
   <h3>Preview (first 20 rows)</h3>
   <p>Detected format: <strong>{{ detected_mode }}</strong></p>
   {% if preview_rows %}
-  <table>
-    <thead>
-      <tr><th>Date</th><th>Amount</th><th>Description</th><th>Category</th></tr>
-    </thead>
-    <tbody>
-      {% for row in preview_rows %}
-      <tr>
-        <td>{{ row.date }}</td>
-        <td>{{ '%.2f'|format(row.amount) }}</td>
-        <td>{{ row.description }}</td>
-        <td>{{ row.category }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
   <form method="post">
+    <table>
+      <thead>
+        <tr><th>Date</th><th>Amount</th><th>Description</th><th>Category</th></tr>
+      </thead>
+      <tbody>
+        {% for row in preview_rows %}
+        <tr>
+          <td>{{ row.date }}</td>
+          <td>{{ '%.2f'|format(row.amount) }}</td>
+          <td>{{ row.description }}</td>
+          <td>
+            <select name="override_category_{{ loop.index0 }}">
+              <option value="">Use suggested ({{ row.category or 'Uncategorized' }})</option>
+              {% for category in categories %}
+              <option value="{{ category.name }}">{{ category.name }}</option>
+              {% endfor %}
+            </select>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
     <input type="hidden" name="action" value="confirm">
     <input type="hidden" name="parsed_rows" value='{{ parsed_rows_json|safe }}'>
     <button type="submit">Confirm Import</button>
