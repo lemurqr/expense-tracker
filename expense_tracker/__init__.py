@@ -113,7 +113,9 @@ TRANSFER_KEYWORDS = [
 ]
 LEARNING_STOPLIST = {
     "shop",
+    "store",
     "payment",
+    "merci",
     "service",
     "purchase",
     "debit",
@@ -140,8 +142,20 @@ HEADER_ALIASES = {
     "amount": ["amount"],
     "debit": ["debit"],
     "credit": ["credit"],
-    "description": ["description", "merchant", "payee"],
+    "description": ["description", "details", "memo", "merchant", "payee"],
+    "vendor": ["vendor", "merchant", "payee", "name", "merchant name"],
     "category": ["category"],
+}
+VENDOR_NOISE_TOKENS = {
+    "pos",
+    "purchase",
+    "debit",
+    "credit",
+    "auth",
+    "interac",
+    "transaction",
+    "card",
+    "payment",
 }
 
 
@@ -175,8 +189,20 @@ def normalize_text(value):
     return normalized
 
 
-def extract_pattern(description, max_words=3):
+def derive_vendor(description):
     normalized = normalize_text(description)
+    if not normalized:
+        return ""
+    tokens = [token for token in normalized.split() if token not in VENDOR_NOISE_TOKENS]
+    while tokens and re.fullmatch(r"[a-z]*\d+[a-z\d-]*", tokens[-1]):
+        tokens.pop()
+    if not tokens:
+        return ""
+    return " ".join(tokens[:4])
+
+
+def extract_pattern(value, max_words=3):
+    normalized = normalize_text(value)
     if not normalized:
         return ""
 
@@ -281,7 +307,7 @@ def is_transfer_transaction(description, category_name):
 def detect_header_and_mapping(rows):
     first_row = rows[0] if rows else []
     normalized = [normalize_header_name(col) for col in first_row]
-    mapping = {"date": "", "description": "", "amount": "", "debit": "", "credit": "", "category": ""}
+    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
 
     for field, aliases in HEADER_ALIASES.items():
         for idx, value in enumerate(normalized):
@@ -315,6 +341,7 @@ def parse_csv_transactions(rows, mapping, user_id):
         row_date = get_value("date")
         row_description = get_value("description")
         row_category = get_value("category")
+        row_vendor = get_value("vendor") or derive_vendor(row_description)
 
         amount = None
         amount_col = mapping.get("amount", "")
@@ -331,16 +358,15 @@ def parse_csv_transactions(rows, mapping, user_id):
         if not row_date or amount is None:
             continue
 
-        final_category = infer_category(row_description, row_category)
-
         parsed_rows.append(
             {
                 "user_id": user_id,
                 "date": row_date,
                 "amount": round(amount, 2),
                 "description": row_description,
+                "vendor": row_vendor,
                 "normalized_description": normalize_description(row_description),
-                "category": final_category,
+                "category": infer_category(row_description, row_category),
                 "tags": derive_tags(row_description),
             }
         )
@@ -356,12 +382,17 @@ def decode_csv_bytes(file_bytes):
     return None
 
 
+def ai_categorize_stub(_description, _vendor):
+    return ""
+
+
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
     app.config.from_mapping(
         SECRET_KEY="dev",
         DATABASE=os.path.join(app.instance_path, "expense_tracker.sqlite"),
         ENABLE_LEARNING_RULES=True,
+        ENABLE_AI_CATEGORIZATION=False,
     )
 
     if test_config is not None:
@@ -423,11 +454,17 @@ def create_app(test_config=None):
             db.execute("ALTER TABLE expenses ADD COLUMN is_personal INTEGER NOT NULL DEFAULT 0")
         if "tags" not in columns:
             db.execute("ALTER TABLE expenses ADD COLUMN tags TEXT")
+        if "vendor" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN vendor TEXT")
+        if "paid_by" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN paid_by TEXT NOT NULL DEFAULT 'DK'")
+
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS category_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
+                key_type TEXT NOT NULL DEFAULT 'description',
                 pattern TEXT NOT NULL,
                 category_id INTEGER NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 100,
@@ -437,21 +474,53 @@ def create_app(test_config=None):
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_used_at TEXT,
-                UNIQUE(user_id, pattern),
+                UNIQUE(user_id, key_type, pattern),
                 FOREIGN KEY (user_id) REFERENCES users (id),
                 FOREIGN KEY (category_id) REFERENCES categories (id)
             )
             """
         )
         rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
-        if "is_enabled" not in rule_columns:
+        if "key_type" not in rule_columns:
+            db.execute("ALTER TABLE category_rules RENAME TO category_rules_old")
+            db.execute(
+                """
+                CREATE TABLE category_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    key_type TEXT NOT NULL DEFAULT 'description',
+                    pattern TEXT NOT NULL,
+                    category_id INTEGER NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    hits INTEGER NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at TEXT,
+                    UNIQUE(user_id, key_type, pattern),
+                    FOREIGN KEY (user_id) REFERENCES users (id),
+                    FOREIGN KEY (category_id) REFERENCES categories (id)
+                )
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO category_rules (
+                    id, user_id, key_type, pattern, category_id, priority, hits, source, is_enabled, created_at, updated_at, last_used_at
+                )
+                SELECT id, user_id, 'description', pattern, category_id, priority, hits, source, COALESCE(is_enabled, 1), created_at, updated_at, last_used_at
+                FROM category_rules_old
+                """
+            )
+            db.execute("DROP TABLE category_rules_old")
+        elif "is_enabled" not in rule_columns:
             db.execute("ALTER TABLE category_rules ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1")
         db.commit()
 
-    def resolve_learned_category(user_id, description, available_categories, db):
+    def resolve_learned_category(user_id, key_type, pattern, available_categories, db):
         if not app.config.get("ENABLE_LEARNING_RULES", True):
             return ""
-        pattern = extract_pattern(description)
         if not pattern:
             return ""
 
@@ -460,11 +529,11 @@ def create_app(test_config=None):
             SELECT cr.id, c.name as category_name
             FROM category_rules cr
             JOIN categories c ON c.id = cr.category_id
-            WHERE cr.user_id = ? AND cr.pattern = ? AND cr.is_enabled = 1
+            WHERE cr.user_id = ? AND cr.key_type = ? AND cr.pattern = ? AND cr.is_enabled = 1
             ORDER BY cr.priority ASC, cr.hits DESC, cr.updated_at DESC
             LIMIT 1
             """,
-            (user_id, pattern),
+            (user_id, key_type, pattern),
         ).fetchone()
 
         if rule is None:
@@ -473,11 +542,11 @@ def create_app(test_config=None):
                 SELECT cr.id, c.name as category_name
                 FROM category_rules cr
                 JOIN categories c ON c.id = cr.category_id
-                WHERE cr.user_id = ? AND ? LIKE cr.pattern || '%' AND cr.is_enabled = 1
+                WHERE cr.user_id = ? AND cr.key_type = ? AND ? LIKE cr.pattern || '%' AND cr.is_enabled = 1
                 ORDER BY LENGTH(cr.pattern) DESC, cr.priority ASC, cr.hits DESC
                 LIMIT 1
                 """,
-                (user_id, pattern),
+                (user_id, key_type, pattern),
             ).fetchone()
 
         if rule is None:
@@ -494,17 +563,36 @@ def create_app(test_config=None):
         db.commit()
         return category
 
-    def categorize_transaction(user_id, description, raw_category, available_categories, db):
+    def categorize_transaction(user_id, description, vendor, raw_category, available_categories, db):
         if is_transfer_transaction(description, raw_category):
-            return pick_existing_category("Transfers", available_categories, "Credit Card Payments")
+            return {"category": pick_existing_category("Transfers", available_categories, "Credit Card Payments"), "confidence": "High", "source": "transfer"}
 
-        learned = resolve_learned_category(user_id, description, available_categories, db)
-        if learned:
-            return learned
+        vendor_pattern = extract_pattern(vendor or derive_vendor(description), max_words=4)
+        learned_vendor = resolve_learned_category(user_id, "vendor", vendor_pattern, available_categories, db)
+        if learned_vendor:
+            return {"category": learned_vendor, "confidence": "High", "source": "learned_vendor"}
 
-        return infer_category(description, raw_category, available_categories)
+        desc_pattern = extract_pattern(description)
+        learned_description = resolve_learned_category(user_id, "description", desc_pattern, available_categories, db)
+        if learned_description:
+            return {"category": learned_description, "confidence": "High", "source": "learned_description"}
 
-    def learn_rule(user_id, description, category_id, source):
+        keyword_vendor = infer_category(vendor or "", raw_category, available_categories)
+        if keyword_vendor:
+            return {"category": keyword_vendor, "confidence": "Medium", "source": "keyword_vendor"}
+
+        keyword_description = infer_category(description, raw_category, available_categories)
+        if keyword_description:
+            return {"category": keyword_description, "confidence": "Medium", "source": "keyword_description"}
+
+        if app.config.get("ENABLE_AI_CATEGORIZATION", False):
+            ai_category = ai_categorize_stub(description, vendor or "")
+            if ai_category:
+                return {"category": ai_category, "confidence": "Low", "source": "ai_fallback"}
+
+        return {"category": "", "confidence": "Low", "source": "unknown"}
+
+    def learn_rule(user_id, description, vendor, category_id, source):
         if not app.config.get("ENABLE_LEARNING_RULES", True):
             return
         db = get_db()
@@ -517,13 +605,17 @@ def create_app(test_config=None):
         if is_transfer_transaction(description, category["name"]):
             return
 
-        pattern = extract_pattern(description)
-        if not pattern or pattern in LEARNING_STOPLIST:
+        vendor_pattern = extract_pattern(vendor or "", max_words=4)
+        description_pattern = extract_pattern(description)
+
+        key_type = "vendor" if vendor_pattern else "description"
+        pattern = vendor_pattern if vendor_pattern else description_pattern
+        if not pattern or pattern in LEARNING_STOPLIST or len(pattern) < 3:
             return
 
         existing = db.execute(
-            "SELECT id FROM category_rules WHERE user_id = ? AND pattern = ?",
-            (user_id, pattern),
+            "SELECT id FROM category_rules WHERE user_id = ? AND key_type = ? AND pattern = ?",
+            (user_id, key_type, pattern),
         ).fetchone()
         if existing:
             db.execute(
@@ -537,10 +629,10 @@ def create_app(test_config=None):
         else:
             db.execute(
                 """
-                INSERT INTO category_rules (user_id, pattern, category_id, source)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO category_rules (user_id, key_type, pattern, category_id, source)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (user_id, pattern, category_id, source),
+                (user_id, key_type, pattern, category_id, source),
             )
         db.commit()
 
@@ -733,7 +825,8 @@ def create_app(test_config=None):
             resolved_category = category_name["name"] if category_name else ""
             if not resolved_category:
                 available_category_names = [row["name"] for row in categories]
-                resolved_category = categorize_transaction(g.user["id"], description, "", available_category_names, db)
+                categorized = categorize_transaction(g.user["id"], description, "", "", available_category_names, db)
+                resolved_category = categorized["category"]
                 if resolved_category:
                     found = db.execute(
                         "SELECT id FROM categories WHERE user_id = ? AND name = ?",
@@ -752,10 +845,10 @@ def create_app(test_config=None):
 
             db.execute(
                 """
-                INSERT INTO expenses (user_id, date, amount, category_id, description)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO expenses (user_id, date, amount, category_id, description, vendor, paid_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (g.user["id"], expense_date, amount_value, category_id, description),
+                (g.user["id"], expense_date, amount_value, category_id, description, derive_vendor(description), "DK"),
             )
             expense_id = db.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
             db.execute(
@@ -804,9 +897,10 @@ def create_app(test_config=None):
             ).fetchone()
             available_category_names = [row["name"] for row in categories]
             previous_category_id = expense["category_id"]
-            resolved_category = category_name["name"] if category_name else categorize_transaction(
-                g.user["id"], description, "", available_category_names, db
-            )
+            resolved_category = category_name["name"] if category_name else ""
+            if category_name is None:
+                categorized = categorize_transaction(g.user["id"], description, expense["vendor"] or "", "", available_category_names, db)
+                resolved_category = categorized["category"]
             if category_name is None and resolved_category:
                 found = db.execute(
                     "SELECT id FROM categories WHERE user_id = ? AND name = ?",
@@ -826,7 +920,7 @@ def create_app(test_config=None):
             db.execute(
                 """
                 UPDATE expenses
-                SET date = ?, amount = ?, category_id = ?, description = ?, is_transfer = ?, is_personal = ?, tags = ?
+                SET date = ?, amount = ?, category_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?, tags = ?
                 WHERE id = ? AND user_id = ?
                 """,
                 (
@@ -834,6 +928,7 @@ def create_app(test_config=None):
                     amount_value,
                     category_id,
                     description,
+                    derive_vendor(description),
                     1 if is_transfer_transaction(description, resolved_category) else 0,
                     1 if resolved_category == "Personal" else 0,
                     json.dumps(derive_tags(description)),
@@ -843,7 +938,7 @@ def create_app(test_config=None):
             )
             db.commit()
             if category_id and str(previous_category_id or "") != str(category_id):
-                learn_rule(g.user["id"], description, category_id, "manual_edit")
+                learn_rule(g.user["id"], description, expense["vendor"] or derive_vendor(description), category_id, "manual_edit")
             flash("Expense updated.")
             return redirect(url_for("dashboard"))
 
@@ -977,6 +1072,11 @@ def create_app(test_config=None):
 
                 for index, row in enumerate(parsed_rows):
                     override = request.form.get(f"override_category_{index}", "")
+                    vendor_override = request.form.get(f"override_vendor_{index}", "").strip()
+                    if vendor_override:
+                        row["vendor"] = vendor_override
+                    elif not row.get("vendor"):
+                        row["vendor"] = derive_vendor(row.get("description", ""))
                     if override:
                         row["category"] = override
 
@@ -994,13 +1094,15 @@ def create_app(test_config=None):
                         continue
 
                     category_id = None
-                    assigned_category = categorize_transaction(
+                    categorized = categorize_transaction(
                         g.user["id"],
                         row.get("description", ""),
+                        row.get("vendor", ""),
                         row.get("category", ""),
                         available_category_names,
                         db,
                     )
+                    assigned_category = categorized["category"]
                     if assigned_category:
                         category_id = category_lookup.get(normalize_description(assigned_category))
                     is_personal = assigned_category == "Personal"
@@ -1008,8 +1110,8 @@ def create_app(test_config=None):
 
                     db.execute(
                         """
-                        INSERT INTO expenses (user_id, date, amount, category_id, description, is_transfer, is_personal, tags)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO expenses (user_id, date, amount, category_id, description, vendor, paid_by, is_transfer, is_personal, tags)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             g.user["id"],
@@ -1017,6 +1119,8 @@ def create_app(test_config=None):
                             row["amount"],
                             category_id,
                             row["description"],
+                            row.get("vendor", "") or derive_vendor(row.get("description", "")),
+                            row.get("paid_by", "DK") or "DK",
                             1 if is_transfer else 0,
                             1 if is_personal else 0,
                             json.dumps(row.get("tags") or derive_tags(row.get("description", ""))),
@@ -1025,7 +1129,7 @@ def create_app(test_config=None):
                     if override and category_id and normalize_description(override) != normalize_description(
                         row.get("auto_category", "")
                     ):
-                        learn_rule(g.user["id"], row.get("description", ""), category_id, "import_override")
+                        learn_rule(g.user["id"], row.get("description", ""), row.get("vendor", ""), category_id, "import_override")
                     imported_count += 1
 
                 db.commit()
@@ -1053,6 +1157,7 @@ def create_app(test_config=None):
             mapping = {
                 "date": request.form.get("map_date", inferred_mapping["date"]),
                 "description": request.form.get("map_description", inferred_mapping["description"]),
+                "vendor": request.form.get("map_vendor", inferred_mapping["vendor"]),
                 "amount": request.form.get("map_amount", inferred_mapping["amount"]),
                 "debit": request.form.get("map_debit", inferred_mapping["debit"]),
                 "credit": request.form.get("map_credit", inferred_mapping["credit"]),
@@ -1067,11 +1172,13 @@ def create_app(test_config=None):
             ).fetchall()
             available_category_names = [row["name"] for row in category_rows]
             for row in parsed_rows:
-                auto_category = categorize_transaction(
-                    g.user["id"], row.get("description", ""), row.get("category", ""), available_category_names, db
+                categorized = categorize_transaction(
+                    g.user["id"], row.get("description", ""), row.get("vendor", ""), row.get("category", ""), available_category_names, db
                 )
-                row["auto_category"] = auto_category
-                row["category"] = auto_category
+                row["auto_category"] = categorized["category"]
+                row["category"] = categorized["category"]
+                row["suggested_source"] = categorized["source"]
+                row["confidence"] = categorized["confidence"]
             preview_rows = parsed_rows[:20]
             columns = rows[0] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
 
@@ -1088,7 +1195,7 @@ def create_app(test_config=None):
         return render_template(
             "import_csv.html",
             preview_rows=[],
-            mapping={"date": "", "description": "", "amount": "", "debit": "", "credit": "", "category": ""},
+            mapping={"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""},
             columns=[],
             categories=[],
             parsed_rows_json="[]",
@@ -1101,7 +1208,7 @@ def create_app(test_config=None):
         db = get_db()
         rules = db.execute(
             """
-            SELECT cr.id, cr.pattern, cr.hits, cr.last_used_at, cr.source, cr.is_enabled, c.name as category
+            SELECT cr.id, cr.key_type, cr.pattern, cr.hits, cr.last_used_at, cr.source, cr.is_enabled, c.name as category
             FROM category_rules cr
             JOIN categories c ON c.id = cr.category_id
             WHERE cr.user_id = ?

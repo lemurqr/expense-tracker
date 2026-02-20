@@ -9,6 +9,8 @@ Simple Flask + SQLite expense tracking app with authentication, expenses CRUD, c
 - Monthly summary dashboard
 - CSV export
 - CSV import with mapping UI (supports CIBC headerless format)
+- Internal signed amount model (`-` debit / `+` credit)
+- Vendor capture + vendor-derived fallback for better auto-categorization
 - Auto-categorization from category aliases + merchant keywords
 - Transfer detection and exclusion from shared spending totals
 - Personal expense detection and exclusion from shared pool
@@ -33,6 +35,12 @@ The app now uses normalized categories:
 - **Transfers & Payments**: Credit Card Payments, Transfers
 
 Legacy category names are mapped into this structure during import and login-time migration.
+
+## Signed amount + vendor model
+- Transactions are stored as a single signed `amount` value internally.
+- Debit/credit imports are normalized as: debit -> negative, credit -> positive.
+- Each transaction also stores `vendor` (nullable) and `paid_by` (`DK`/`YZ`, default `DK`).
+- Vendor improves matching stability compared with noisy full descriptions.
 
 ## Spending logic
 - **Transfers** are marked as non-spending and excluded from spending totals/summary charts.
@@ -67,7 +75,9 @@ Personal auto-detect keywords include: `salon`, `spa`, `barber`, `gym`, `hobby`,
 The app includes a per-user learning system that remembers category corrections and reuses them in future imports and categorization.
 
 How it works:
-- Descriptions are normalized to lowercase, accent-insensitive text, punctuation removed, and whitespace collapsed.
+- Transfer detection always runs first and is never learned as a spending rule.
+- Vendor-first pipeline order: learned vendor -> learned description -> vendor keywords -> description keywords -> optional AI fallback (disabled by default).
+- Descriptions/vendors are normalized to lowercase, accent-insensitive text, punctuation removed, and whitespace collapsed.
 - A pattern key is extracted (special patterns like `apple.com/bill`, otherwise first words).
 - Transfer/payment-like transactions are excluded from learning.
 - Generic stoplisted patterns (for example `shop`, `payment`, `service`, `transaction`) are not learned.
@@ -78,7 +88,7 @@ Where learning comes from:
 - Overriding a suggested category in CSV import preview (`source=import_override`).
 
 Managing rules:
-- Open **Rules** in the navigation (`/rules`) to view learned patterns, hit counts, last use, source, and update/delete/disable rules.
+- Open **Rules** in the navigation (`/rules`) to view key type (Vendor/Description), pattern, category, hits, last use, and source, and update/delete/disable rules.
 
 Resetting rules:
 - Delete rows from `category_rules` in SQLite, or remove the DB file for a full reset.
@@ -111,13 +121,17 @@ Encoding support:
 - If decoding fails, re-save the file as **CSV UTF-8** and upload again.
 
 Supported formats:
-- Header-based bank CSVs with inferred mapping for date, amount, debit, credit, description, and category.
+- Header-based bank CSVs with inferred mapping for date, amount, debit, credit, description, vendor, and category.
 - Headerless CIBC-style CSV rows where:
   - Column 1 = `YYYY-MM-DD` date
   - Column 2 = description
   - Column 3 = debit (money out)
   - Column 4 = credit (money in)
   - Additional columns are ignored
+
+Vendor mapping/derivation:
+- Optional vendor mapping supports headers like `vendor`, `merchant`, `payee`, `name`, `merchant name`.
+- If vendor is not mapped, vendor is derived from description (noise tokens and trailing reference numbers removed).
 
 Debit/credit sign rule:
 - If debit is present and numeric, imported amount is negative (`-debit`).

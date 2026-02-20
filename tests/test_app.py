@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from expense_tracker import create_app, infer_category, normalize_text, extract_pattern
+from expense_tracker import create_app, infer_category, normalize_text, extract_pattern, parse_csv_transactions, derive_vendor
 
 
 @pytest.fixture()
@@ -541,3 +541,88 @@ def test_import_learning_integration_apple_to_subscriptions(client):
     assert row["category"] == "Subscriptions"
     assert rule["source"] == "import_override"
     assert rule["hits"] >= 1
+
+
+def test_signed_amount_from_debit_credit_mapping():
+    rows = [
+        ["2026-09-01", "Coffee Shop", "5.20", ""],
+        ["2026-09-02", "Refund", "", "11.25"],
+    ]
+    mapping = {"date": "0", "description": "1", "amount": "", "debit": "2", "credit": "3", "vendor": "", "category": ""}
+    parsed = parse_csv_transactions(rows, mapping, user_id=1)
+    assert parsed[0]["amount"] == -5.2
+    assert parsed[1]["amount"] == 11.25
+
+
+def test_vendor_mapped_column_is_stored_on_import(client):
+    register(client)
+    login(client)
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "date": "2026-09-03",
+            "amount": -25.0,
+            "description": "POS PURCHASE METRO 1123",
+            "vendor": "Metro",
+            "normalized_description": "pos purchase metro 1123",
+            "category": "",
+        }
+    ]
+    client.post('/import/csv', data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)}, follow_redirects=True)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT vendor FROM expenses WHERE date = '2026-09-03'").fetchone()
+    assert row["vendor"] == "Metro"
+
+
+def test_vendor_derived_from_description_when_missing():
+    assert derive_vendor("POS PURCHASE TIM HORTONS 88991") == "tim hortons"
+
+
+def test_vendor_first_learning_and_reuse(client):
+    register(client)
+    login(client)
+
+    first_import = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-09-04", "amount": -7.0, "description": "POS PURCHASE TIM HORTONS 101", "vendor": "Tim Hortons", "normalized_description": "pos purchase tim hortons 101", "category": ""}
+            ]),
+            "override_category_0": "Bakery & Coffee",
+        },
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in first_import.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rule = db.execute("SELECT key_type, pattern FROM category_rules WHERE source = 'import_override' ORDER BY id DESC LIMIT 1").fetchone()
+    assert rule["key_type"] == "vendor"
+
+    second_import = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-09-05", "amount": -8.0, "description": "TIM HORTONS #55", "vendor": "Tim Hortons", "normalized_description": "tim hortons 55", "category": ""}
+            ]),
+        },
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in second_import.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            """
+            SELECT c.name as category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.date = '2026-09-05'
+            """
+        ).fetchone()
+    assert row["category"] == "Bakery & Coffee"
