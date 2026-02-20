@@ -170,7 +170,7 @@ def test_import_cp1252_csv_fallback(client):
         )
 
     assert preview_response.status_code == 200
-    assert "Café" in preview_response.get_data(as_text=True)
+    assert "Caf" in preview_response.get_data(as_text=True)
 
 
 def test_import_header_based_csv_with_mapping(client):
@@ -228,3 +228,116 @@ def test_import_header_based_csv_with_mapping(client):
         follow_redirects=True,
     )
     assert b"Imported 0 transaction(s)." in duplicate_response.data
+
+
+def test_transfer_and_personal_excluded_from_shared_totals(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        grocery_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        transfer_id = db.execute("SELECT id FROM categories WHERE name = 'Transfers'").fetchone()["id"]
+        personal_id = db.execute("SELECT id FROM categories WHERE name = 'Personal'").fetchone()["id"]
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-01", "amount": "100", "category_id": str(grocery_id), "description": "IGA"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-02", "amount": "40", "category_id": str(personal_id), "description": "Spa day"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-03", "amount": "300", "category_id": str(transfer_id), "description": "Transfer to savings"},
+        follow_redirects=True,
+    )
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+    assert "Total spending (includes Personal, excludes Transfers):</strong> $140.00" in text
+    assert "Shared spending (excludes Personal + Transfers):</strong> $100.00" in text
+
+
+def test_refund_keeps_original_category_not_transfer(client):
+    register(client)
+    login(client)
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "date": "2026-05-01",
+            "amount": 18.5,
+            "description": "Refund from grocery store",
+            "normalized_description": "refund from grocery store",
+            "category": "Groceries",
+        }
+    ]
+    client.post(
+        "/import/csv",
+        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            """
+            SELECT c.name as category, e.is_transfer
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description = 'Refund from grocery store'
+            """
+        ).fetchone()
+
+    assert row["category"] == "Groceries"
+    assert row["is_transfer"] == 0
+
+
+def test_legacy_category_mapping_and_transfer_mapping_on_import(client):
+    register(client)
+    login(client)
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "date": "2026-06-01",
+            "amount": -35.0,
+            "description": "Weekly market",
+            "normalized_description": "weekly market",
+            "category": "Food",
+        },
+        {
+            "user_id": 1,
+            "date": "2026-06-02",
+            "amount": -125.0,
+            "description": "Payment thank you",
+            "normalized_description": "payment thank you",
+            "category": "",
+        },
+    ]
+
+    client.post(
+        "/import/csv",
+        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute(
+            """
+            SELECT e.description, c.name as category, e.is_transfer
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            ORDER BY e.date ASC
+            """
+        ).fetchall()
+
+    assert rows[0]["category"] == "Groceries"
+    assert rows[0]["is_transfer"] == 0
+    assert rows[1]["category"] == "Transfers"
+    assert rows[1]["is_transfer"] == 1

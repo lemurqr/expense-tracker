@@ -3,7 +3,7 @@ from datetime import date, timedelta
 
 from werkzeug.security import generate_password_hash
 
-from expense_tracker import create_app
+from expense_tracker import DEFAULT_CATEGORIES, create_app
 
 
 def main():
@@ -18,8 +18,7 @@ def main():
         )
         user_id = db.execute("SELECT id FROM users WHERE username = 'demo'").fetchone()["id"]
 
-        categories = ["Food", "Transport", "Housing", "Utilities", "Entertainment", "Other"]
-        for c in categories:
+        for c in DEFAULT_CATEGORIES:
             db.execute("INSERT INTO categories (user_id, name) VALUES (?, ?)", (user_id, c))
 
         category_rows = db.execute("SELECT id FROM categories WHERE user_id = ?", (user_id,)).fetchall()
