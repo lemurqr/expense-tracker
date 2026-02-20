@@ -7,7 +7,8 @@
     <button type="submit">Apply</button>
     <a class="button" href="{{ url_for('export_csv', month=selected_month) }}">Export CSV</a>
   </form>
-  <p><strong>Total:</strong> ${{ '%.2f'|format(total) }}</p>
+  <p><strong>Total spending (includes Personal, excludes Transfers):</strong> ${{ '%.2f'|format(total) }}</p>
+  <p><strong>Shared spending (excludes Personal + Transfers):</strong> ${{ '%.2f'|format(shared_total) }}</p>
 </section>
 
 <section class="grid-two">

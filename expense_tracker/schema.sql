@@ -23,6 +23,9 @@ CREATE TABLE expenses (
     amount REAL NOT NULL,
     category_id INTEGER,
     description TEXT,
+    is_transfer INTEGER NOT NULL DEFAULT 0,
+    is_personal INTEGER NOT NULL DEFAULT 0,
+    tags TEXT,
     FOREIGN KEY (user_id) REFERENCES users (id),
     FOREIGN KEY (category_id) REFERENCES categories (id)
 );

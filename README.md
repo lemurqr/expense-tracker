@@ -5,12 +5,54 @@ Simple Flask + SQLite expense tracking app with authentication, expenses CRUD, c
 ## Features
 - User registration and login
 - Add/edit/delete expenses
-- Category management
+- Category management with normalized category structure
 - Monthly summary dashboard
 - CSV export
 - CSV import with mapping UI (supports CIBC headerless format)
+- Auto-categorization from category aliases + merchant keywords
+- Transfer detection and exclusion from shared spending totals
+- Personal expense detection and exclusion from shared pool
+- Tag foundations (`David`, `Denys`, `Cookie`) stored on expenses
 - Sample data generator
 - Deployment-ready Procfile for Render/Railway
+
+## Category system
+The app now uses normalized categories:
+
+- **Food & Dining**: Groceries, Restaurants, Bakery & Coffee
+- **Housing & Home**: Mortgage, Condo Fees, Property Tax, Utilities, Home Maintenance & Repairs, Furniture & Appliances
+- **Transportation**: Gas & Fuel, Car Maintenance & Registration, Insurance, Parking, Public Transit
+- **Children**: School & Education, Sports & Activities, Camps & Lessons, Equipment
+- **Pets**: Pet Food & Care
+- **Lifestyle & Entertainment**: Entertainment, Subscriptions, Activities & Recreation, Tickets & Events
+- **Shopping & Personal Items**: General Shopping, Electronics, Cosmetics & Personal Care, Clothing
+- **Health & Wellness**: Pharmacy & Medical, Dentist & Dental
+- **Social & Gifts**: Alcohol & Wine, Gifts & Presents
+- **Travel & Vacation**: Travel & Vacation
+- **Personal**: excluded from shared pool calculations
+- **Transfers & Payments**: Credit Card Payments, Transfers
+
+Legacy category names are mapped into this structure during import and login-time migration.
+
+## Spending logic
+- **Transfers** are marked as non-spending and excluded from spending totals/summary charts.
+- **Personal** expenses are excluded from shared pool totals.
+- **Total spending** still includes Personal expenses (but excludes Transfers).
+- **Refunds** are not moved to a refund category; when a category is present, refunds stay in that original category.
+
+## Auto-categorization rules
+Import and manual entry use keyword-based auto-categorization when category is missing.
+
+Examples:
+- Restaurants: `restaurant`, `resto`, `cafe`, `sushi`, `mcdonald`, `tim hortons`, `starbucks`
+- Bakery & Coffee: `boulangerie`, `bakery`, `patisserie`
+- Utilities: `hydro`, `bell`, `videotron`, `virgin`
+- Sports & Activities: `hockey`, `tennis`, `ski`, `camp`, `piano`
+- Subscriptions: `netflix`, `disney`, `spotify`
+
+Transfer detection keywords include: `payment thank you`, `payment received`, `credit card payment`, `transfer`, `e-transfer`, `direct deposit`, `refund`, `return`, `points`.
+
+Personal auto-detect keywords include: `salon`, `spa`, `barber`, `gym`, `hobby`, `massage`.
 
 ## Quickstart
 ```bash
@@ -50,7 +92,7 @@ Debit/credit sign rule:
 - Else if credit is present and numeric, imported amount is positive (`+credit`).
 - Else the row is skipped.
 
-The importer also deduplicates by `(user_id, date, normalized description, signed amount)`.
+The importer deduplicates by `(user_id, date, normalized description, signed amount)`.
 
 ## Generate sample data
 ```bash

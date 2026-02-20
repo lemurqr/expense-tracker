@@ -21,7 +21,105 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
-DEFAULT_CATEGORIES = ["Food", "Transport", "Housing", "Utilities", "Entertainment", "Other"]
+DEFAULT_CATEGORIES = [
+    "Groceries",
+    "Restaurants",
+    "Bakery & Coffee",
+    "Mortgage",
+    "Condo Fees",
+    "Property Tax",
+    "Utilities",
+    "Home Maintenance & Repairs",
+    "Furniture & Appliances",
+    "Gas & Fuel",
+    "Car Maintenance & Registration",
+    "Insurance",
+    "Parking",
+    "Public Transit",
+    "School & Education",
+    "Sports & Activities",
+    "Camps & Lessons",
+    "Equipment",
+    "Pet Food & Care",
+    "Entertainment",
+    "Subscriptions",
+    "Activities & Recreation",
+    "Tickets & Events",
+    "General Shopping",
+    "Electronics",
+    "Cosmetics & Personal Care",
+    "Clothing",
+    "Pharmacy & Medical",
+    "Dentist & Dental",
+    "Alcohol & Wine",
+    "Gifts & Presents",
+    "Travel & Vacation",
+    "Personal",
+    "Credit Card Payments",
+    "Transfers",
+]
+LEGACY_CATEGORY_MAPPING = {
+    "food": "Groceries",
+    "boulangerie": "Bakery & Coffee",
+    "sushi": "Restaurants",
+    "eating out": "Restaurants",
+    "dine out": "Restaurants",
+    "house": "Home Maintenance & Repairs",
+    "home": "Home Maintenance & Repairs",
+    "furniture": "Furniture & Appliances",
+    "appliance": "Furniture & Appliances",
+    "deck": "Home Maintenance & Repairs",
+    "air conditioner": "Home Maintenance & Repairs",
+    "hydro-quebec": "Utilities",
+    "internet": "Utilities",
+    "virgin": "Utilities",
+    "gas": "Gas & Fuel",
+    "stm": "Public Transit",
+    "parking": "Parking",
+    "car registration": "Car Maintenance & Registration",
+    "car dl": "Car Maintenance & Registration",
+    "david hockey": "Sports & Activities",
+    "equipment david": "Equipment",
+    "david summer camp": "Camps & Lessons",
+    "david piano": "Activities & Recreation",
+    "ecole ste-anne": "School & Education",
+    "cookie food": "Pet Food & Care",
+    "amazon": "General Shopping",
+    "electronics": "Electronics",
+    "cosmetics": "Cosmetics & Personal Care",
+    "cinema": "Entertainment",
+    "tickets": "Tickets & Events",
+    "aquaparc": "Activities & Recreation",
+    "ski": "Activities & Recreation",
+    "tennis": "Activities & Recreation",
+    "mortgage": "Mortgage",
+    "condo fees": "Condo Fees",
+    "property tax": "Property Tax",
+    "payment thank you": "Credit Card Payments",
+    "transfer": "Transfers",
+    "return": "Transfers",
+    "points": "Transfers",
+}
+TRANSFER_KEYWORDS = [
+    "payment thank you",
+    "payment received",
+    "credit card payment",
+    "transfer",
+    "e-transfer",
+    "direct deposit",
+    "refund",
+    "return",
+    "points",
+]
+PERSONAL_KEYWORDS = ["salon", "spa", "barber", "gym", "hobby", "massage"]
+TAG_KEYWORDS = {"david": "David", "denys": "Denys", "cookie": "Cookie"}
+MERCHANT_RULES = [
+    ("Restaurants", ["restaurant", "resto", "cafe", "sushi", "mcdonald", "tim hortons", "starbucks"]),
+    ("Bakery & Coffee", ["boulangerie", "bakery", "patisserie"]),
+    ("Utilities", ["hydro", "bell", "videotron", "virgin"]),
+    ("Sports & Activities", ["hockey", "tennis", "ski", "camp", "piano"]),
+    ("Subscriptions", ["netflix", "disney", "spotify"]),
+]
 HEADER_ALIASES = {
     "date": ["date", "transaction date", "posting date"],
     "amount": ["amount"],
@@ -51,6 +149,53 @@ def parse_money(value):
 
 def normalize_description(value):
     return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def derive_tags(description):
+    normalized = normalize_description(description)
+    return [tag for keyword, tag in TAG_KEYWORDS.items() if keyword in normalized]
+
+
+def map_category_name(raw_category):
+    cleaned = (raw_category or "").strip()
+    if not cleaned:
+        return ""
+
+    if cleaned in DEFAULT_CATEGORIES:
+        return cleaned
+
+    normalized = normalize_description(cleaned)
+    return LEGACY_CATEGORY_MAPPING.get(normalized, cleaned)
+
+
+def infer_category(description, raw_category):
+    mapped = map_category_name(raw_category)
+    normalized_desc = normalize_description(description)
+
+    if mapped:
+        return mapped
+
+    for keyword in PERSONAL_KEYWORDS:
+        if keyword in normalized_desc:
+            return "Personal"
+
+    for category, keywords in MERCHANT_RULES:
+        if any(keyword in normalized_desc for keyword in keywords):
+            return category
+
+    if any(keyword in normalized_desc for keyword in TRANSFER_KEYWORDS):
+        return "Transfers"
+
+    return ""
+
+
+def is_transfer_transaction(description, category_name):
+    if category_name in {"Transfers", "Credit Card Payments"}:
+        return True
+    if category_name and category_name not in {"Transfers", "Credit Card Payments"}:
+        return False
+    normalized_desc = normalize_description(description)
+    return any(keyword in normalized_desc for keyword in TRANSFER_KEYWORDS)
 
 
 def detect_header_and_mapping(rows):
@@ -106,6 +251,8 @@ def parse_csv_transactions(rows, mapping, user_id):
         if not row_date or amount is None:
             continue
 
+        final_category = infer_category(row_description, row_category)
+
         parsed_rows.append(
             {
                 "user_id": user_id,
@@ -113,7 +260,8 @@ def parse_csv_transactions(rows, mapping, user_id):
                 "amount": round(amount, 2),
                 "description": row_description,
                 "normalized_description": normalize_description(row_description),
-                "category": row_category,
+                "category": final_category,
+                "tags": derive_tags(row_description),
             }
         )
     return parsed_rows
@@ -185,13 +333,63 @@ def create_app(test_config=None):
         else:
             g.user = get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
 
+    def ensure_schema_updates():
+        db = get_db()
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(expenses)").fetchall()}
+        if "is_transfer" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN is_transfer INTEGER NOT NULL DEFAULT 0")
+        if "is_personal" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN is_personal INTEGER NOT NULL DEFAULT 0")
+        if "tags" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN tags TEXT")
+        db.commit()
+
     def ensure_default_categories(user_id):
         db = get_db()
+        ensure_schema_updates()
+
+        existing = db.execute(
+            "SELECT id, name FROM categories WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        existing_lookup = {normalize_description(row["name"]): row["id"] for row in existing}
+
         for category in DEFAULT_CATEGORIES:
             db.execute(
                 "INSERT OR IGNORE INTO categories (user_id, name) VALUES (?, ?)",
                 (user_id, category),
             )
+
+        categories = db.execute(
+            "SELECT id, name FROM categories WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        lookup = {row["name"]: row["id"] for row in categories}
+
+        for old_name, new_name in LEGACY_CATEGORY_MAPPING.items():
+            old_id = existing_lookup.get(normalize_description(old_name))
+            new_id = lookup.get(new_name)
+            if old_id and new_id and old_id != new_id:
+                db.execute(
+                    "UPDATE expenses SET category_id = ? WHERE user_id = ? AND category_id = ?",
+                    (new_id, user_id, old_id),
+                )
+                db.execute(
+                    "DELETE FROM categories WHERE user_id = ? AND id = ?",
+                    (user_id, old_id),
+                )
+
+        db.execute(
+            """
+            UPDATE expenses
+            SET is_personal = CASE WHEN category_id = (SELECT id FROM categories WHERE user_id = ? AND name = 'Personal') THEN 1 ELSE 0 END,
+                is_transfer = CASE WHEN category_id IN (
+                    SELECT id FROM categories WHERE user_id = ? AND name IN ('Transfers', 'Credit Card Payments')
+                ) THEN 1 ELSE 0 END
+            WHERE user_id = ?
+            """,
+            (user_id, user_id, user_id),
+        )
         db.commit()
 
     @app.route("/")
@@ -246,6 +444,7 @@ def create_app(test_config=None):
             if error is None:
                 session.clear()
                 session["user_id"] = user["id"]
+                ensure_default_categories(user["id"])
                 return redirect(url_for("dashboard"))
 
             flash(error)
@@ -280,7 +479,7 @@ def create_app(test_config=None):
             SELECT COALESCE(c.name, 'Uncategorized') as category, ROUND(SUM(e.amount), 2) as total
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.user_id = ? AND e.date LIKE ?
+            WHERE e.user_id = ? AND e.date LIKE ? AND e.is_transfer = 0 AND e.is_personal = 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
             ORDER BY total DESC
             """,
@@ -288,7 +487,20 @@ def create_app(test_config=None):
         ).fetchall()
 
         total = db.execute(
-            "SELECT ROUND(COALESCE(SUM(amount), 0), 2) as total FROM expenses WHERE user_id = ? AND date LIKE ?",
+            """
+            SELECT ROUND(COALESCE(SUM(amount), 0), 2) as total
+            FROM expenses
+            WHERE user_id = ? AND date LIKE ? AND is_transfer = 0
+            """,
+            (g.user["id"], month_like),
+        ).fetchone()["total"]
+
+        shared_total = db.execute(
+            """
+            SELECT ROUND(COALESCE(SUM(amount), 0), 2) as total
+            FROM expenses
+            WHERE user_id = ? AND date LIKE ? AND is_transfer = 0 AND is_personal = 0
+            """,
             (g.user["id"], month_like),
         ).fetchone()["total"]
 
@@ -297,6 +509,7 @@ def create_app(test_config=None):
             expenses=expenses,
             summary=summary,
             total=total,
+            shared_total=shared_total,
             selected_month=selected_month,
         )
 
@@ -313,6 +526,20 @@ def create_app(test_config=None):
             amount = request.form["amount"]
             category_id = request.form.get("category_id") or None
             description = request.form.get("description", "").strip()
+            category_name = db.execute(
+                "SELECT name FROM categories WHERE id = ? AND user_id = ?",
+                (category_id, g.user["id"]),
+            ).fetchone()
+            resolved_category = category_name["name"] if category_name else ""
+            if not resolved_category:
+                resolved_category = infer_category(description, "")
+                if resolved_category:
+                    found = db.execute(
+                        "SELECT id FROM categories WHERE user_id = ? AND name = ?",
+                        (g.user["id"], resolved_category),
+                    ).fetchone()
+                    if found:
+                        category_id = found["id"]
 
             try:
                 amount_value = float(amount)
@@ -328,6 +555,17 @@ def create_app(test_config=None):
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (g.user["id"], expense_date, amount_value, category_id, description),
+            )
+            expense_id = db.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+            db.execute(
+                "UPDATE expenses SET is_transfer = ?, is_personal = ?, tags = ? WHERE id = ? AND user_id = ?",
+                (
+                    1 if is_transfer_transaction(description, resolved_category) else 0,
+                    1 if resolved_category == "Personal" else 0,
+                    json.dumps(derive_tags(description)),
+                    expense_id,
+                    g.user["id"],
+                ),
             )
             db.commit()
             flash("Expense added.")
@@ -359,6 +597,18 @@ def create_app(test_config=None):
             amount = request.form["amount"]
             category_id = request.form.get("category_id") or None
             description = request.form.get("description", "").strip()
+            category_name = db.execute(
+                "SELECT name FROM categories WHERE id = ? AND user_id = ?",
+                (category_id, g.user["id"]),
+            ).fetchone()
+            resolved_category = category_name["name"] if category_name else infer_category(description, "")
+            if category_name is None and resolved_category:
+                found = db.execute(
+                    "SELECT id FROM categories WHERE user_id = ? AND name = ?",
+                    (g.user["id"], resolved_category),
+                ).fetchone()
+                if found:
+                    category_id = found["id"]
 
             try:
                 amount_value = float(amount)
@@ -371,10 +621,20 @@ def create_app(test_config=None):
             db.execute(
                 """
                 UPDATE expenses
-                SET date = ?, amount = ?, category_id = ?, description = ?
+                SET date = ?, amount = ?, category_id = ?, description = ?, is_transfer = ?, is_personal = ?, tags = ?
                 WHERE id = ? AND user_id = ?
                 """,
-                (expense_date, amount_value, category_id, description, expense_id, g.user["id"]),
+                (
+                    expense_date,
+                    amount_value,
+                    category_id,
+                    description,
+                    1 if is_transfer_transaction(description, resolved_category) else 0,
+                    1 if resolved_category == "Personal" else 0,
+                    json.dumps(derive_tags(description)),
+                    expense_id,
+                    g.user["id"],
+                ),
             )
             db.commit()
             flash("Expense updated.")
@@ -524,15 +784,27 @@ def create_app(test_config=None):
                         continue
 
                     category_id = None
-                    if row.get("category"):
-                        category_id = category_lookup.get(row["category"].strip().lower())
+                    assigned_category = infer_category(row.get("description", ""), row.get("category", ""))
+                    if assigned_category:
+                        category_id = category_lookup.get(assigned_category.strip().lower())
+                    is_personal = assigned_category == "Personal"
+                    is_transfer = is_transfer_transaction(row.get("description", ""), assigned_category)
 
                     db.execute(
                         """
-                        INSERT INTO expenses (user_id, date, amount, category_id, description)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO expenses (user_id, date, amount, category_id, description, is_transfer, is_personal, tags)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (g.user["id"], row["date"], row["amount"], category_id, row["description"]),
+                        (
+                            g.user["id"],
+                            row["date"],
+                            row["amount"],
+                            category_id,
+                            row["description"],
+                            1 if is_transfer else 0,
+                            1 if is_personal else 0,
+                            json.dumps(row.get("tags") or derive_tags(row.get("description", ""))),
+                        ),
                     )
                     imported_count += 1
 
