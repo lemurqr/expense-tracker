@@ -1,4 +1,5 @@
 from pathlib import Path
+import io
 import json
 
 import pytest
@@ -187,6 +188,90 @@ def test_detect_cibc_headerless_when_only_credit_column_is_numeric():
     assert mapping["description"] == "1"
     assert mapping["debit"] == "2"
     assert mapping["credit"] == "3"
+
+
+def test_import_cibc_headerless_uses_first_non_empty_row_for_detection(client):
+    register(client)
+    login(client)
+
+    csv_content = "\n\n2026-01-10,Coffee Shop,5.50,,1234\n"
+    preview_response = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "cibc.csv")},
+        content_type="multipart/form-data",
+    )
+
+    assert preview_response.status_code == 200
+    assert b"Coffee Shop" in preview_response.data
+
+
+def test_import_csv_persists_mapping_in_session_after_preview(client):
+    register(client)
+    login(client)
+
+    fixture = Path(__file__).parent / "fixtures" / "header_based.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={
+                "action": "preview",
+                "map_date": "0",
+                "map_description": "1",
+                "map_amount": "",
+                "map_debit": "2",
+                "map_credit": "3",
+                "map_category": "4",
+                "csv_file": (f, "header_based.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert preview_response.status_code == 200
+
+    with client.session_transaction() as session_data:
+        saved_mapping = session_data.get("csv_mapping")
+
+    assert saved_mapping["date_col"] == "0"
+    assert saved_mapping["desc_col"] == "1"
+    assert saved_mapping["debit_col"] == "2"
+    assert saved_mapping["credit_col"] == "3"
+
+
+def test_import_csv_cibc_auto_detection_overrides_saved_mapping(client):
+    register(client)
+    login(client)
+
+    with client.session_transaction() as session_data:
+        session_data["csv_mapping"] = {
+            "date_col": "2",
+            "desc_col": "3",
+            "amount_col": "1",
+            "debit_col": "",
+            "credit_col": "",
+            "vendor_col": "",
+            "category_col": "",
+            "has_header": True,
+            "detected_format": "header",
+        }
+
+    fixture = Path(__file__).parent / "fixtures" / "cibc_headerless.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={"action": "preview", "csv_file": (f, "cibc_headerless.csv")},
+            content_type="multipart/form-data",
+        )
+
+    assert b"Coffee Shop" in preview_response.data
+
+    with client.session_transaction() as session_data:
+        saved_mapping = session_data.get("csv_mapping")
+
+    assert saved_mapping["date_col"] == "0"
+    assert saved_mapping["desc_col"] == "1"
+    assert saved_mapping["debit_col"] == "2"
+    assert saved_mapping["credit_col"] == "3"
+    assert saved_mapping["detected_format"] == "cibc_headerless"
 
 
 def test_import_cp1252_csv_fallback(client):
