@@ -3,7 +3,15 @@ import json
 
 import pytest
 
-from expense_tracker import create_app, infer_category, normalize_text, extract_pattern, parse_csv_transactions, derive_vendor
+from expense_tracker import (
+    create_app,
+    infer_category,
+    normalize_text,
+    extract_pattern,
+    parse_csv_transactions,
+    derive_vendor,
+    detect_header_and_mapping,
+)
 
 
 @pytest.fixture()
@@ -155,6 +163,30 @@ def test_import_cibc_headerless_csv(client):
         ).fetchall()
     assert rows[0]["amount"] == -5.5
     assert rows[1]["amount"] == 1200.0
+
+
+def test_detect_cibc_headerless_with_extra_columns_and_trailing_empties():
+    rows = [["2026-01-10", "Coffee Shop", "5.50", "", "CARD123", "", ""]]
+
+    has_header, mapping = detect_header_and_mapping(rows)
+
+    assert has_header is False
+    assert mapping["date"] == "0"
+    assert mapping["description"] == "1"
+    assert mapping["debit"] == "2"
+    assert mapping["credit"] == "3"
+
+
+def test_detect_cibc_headerless_when_only_credit_column_is_numeric():
+    rows = [["2026-01-11", "Payroll", "", "1200.00", "EXTRA"]]
+
+    has_header, mapping = detect_header_and_mapping(rows)
+
+    assert has_header is False
+    assert mapping["date"] == "0"
+    assert mapping["description"] == "1"
+    assert mapping["debit"] == "2"
+    assert mapping["credit"] == "3"
 
 
 def test_import_cp1252_csv_fallback(client):
