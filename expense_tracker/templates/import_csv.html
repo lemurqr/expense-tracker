@@ -95,7 +95,7 @@
       </thead>
       <tbody>
         {% for row in preview_rows %}
-        <tr class="preview-row" data-confidence="{{ row.confidence }}">
+        <tr class="preview-row" data-confidence="{{ row.confidence }}" data-vendor-normalized="{{ (row.vendor or '')|lower|replace('"', '') }}">
           <td>{{ row.date }}</td>
           <td>{{ '%.2f'|format(row.amount) }}</td>
           <td>{{ row.description }}</td>
@@ -107,6 +107,10 @@
               <option value="{{ category.name }}">{{ category.name }}</option>
               {% endfor %}
             </select>
+            <label class="inline-form apply-all-vendor-option" hidden>
+              <input type="checkbox" class="apply-category-to-vendor" data-index="{{ loop.index0 }}">
+              Apply this category to all rows with same normalized vendor in this preview.
+            </label>
           </td>
           <td>
             {% if row.suggested_source == 'transfer' %}
@@ -145,6 +149,88 @@
 {% endif %}
 
 <script>
+  const normalizePreviewVendor = (value) => {
+    return (value || '')
+      .toLowerCase()
+      .replace(/[^\w\s/]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const applyCategoryToMatchingVendors = (sourceSelect) => {
+    const sourceRow = sourceSelect.closest('.preview-row');
+    if (!sourceRow) {
+      return;
+    }
+
+    const sourceCategory = sourceSelect.value;
+    const sourceVendorInput = sourceRow.querySelector('input[name^="override_vendor_"]');
+    const normalizedVendor = normalizePreviewVendor(sourceVendorInput ? sourceVendorInput.value : '');
+
+    if (!sourceCategory || !normalizedVendor) {
+      return;
+    }
+
+    document.querySelectorAll('.preview-row').forEach((row) => {
+      const vendorInput = row.querySelector('input[name^="override_vendor_"]');
+      const rowVendor = normalizePreviewVendor(vendorInput ? vendorInput.value : '');
+      if (rowVendor !== normalizedVendor) {
+        return;
+      }
+      const categorySelect = row.querySelector('select[name^="override_category_"]');
+      if (categorySelect) {
+        categorySelect.value = sourceCategory;
+        toggleApplyAllOption(categorySelect);
+      }
+    });
+  };
+
+  const toggleApplyAllOption = (categorySelect) => {
+    const row = categorySelect.closest('.preview-row');
+    if (!row) {
+      return;
+    }
+    const option = row.querySelector('.apply-all-vendor-option');
+    const checkbox = row.querySelector('.apply-category-to-vendor');
+    if (!option || !checkbox) {
+      return;
+    }
+
+    if (categorySelect.value) {
+      option.hidden = false;
+    } else {
+      option.hidden = true;
+      checkbox.checked = false;
+    }
+  };
+
+  document.querySelectorAll('select[name^="override_category_"]').forEach((select) => {
+    toggleApplyAllOption(select);
+    select.addEventListener('change', () => {
+      toggleApplyAllOption(select);
+    });
+  });
+
+  document.querySelectorAll('.apply-category-to-vendor').forEach((checkbox) => {
+    checkbox.addEventListener('change', (event) => {
+      if (!event.target.checked) {
+        return;
+      }
+
+      const row = event.target.closest('.preview-row');
+      if (!row) {
+        return;
+      }
+      const sourceSelect = row.querySelector('select[name^="override_category_"]');
+      if (!sourceSelect) {
+        return;
+      }
+
+      applyCategoryToMatchingVendors(sourceSelect);
+      event.target.checked = false;
+    });
+  });
+
   const lowConfidenceToggle = document.getElementById('lowConfidenceToggle');
   if (lowConfidenceToggle) {
     lowConfidenceToggle.addEventListener('change', (event) => {

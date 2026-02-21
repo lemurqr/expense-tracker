@@ -317,6 +317,61 @@ def test_import_csv_get_prefills_saved_mapping_for_user(client):
     assert '<option value="0" selected>Column 1</option>' in html
     assert '<option value="1" selected>Column 2</option>' in html
 
+
+def test_import_confirm_apply_same_vendor_learns_single_vendor_rule(client):
+    register(client)
+    login(client)
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "date": "2026-01-10",
+            "amount": -5.5,
+            "description": "Coffee order one",
+            "normalized_description": "coffee order one",
+            "vendor": "Coffee Shop Montreal",
+            "category": "",
+            "auto_category": "",
+        },
+        {
+            "user_id": 1,
+            "date": "2026-01-11",
+            "amount": -8.25,
+            "description": "Coffee order two",
+            "normalized_description": "coffee order two",
+            "vendor": "Coffee Shop Montreal",
+            "category": "",
+            "auto_category": "",
+        },
+    ]
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps(parsed_rows),
+            "override_category_0": "Restaurants",
+            "override_category_1": "Restaurants",
+        },
+        follow_redirects=True,
+    )
+
+    assert b"Imported 2 transaction(s)." in confirm_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rule_count = db.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM category_rules
+            WHERE user_id = ? AND key_type = ? AND pattern = ?
+            """,
+            (1, "vendor", "coffee shop montreal"),
+        ).fetchone()["count"]
+
+    assert rule_count == 1
+
+
 def test_import_cp1252_csv_fallback(client):
     register(client)
     login(client)
