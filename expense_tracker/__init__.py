@@ -376,6 +376,74 @@ def detect_header_and_mapping(rows):
     return has_header, mapping
 
 
+def detect_cibc_headerless_mapping(rows):
+    def is_parseable_date(value):
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return False
+
+        for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%d/%m/%y"]:
+            try:
+                datetime.strptime(cleaned, fmt)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def is_numeric_or_blank(value):
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return True
+        return parse_money(cleaned) is not None
+
+    first_non_empty_row = None
+    for raw_row in rows:
+        trimmed_row = [cell.strip() for cell in raw_row]
+        if any(trimmed_row):
+            first_non_empty_row = trimmed_row
+            break
+
+    if first_non_empty_row is None or len(first_non_empty_row) < 4:
+        return None
+
+    if (
+        is_parseable_date(first_non_empty_row[0])
+        and is_numeric_or_blank(first_non_empty_row[2])
+        and is_numeric_or_blank(first_non_empty_row[3])
+    ):
+        return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": ""}
+
+    return None
+
+
+def build_csv_mapping_payload(mapping, has_header, detected_format):
+    return {
+        "date_col": mapping.get("date", ""),
+        "desc_col": mapping.get("description", ""),
+        "amount_col": mapping.get("amount", ""),
+        "debit_col": mapping.get("debit", ""),
+        "credit_col": mapping.get("credit", ""),
+        "vendor_col": mapping.get("vendor", ""),
+        "category_col": mapping.get("category", ""),
+        "has_header": bool(has_header),
+        "detected_format": detected_format,
+    }
+
+
+def mapping_from_payload(payload):
+    if not payload:
+        return {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+    return {
+        "date": payload.get("date_col", ""),
+        "description": payload.get("desc_col", ""),
+        "vendor": payload.get("vendor_col", ""),
+        "amount": payload.get("amount_col", ""),
+        "debit": payload.get("debit_col", ""),
+        "credit": payload.get("credit_col", ""),
+        "category": payload.get("category_col", ""),
+    }
+
+
 def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
     parsed_rows = []
     for raw_row in rows:
@@ -1121,6 +1189,10 @@ def create_app(test_config=None):
     @app.route("/import/csv", methods=("GET", "POST"))
     @login_required
     def import_csv():
+        default_mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+        saved_payload = session.get("csv_mapping") or {}
+        saved_mapping = mapping_from_payload(saved_payload)
+
         if request.method == "POST":
             action = request.form.get("action", "preview")
 
@@ -1197,6 +1269,20 @@ def create_app(test_config=None):
                         learn_rule(g.user["id"], row.get("description", ""), row.get("vendor", ""), category_id, "import_override")
                     imported_count += 1
 
+                mapping = {
+                    "date": request.form.get("map_date", ""),
+                    "description": request.form.get("map_description", ""),
+                    "vendor": request.form.get("map_vendor", ""),
+                    "amount": request.form.get("map_amount", ""),
+                    "debit": request.form.get("map_debit", ""),
+                    "credit": request.form.get("map_credit", ""),
+                    "category": request.form.get("map_category", ""),
+                }
+                detected_format = request.form.get("detected_format", "manual")
+                has_header = request.form.get("has_header", "0") == "1"
+                session["csv_mapping"] = build_csv_mapping_payload(mapping, has_header, detected_format)
+                session.modified = True
+
                 db.commit()
                 flash(f"Imported {imported_count} transaction(s).")
                 return redirect(url_for("dashboard"))
@@ -1204,30 +1290,41 @@ def create_app(test_config=None):
             file = request.files.get("csv_file")
             if file is None or not file.filename:
                 flash("Please choose a CSV file.")
-                return render_template("import_csv.html", preview_rows=[], mapping={}, columns=[])
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], parsed_rows_json="[]", detected_mode=None)
 
             file_bytes = file.read()
             content = decode_csv_bytes(file_bytes)
             if content is None:
                 flash("Could not read file encoding. Please re-save as CSV UTF-8.")
-                return render_template("import_csv.html", preview_rows=[], mapping={}, columns=[])
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], parsed_rows_json="[]", detected_mode=None)
 
             rows = list(csv.reader(io.StringIO(content)))
             rows = [row for row in rows if any(cell.strip() for cell in row)]
             if not rows:
                 flash("CSV is empty.")
-                return render_template("import_csv.html", preview_rows=[], mapping={}, columns=[])
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], parsed_rows_json="[]", detected_mode=None)
 
             has_header, inferred_mapping = detect_header_and_mapping(rows)
+            detected_format = "header" if has_header else "headerless"
+            auto_mapping = detect_cibc_headerless_mapping(rows) if not has_header else None
+            if auto_mapping:
+                inferred_mapping = auto_mapping
+                detected_format = "cibc_headerless"
+
             mapping = {
-                "date": request.form.get("map_date", inferred_mapping["date"]),
-                "description": request.form.get("map_description", inferred_mapping["description"]),
-                "vendor": request.form.get("map_vendor", inferred_mapping["vendor"]),
-                "amount": request.form.get("map_amount", inferred_mapping["amount"]),
-                "debit": request.form.get("map_debit", inferred_mapping["debit"]),
-                "credit": request.form.get("map_credit", inferred_mapping["credit"]),
-                "category": request.form.get("map_category", inferred_mapping["category"]),
+                "date": request.form.get("map_date") if request.form.get("map_date") is not None else inferred_mapping["date"],
+                "description": request.form.get("map_description") if request.form.get("map_description") is not None else inferred_mapping["description"],
+                "vendor": request.form.get("map_vendor") if request.form.get("map_vendor") is not None else inferred_mapping["vendor"],
+                "amount": request.form.get("map_amount") if request.form.get("map_amount") is not None else inferred_mapping["amount"],
+                "debit": request.form.get("map_debit") if request.form.get("map_debit") is not None else inferred_mapping["debit"],
+                "credit": request.form.get("map_credit") if request.form.get("map_credit") is not None else inferred_mapping["credit"],
+                "category": request.form.get("map_category") if request.form.get("map_category") is not None else inferred_mapping["category"],
             }
+
+            if not auto_mapping:
+                for field in mapping:
+                    if mapping[field] == "" and saved_mapping.get(field, "") != "":
+                        mapping[field] = saved_mapping[field]
 
             data_rows = rows[1:] if has_header else rows
             bank_type = detect_bank_type(rows[0] if has_header else [])
@@ -1248,6 +1345,9 @@ def create_app(test_config=None):
             preview_rows = parsed_rows[:20]
             columns = rows[0] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
 
+            session["csv_mapping"] = build_csv_mapping_payload(mapping, has_header, detected_format)
+            session.modified = True
+
             return render_template(
                 "import_csv.html",
                 preview_rows=preview_rows,
@@ -1256,16 +1356,20 @@ def create_app(test_config=None):
                 categories=category_rows,
                 parsed_rows_json=json.dumps(parsed_rows),
                 detected_mode="header" if has_header else "headerless",
+                has_header=has_header,
+                detected_format=detected_format,
             )
 
         return render_template(
             "import_csv.html",
             preview_rows=[],
-            mapping={"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""},
+            mapping=saved_mapping or default_mapping,
             columns=[],
             categories=[],
             parsed_rows_json="[]",
             detected_mode=None,
+            has_header=saved_payload.get("has_header", False),
+            detected_format=saved_payload.get("detected_format", ""),
         )
 
     @app.route("/rules")

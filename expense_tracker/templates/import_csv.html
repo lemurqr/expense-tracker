@@ -111,6 +111,15 @@
 
     <input type="hidden" name="action" value="confirm">
     <input type="hidden" name="parsed_rows" value='{{ parsed_rows_json|safe }}'>
+    <input type="hidden" name="map_date" value="{{ mapping.date }}">
+    <input type="hidden" name="map_description" value="{{ mapping.description }}">
+    <input type="hidden" name="map_amount" value="{{ mapping.amount }}">
+    <input type="hidden" name="map_debit" value="{{ mapping.debit }}">
+    <input type="hidden" name="map_credit" value="{{ mapping.credit }}">
+    <input type="hidden" name="map_vendor" value="{{ mapping.vendor }}">
+    <input type="hidden" name="map_category" value="{{ mapping.category }}">
+    <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
+    <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <button type="submit">Confirm Import</button>
   </form>
   {% else %}
