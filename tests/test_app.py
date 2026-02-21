@@ -274,6 +274,49 @@ def test_import_csv_cibc_auto_detection_overrides_saved_mapping(client):
     assert saved_mapping["detected_format"] == "cibc_headerless"
 
 
+
+def test_import_csv_auto_maps_headerless_with_extra_columns_and_shows_note(client):
+    register(client)
+    login(client)
+
+    csv_content = "2026-01-10,Coffee Shop,5.50,,****1234\n"
+    preview_response = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "cibc-extra.csv")},
+        content_type="multipart/form-data",
+    )
+
+    assert preview_response.status_code == 200
+    assert b"Coffee Shop" in preview_response.data
+    assert b"Auto-mapped CIBC headerless format" in preview_response.data
+
+
+def test_import_csv_get_prefills_saved_mapping_for_user(client):
+    register(client)
+    login(client)
+
+    with client.session_transaction() as session_data:
+        session_data["csv_mapping_by_user"] = {
+            "1": {
+                "date_col": "0",
+                "desc_col": "1",
+                "amount_col": "",
+                "debit_col": "2",
+                "credit_col": "3",
+                "vendor_col": "",
+                "category_col": "",
+                "has_header": False,
+                "detected_format": "cibc_headerless",
+            }
+        }
+
+    response = client.get("/import/csv")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert '<option value="0" selected>Column 1</option>' in html
+    assert '<option value="1" selected>Column 2</option>' in html
+
 def test_import_cp1252_csv_fallback(client):
     register(client)
     login(client)

@@ -82,6 +82,9 @@
 <section class="card">
   <h3>Preview (first 20 rows)</h3>
   <p>Detected format: <strong>{{ detected_mode }}</strong></p>
+  {% if auto_mapping_applied %}
+  <p><small>Auto-mapped CIBC headerless format: Date=1, Desc=2, Debit=3, Credit=4 (ignored extra columns).</small></p>
+  {% endif %}
   {% if preview_rows %}
   <form method="post">
     <table>
