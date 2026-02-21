@@ -169,25 +169,27 @@ def test_import_cibc_headerless_csv(client):
 def test_detect_cibc_headerless_with_extra_columns_and_trailing_empties():
     rows = [["2026-01-10", "Coffee Shop", "5.50", "", "CARD123", "", ""]]
 
-    has_header, mapping = detect_header_and_mapping(rows)
+    has_header, mapping, header_row_index = detect_header_and_mapping(rows)
 
     assert has_header is False
     assert mapping["date"] == "0"
     assert mapping["description"] == "1"
     assert mapping["debit"] == "2"
     assert mapping["credit"] == "3"
+    assert header_row_index == 0
 
 
 def test_detect_cibc_headerless_when_only_credit_column_is_numeric():
     rows = [["2026-01-11", "Payroll", "", "1200.00", "EXTRA"]]
 
-    has_header, mapping = detect_header_and_mapping(rows)
+    has_header, mapping, header_row_index = detect_header_and_mapping(rows)
 
     assert has_header is False
     assert mapping["date"] == "0"
     assert mapping["description"] == "1"
     assert mapping["debit"] == "2"
     assert mapping["credit"] == "3"
+    assert header_row_index == 0
 
 
 def test_import_cibc_headerless_uses_first_non_empty_row_for_detection(client):
@@ -409,7 +411,7 @@ def test_import_header_based_csv_with_mapping(client):
             content_type="multipart/form-data",
         )
 
-    assert b"Detected format: <strong>header</strong>" in preview_response.data
+    assert b"Detected format: <strong>headered</strong>" in preview_response.data
     assert b"Grocery Store" in preview_response.data
 
     parsed_rows = [
@@ -764,7 +766,8 @@ def test_signed_amount_from_debit_credit_mapping():
         ["2026-09-02", "Refund", "", "11.25"],
     ]
     mapping = {"date": "0", "description": "1", "amount": "", "debit": "2", "credit": "3", "vendor": "", "category": ""}
-    parsed = parse_csv_transactions(rows, mapping, user_id=1)
+    parsed, skipped = parse_csv_transactions(rows, mapping, user_id=1)
+    assert skipped == 0
     assert parsed[0]["amount"] == -5.2
     assert parsed[1]["amount"] == 11.25
 
@@ -772,15 +775,17 @@ def test_signed_amount_from_debit_credit_mapping():
 def test_amex_amount_is_normalized_to_canonical_sign_for_charges():
     rows = [["2026-09-10", "Restaurant", "20.00"]]
     mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": ""}
-    parsed = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
+    parsed, skipped = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
+    assert skipped == 0
     assert parsed[0]["amount"] == -20.0
 
 
 def test_amex_payment_amount_embedded_in_description_is_extracted_and_cleaned():
     rows = [["2026-09-11", "Online payment -162.67", ""]]
     mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": ""}
-    parsed = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
+    parsed, skipped = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
 
+    assert skipped == 0
     assert parsed[0]["amount"] == 162.67
     assert parsed[0]["description"] == "Online payment"
     assert parsed[0]["category"] == "Credit Card Payments"
@@ -963,3 +968,58 @@ def test_preview_renders_confidence_badges(client):
     assert "Legend:" in html
     assert "confidence-badge" in html
     assert "Source" in html
+
+def test_apply_same_vendor_endpoint_updates_preview_state(client):
+    register(client)
+    login(client)
+
+    with client.session_transaction() as sess:
+        sess["import_preview_by_user"] = {
+            "1": {
+                "rows": [
+                    {"row_index": 0, "description": "Coffee 1", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "suggested_source": "unknown"},
+                    {"row_index": 1, "description": "Coffee 2", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "suggested_source": "unknown"},
+                    {"row_index": 2, "description": "Other", "vendor": "Book Store", "vendor_key": "book store", "category": "", "confidence": 25, "suggested_source": "unknown"},
+                ]
+            }
+        }
+
+    response = client.post('/import/csv/apply_vendor', json={"vendor_key": "coffee shop", "category_name": "Restaurants"})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["updated_count"] == 2
+    assert {item["row_index"] for item in payload["updated_rows"]} == {0, 1}
+
+    with client.session_transaction() as sess:
+        rows = sess["import_preview_by_user"]["1"]["rows"]
+    assert rows[0]["override_category"] == "Restaurants"
+    assert rows[1]["override_category"] == "Restaurants"
+    assert rows[2].get("override_category", "") == ""
+
+
+def test_amex_header_auto_mapping_with_summary_rows(client):
+    register(client)
+    login(client)
+
+    fixture = Path(__file__).parent / "fixtures" / "amex_with_summary.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={"action": "preview", "csv_file": (f, "amex.csv")},
+            content_type="multipart/form-data",
+        )
+
+    text = preview_response.get_data(as_text=True)
+    assert preview_response.status_code == 200
+    assert "header_row_index: <strong>2</strong>" in text
+    assert "RESTAURANT XYZ" in text
+    assert "ONLINE PAYMENT" in text
+
+    with client.session_transaction() as sess:
+        mapping = sess["csv_mapping"]
+    assert mapping["date_col"] == "0"
+    assert mapping["desc_col"] == "2"
+    assert mapping["amount_col"] == "3"
+    assert mapping["vendor_col"] == "4"
+    assert mapping["debit_col"] == ""
+    assert mapping["credit_col"] == ""

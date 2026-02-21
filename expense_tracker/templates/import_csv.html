@@ -82,7 +82,7 @@
 <section class="card">
   <h3>Preview (first 20 rows)</h3>
   <p class="legend-text">Legend: <span class="confidence-badge confidence-high">High</span> = high confidence, <span class="confidence-badge confidence-medium">Medium</span> = review, <span class="confidence-badge confidence-low">Low</span> = needs review.</p>
-  <p>Detected format: <strong>{{ detected_mode }}</strong></p>
+  <p>Detected format: <strong>{{ detected_mode }}</strong>{% if header_row_index is not none %} · header_row_index: <strong>{{ header_row_index }}</strong>{% endif %}{% if skipped_rows %} · skipped_rows: <strong>{{ skipped_rows }}</strong>{% endif %}</p>
   {% if auto_mapping_applied %}
   <p><small>Auto-mapped CIBC headerless format: Date=1, Desc=2, Debit=3, Credit=4 (ignored extra columns).</small></p>
   {% endif %}
@@ -91,39 +91,40 @@
     <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle"> Show only low-confidence (&lt; 80)</label>
     <table>
       <thead>
-        <tr><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Suggested Category</th><th>Confidence</th><th>Source</th></tr>
+        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Suggested Category</th><th>Confidence</th><th>Source</th></tr>
       </thead>
       <tbody>
         {% for row in preview_rows %}
-        <tr class="preview-row" data-confidence="{{ row.confidence }}" data-vendor-normalized="{{ (row.vendor or '')|lower|replace('"', '') }}">
+        <tr class="preview-row" data-row-index="{{ row.row_index }}" data-vendor-key="{{ row.vendor_key }}" data-confidence="{{ row.confidence }}">
+          <td><input type="checkbox" class="row-check" checked></td>
           <td>{{ row.date }}</td>
           <td>{{ '%.2f'|format(row.amount) }}</td>
           <td>{{ row.description }}</td>
-          <td><input name="override_vendor_{{ loop.index0 }}" value="{{ row.vendor or "" }}"></td>
+          <td><input name="override_vendor_{{ row.row_index }}" value="{{ row.vendor or "" }}"></td>
           <td>
-            <select name="override_category_{{ loop.index0 }}">
+            <select name="override_category_{{ row.row_index }}" class="category-select">
               <option value="">Use suggested ({{ row.category or 'Uncategorized' }})</option>
               {% for category in categories %}
               <option value="{{ category.name }}">{{ category.name }}</option>
               {% endfor %}
             </select>
             <label class="inline-form apply-all-vendor-option" hidden>
-              <input type="checkbox" class="apply-category-to-vendor" data-index="{{ loop.index0 }}">
+              <input type="checkbox" class="apply-category-to-vendor" data-index="{{ row.row_index }}">
               Apply this category to all rows with same normalized vendor in this preview.
             </label>
           </td>
           <td>
             {% if row.suggested_source == 'transfer' %}
-              <span class="confidence-badge confidence-transfer">Transfer</span>
+              <span class="confidence-badge confidence-transfer badge-transfer">Transfer</span>
             {% elif row.confidence >= 80 %}
-              <span class="confidence-badge confidence-high">{{ row.confidence }} ({{ row.confidence_label }})</span>
+              <span class="confidence-badge confidence-high badge-high">{{ row.confidence }} ({{ row.confidence_label }})</span>
             {% elif row.confidence >= 50 %}
-              <span class="confidence-badge confidence-medium">{{ row.confidence }} ({{ row.confidence_label }})</span>
+              <span class="confidence-badge confidence-medium badge-medium">{{ row.confidence }} ({{ row.confidence_label }})</span>
             {% else %}
-              <span class="confidence-badge confidence-low">{{ row.confidence }} ({{ row.confidence_label }})</span>
+              <span class="confidence-badge confidence-low badge-low">{{ row.confidence }} ({{ row.confidence_label }})</span>
             {% endif %}
           </td>
-          <td><small>{{ row.suggested_source }}</small></td>
+          <td class="source-cell"><small>{{ row.suggested_source }}</small></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -140,6 +141,7 @@
     <input type="hidden" name="map_category" value="{{ mapping.category }}">
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
+    <p id="applyVendorMessage" class="legend-text"></p>
     <button type="submit">Confirm Import</button>
   </form>
   {% else %}
@@ -149,95 +151,95 @@
 {% endif %}
 
 <script>
-  const normalizePreviewVendor = (value) => {
-    return (value || '')
-      .toLowerCase()
-      .replace(/[^\w\s/]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  };
+  const lowConfidenceToggle = document.getElementById('lowConfidenceToggle');
+  const applyVendorMessage = document.getElementById('applyVendorMessage');
 
-  const applyCategoryToMatchingVendors = (sourceSelect) => {
-    const sourceRow = sourceSelect.closest('.preview-row');
-    if (!sourceRow) {
-      return;
-    }
-
-    const sourceCategory = sourceSelect.value;
-    const sourceVendorInput = sourceRow.querySelector('input[name^="override_vendor_"]');
-    const normalizedVendor = normalizePreviewVendor(sourceVendorInput ? sourceVendorInput.value : '');
-
-    if (!sourceCategory || !normalizedVendor) {
-      return;
-    }
-
-    document.querySelectorAll('.preview-row').forEach((row) => {
-      const vendorInput = row.querySelector('input[name^="override_vendor_"]');
-      const rowVendor = normalizePreviewVendor(vendorInput ? vendorInput.value : '');
-      if (rowVendor !== normalizedVendor) {
-        return;
-      }
-      const categorySelect = row.querySelector('select[name^="override_category_"]');
-      if (categorySelect) {
-        categorySelect.value = sourceCategory;
-        toggleApplyAllOption(categorySelect);
-      }
-    });
+  const badgeClassFor = (source, confidence) => {
+    if (source === 'transfer') return ['confidence-transfer', 'badge-transfer'];
+    if (confidence >= 80) return ['confidence-high', 'badge-high'];
+    if (confidence >= 50) return ['confidence-medium', 'badge-medium'];
+    return ['confidence-low', 'badge-low'];
   };
 
   const toggleApplyAllOption = (categorySelect) => {
     const row = categorySelect.closest('.preview-row');
-    if (!row) {
-      return;
-    }
+    if (!row) return;
     const option = row.querySelector('.apply-all-vendor-option');
     const checkbox = row.querySelector('.apply-category-to-vendor');
-    if (!option || !checkbox) {
-      return;
-    }
-
-    if (categorySelect.value) {
-      option.hidden = false;
-    } else {
-      option.hidden = true;
-      checkbox.checked = false;
-    }
+    if (!option || !checkbox) return;
+    option.hidden = !categorySelect.value;
+    if (!categorySelect.value) checkbox.checked = false;
   };
 
-  document.querySelectorAll('select[name^="override_category_"]').forEach((select) => {
+  const showAppliedMessage = (count) => {
+    if (!applyVendorMessage) return;
+    applyVendorMessage.textContent = `Applied to ${count} rows`;
+  };
+
+  document.querySelectorAll('.category-select').forEach((select) => {
     toggleApplyAllOption(select);
-    select.addEventListener('change', () => {
-      toggleApplyAllOption(select);
-    });
+    select.addEventListener('change', () => toggleApplyAllOption(select));
   });
 
   document.querySelectorAll('.apply-category-to-vendor').forEach((checkbox) => {
-    checkbox.addEventListener('change', (event) => {
-      if (!event.target.checked) {
-        return;
-      }
-
+    checkbox.addEventListener('change', async (event) => {
+      if (!event.target.checked) return;
       const row = event.target.closest('.preview-row');
-      if (!row) {
-        return;
-      }
-      const sourceSelect = row.querySelector('select[name^="override_category_"]');
-      if (!sourceSelect) {
+      const select = row ? row.querySelector('.category-select') : null;
+      if (!row || !select || !select.value) {
+        event.target.checked = false;
         return;
       }
 
-      applyCategoryToMatchingVendors(sourceSelect);
+      const payload = { vendor_key: row.dataset.vendorKey || '', category_name: select.value };
+      const response = await fetch('/import/csv/apply_vendor', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        event.target.checked = false;
+        return;
+      }
+
+      const result = await response.json();
+      (result.updated_rows || []).forEach((updated) => {
+        const target = document.querySelector(`.preview-row[data-row-index="${updated.row_index}"]`);
+        if (!target) return;
+        const rowCheck = target.querySelector('.row-check');
+        const rowSelect = target.querySelector('.category-select');
+        const badge = target.querySelector('.confidence-badge');
+        const sourceCell = target.querySelector('.source-cell');
+
+        if (rowCheck) rowCheck.checked = true;
+        if (rowSelect) {
+          rowSelect.value = updated.category;
+          toggleApplyAllOption(rowSelect);
+        }
+        if (badge) {
+          badge.classList.remove('confidence-high', 'confidence-medium', 'confidence-low', 'confidence-transfer', 'badge-high', 'badge-medium', 'badge-low', 'badge-transfer');
+          const classes = badgeClassFor(updated.source, updated.confidence);
+          badge.classList.add(classes[0], classes[1]);
+          badge.textContent = updated.source === 'transfer' ? 'Transfer' : `${updated.confidence} (${updated.confidence_label})`;
+        }
+        if (sourceCell) sourceCell.innerHTML = `<small>${updated.source}</small>`;
+
+        target.dataset.confidence = updated.confidence;
+        target.classList.add('updated-row');
+        setTimeout(() => target.classList.remove('updated-row'), 1200);
+      });
+
+      showAppliedMessage(result.updated_count || 0);
       event.target.checked = false;
     });
   });
 
-  const lowConfidenceToggle = document.getElementById('lowConfidenceToggle');
   if (lowConfidenceToggle) {
     lowConfidenceToggle.addEventListener('change', (event) => {
       document.querySelectorAll('.preview-row').forEach((row) => {
         const confidence = parseInt(row.dataset.confidence || '0', 10);
-        const shouldHide = event.target.checked && confidence >= 80;
-        row.style.display = shouldHide ? 'none' : '';
+        row.style.display = event.target.checked && confidence >= 80 ? 'none' : '';
       });
     });
   }

@@ -18,6 +18,7 @@ from flask import (
     session,
     url_for,
     Response,
+    jsonify,
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -174,6 +175,28 @@ def parse_money(value):
         return float(cleaned)
     except ValueError:
         return None
+
+
+def parse_transaction_date(value):
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+
+    cleaned = cleaned.replace(".", "")
+    for fmt in [
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m/%d/%y",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+        "%d %b %Y",
+        "%d %B %Y",
+    ]:
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def extract_embedded_amount(description):
@@ -336,69 +359,60 @@ def confidence_label(confidence):
 
 
 def detect_header_and_mapping(rows):
-    first_row = rows[0] if rows else []
+    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+    if not rows:
+        return False, mapping, 0
 
+    header_row_index = 0
+    scan_limit = min(len(rows), 50)
+    for idx in range(scan_limit):
+        candidate = [normalize_header_name(cell) for cell in rows[idx]]
+        cells = {cell for cell in candidate if cell}
+        has_date = "date" in cells or "transaction date" in cells or "date processed" in cells
+        has_amount = "amount" in cells
+        has_desc_or_merchant = "description" in cells or "merchant" in cells
+        if has_date and has_amount and has_desc_or_merchant:
+            header_row_index = idx
+            break
+
+    first_row = rows[header_row_index] if rows else []
     while first_row and not first_row[-1].strip():
         first_row = first_row[:-1]
 
     normalized = [normalize_header_name(col) for col in first_row]
-    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+    normalized_lookup = {value: str(i) for i, value in enumerate(normalized) if value}
 
-    def is_parseable_date(value):
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return False
-
-        for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%d/%m/%y"]:
-            try:
-                datetime.strptime(cleaned, fmt)
-                return True
-            except ValueError:
-                continue
-        return False
-
-    def is_numeric_or_blank(value):
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return True
-        return parse_money(cleaned) is not None
-
-    for field, aliases in HEADER_ALIASES.items():
-        for idx, value in enumerate(normalized):
-            if value in aliases:
-                mapping[field] = str(idx)
-                break
+    mapping["date"] = normalized_lookup.get("date", "") or normalized_lookup.get("transaction date", "") or normalized_lookup.get("date processed", "")
+    mapping["description"] = normalized_lookup.get("description", "") or normalized_lookup.get("merchant", "")
+    mapping["amount"] = normalized_lookup.get("amount", "")
+    mapping["debit"] = normalized_lookup.get("debit", "")
+    mapping["credit"] = normalized_lookup.get("credit", "")
+    mapping["vendor"] = normalized_lookup.get("merchant", "") or normalized_lookup.get("vendor", "")
+    mapping["category"] = normalized_lookup.get("category", "")
 
     has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
-    if not has_header:
-        first_date = first_row[0] if len(first_row) > 0 else ""
-        description = first_row[1].strip() if len(first_row) > 1 else ""
-        debit = first_row[2] if len(first_row) > 2 else ""
-        credit = first_row[3] if len(first_row) > 3 else ""
+    if has_header:
+        if mapping["amount"] != "":
+            mapping["debit"] = ""
+            mapping["credit"] = ""
+        return True, mapping, header_row_index
 
-        if (
-            is_parseable_date(first_date)
-            and bool(description)
-            and (is_numeric_or_blank(debit) or is_numeric_or_blank(credit))
-        ):
-            mapping.update({"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": ""})
-    return has_header, mapping
+    first_row = rows[0] if rows else []
+    first_date = first_row[0] if len(first_row) > 0 else ""
+    description = first_row[1].strip() if len(first_row) > 1 else ""
+    debit = first_row[2] if len(first_row) > 2 else ""
+    credit = first_row[3] if len(first_row) > 3 else ""
+
+    if (
+        parse_transaction_date(first_date) is not None
+        and bool(description)
+        and (parse_money(debit) is not None or parse_money(credit) is not None or (not debit.strip() and not credit.strip()))
+    ):
+        mapping.update({"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": ""})
+    return False, mapping, 0
 
 
 def detect_cibc_headerless_mapping(rows):
-    def is_parseable_date(value):
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return False
-
-        for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%d/%m/%y"]:
-            try:
-                datetime.strptime(cleaned, fmt)
-                return True
-            except ValueError:
-                continue
-        return False
-
     def is_numeric_or_blank(value):
         cleaned = (value or "").strip()
         if not cleaned:
@@ -416,7 +430,7 @@ def detect_cibc_headerless_mapping(rows):
         return None
 
     if (
-        is_parseable_date(first_non_empty_row[0])
+        parse_transaction_date(first_non_empty_row[0]) is not None
         and is_numeric_or_blank(first_non_empty_row[2])
         and is_numeric_or_blank(first_non_empty_row[3])
     ):
@@ -471,6 +485,19 @@ def save_csv_mapping_for_user(user_id, mapping, has_header, detected_format):
     session.modified = True
 
 
+
+
+def get_import_preview_state(user_id):
+    previews = session.get("import_preview_by_user") or {}
+    return previews.get(str(user_id)) or {"rows": []}
+
+
+def save_import_preview_state(user_id, rows):
+    previews = session.get("import_preview_by_user") or {}
+    previews[str(user_id)] = {"rows": rows}
+    session["import_preview_by_user"] = previews
+    session.modified = True
+
 def placeholder_columns_from_mapping(mapping):
     indices = []
     for value in (mapping or {}).values():
@@ -490,19 +517,6 @@ def should_auto_map_cibc_headerless(rows, mapping, detected_format):
     if any((mapping.get(field) or "").strip() for field in ["date", "description", "amount", "debit", "credit", "vendor", "category"]):
         return None
 
-    def is_parseable_date(value):
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return False
-
-        for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%d/%m/%y"]:
-            try:
-                datetime.strptime(cleaned, fmt)
-                return True
-            except ValueError:
-                continue
-        return False
-
     def is_numeric_or_blank(value):
         cleaned = (value or "").strip()
         if not cleaned:
@@ -520,7 +534,7 @@ def should_auto_map_cibc_headerless(rows, mapping, detected_format):
         return None
 
     if (
-        is_parseable_date(first_non_empty_row[0])
+        parse_transaction_date(first_non_empty_row[0]) is not None
         and is_numeric_or_blank(first_non_empty_row[2])
         and is_numeric_or_blank(first_non_empty_row[3])
     ):
@@ -531,7 +545,8 @@ def should_auto_map_cibc_headerless(rows, mapping, detected_format):
 
 def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
     parsed_rows = []
-    for raw_row in rows:
+    skipped_rows = 0
+    for row_index, raw_row in enumerate(rows):
         row = [cell.strip() for cell in raw_row]
 
         def get_value(field):
@@ -544,7 +559,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 return ""
             return row[idx] if idx < len(row) else ""
 
-        row_date = get_value("date")
+        parsed_date = parse_transaction_date(get_value("date"))
         row_description = get_value("description")
         row_category = get_value("category")
         normalized_description = normalize_description(row_description)
@@ -570,25 +585,31 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 normalized_description = normalize_description(row_description)
                 row_vendor = get_value("vendor") or derive_vendor(row_description)
 
-        if amount is not None and bank_type == "amex":
-            amount = -amount
-
-        if not row_date or amount is None:
+        if parsed_date is None or amount is None:
+            skipped_rows += 1
             continue
+
+        if bank_type == "amex":
+            if any(keyword in normalized_description for keyword in PAYMENT_KEYWORDS):
+                amount = abs(amount)
+            else:
+                amount = -abs(amount)
 
         parsed_rows.append(
             {
+                "row_index": row_index,
                 "user_id": user_id,
-                "date": row_date,
+                "date": parsed_date.date().isoformat(),
                 "amount": round(amount, 2),
                 "description": row_description,
                 "vendor": row_vendor,
+                "vendor_key": normalize_text(row_vendor),
                 "normalized_description": normalized_description,
                 "category": infer_category(row_description, row_category),
                 "tags": derive_tags(row_description),
             }
         )
-    return parsed_rows
+    return parsed_rows, skipped_rows
 
 
 def decode_csv_bytes(file_bytes):
@@ -1297,6 +1318,53 @@ def create_app(test_config=None):
             },
         )
 
+    @app.post("/import/csv/apply_vendor")
+    @login_required
+    def apply_vendor_category_override():
+        payload = request.get_json(silent=True) or {}
+        vendor_key = normalize_text(payload.get("vendor_key", ""))
+        category_name = (payload.get("category_name") or "").strip()
+        if not vendor_key or not category_name:
+            return jsonify({"updated_count": 0, "updated_rows": []}), 400
+
+        db = get_db()
+        category_rows = db.execute("SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)).fetchall()
+        available_category_names = [row["name"] for row in category_rows]
+
+        preview_state = get_import_preview_state(g.user["id"])
+        rows = preview_state.get("rows") or []
+        updated_rows = []
+
+        for row in rows:
+            if normalize_text(row.get("vendor_key") or row.get("vendor", "")) != vendor_key:
+                continue
+
+            categorized = categorize_transaction(
+                g.user["id"],
+                row.get("description", ""),
+                row.get("vendor", ""),
+                category_name,
+                available_category_names,
+                db,
+            )
+            row["category"] = category_name
+            row["override_category"] = category_name
+            row["confidence"] = categorized["confidence"]
+            row["confidence_label"] = confidence_label(categorized["confidence"])
+            row["suggested_source"] = categorized["source"]
+            updated_rows.append(
+                {
+                    "row_index": row.get("row_index"),
+                    "category": category_name,
+                    "confidence": categorized["confidence"],
+                    "confidence_label": confidence_label(categorized["confidence"]),
+                    "source": categorized["source"],
+                }
+            )
+
+        save_import_preview_state(g.user["id"], rows)
+        return jsonify({"updated_count": len(updated_rows), "updated_rows": updated_rows})
+
     @app.route("/import/csv", methods=("GET", "POST"))
     @login_required
     def import_csv():
@@ -1308,7 +1376,11 @@ def create_app(test_config=None):
             action = request.form.get("action", "preview")
 
             if action == "confirm":
+                preview_state = get_import_preview_state(g.user["id"])
+                state_rows = preview_state.get("rows") or []
                 parsed_rows = json.loads(request.form.get("parsed_rows", "[]"))
+                if state_rows:
+                    parsed_rows = state_rows
                 db = get_db()
                 imported_count = 0
 
@@ -1320,8 +1392,9 @@ def create_app(test_config=None):
                 learned_vendor_rules = set()
 
                 for index, row in enumerate(parsed_rows):
-                    override = request.form.get(f"override_category_{index}", "")
-                    vendor_override = request.form.get(f"override_vendor_{index}", "").strip()
+                    row_index = row.get("row_index", index)
+                    override = request.form.get(f"override_category_{row_index}", "") or row.get("override_category", "")
+                    vendor_override = request.form.get(f"override_vendor_{row_index}", "").strip()
                     if vendor_override:
                         row["vendor"] = vendor_override
                     elif not row.get("vendor"):
@@ -1404,6 +1477,7 @@ def create_app(test_config=None):
                 save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format)
 
                 db.commit()
+                save_import_preview_state(g.user["id"], [])
                 flash(f"Imported {imported_count} transaction(s).")
                 return redirect(url_for("dashboard"))
 
@@ -1424,7 +1498,7 @@ def create_app(test_config=None):
                 flash("CSV is empty.")
                 return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], parsed_rows_json="[]", detected_mode=None)
 
-            has_header, inferred_mapping = detect_header_and_mapping(rows)
+            has_header, inferred_mapping, header_row_index = detect_header_and_mapping(rows)
             detected_format = "header" if has_header else "headerless"
             explicit_mapping = {
                 "date": request.form.get("map_date", ""),
@@ -1435,12 +1509,12 @@ def create_app(test_config=None):
                 "credit": request.form.get("map_credit", ""),
                 "category": request.form.get("map_category", ""),
             }
-            auto_mapping = should_auto_map_cibc_headerless(rows, explicit_mapping, detected_format)
+            auto_mapping = should_auto_map_cibc_headerless(rows, explicit_mapping, detected_format) if header_row_index == 0 else None
             if auto_mapping:
                 mapping = auto_mapping
                 detected_format = "cibc_headerless"
             else:
-                auto_detected_mapping = detect_cibc_headerless_mapping(rows) if not has_header else None
+                auto_detected_mapping = detect_cibc_headerless_mapping(rows) if not has_header and header_row_index == 0 else None
                 if auto_detected_mapping:
                     inferred_mapping = auto_detected_mapping
                     detected_format = "cibc_headerless"
@@ -1459,9 +1533,9 @@ def create_app(test_config=None):
                     if mapping[field] == "" and saved_mapping.get(field, "") != "":
                         mapping[field] = saved_mapping[field]
 
-            data_rows = rows[1:] if has_header else rows
-            bank_type = detect_bank_type(rows[0] if has_header else [])
-            parsed_rows = parse_csv_transactions(data_rows, mapping, g.user["id"], bank_type=bank_type)
+            data_rows = rows[(header_row_index + 1):] if has_header else rows
+            bank_type = detect_bank_type(rows[header_row_index] if has_header else [])
+            parsed_rows, skipped_rows = parse_csv_transactions(data_rows, mapping, g.user["id"], bank_type=bank_type)
             db = get_db()
             category_rows = db.execute(
                 "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
@@ -1476,8 +1550,10 @@ def create_app(test_config=None):
                 row["suggested_source"] = categorized["source"]
                 row["confidence"] = categorized["confidence"]
                 row["confidence_label"] = confidence_label(categorized["confidence"])
+
+            save_import_preview_state(g.user["id"], parsed_rows)
             preview_rows = parsed_rows[:20]
-            columns = rows[0] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
+            columns = rows[header_row_index] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
 
             save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format)
 
@@ -1488,10 +1564,12 @@ def create_app(test_config=None):
                 columns=columns,
                 categories=category_rows,
                 parsed_rows_json=json.dumps(parsed_rows),
-                detected_mode="header" if has_header else "headerless",
+                detected_mode="headered" if has_header else "headerless",
                 has_header=has_header,
                 detected_format=detected_format,
                 auto_mapping_applied=(detected_format == "cibc_headerless"),
+                header_row_index=header_row_index if has_header else None,
+                skipped_rows=skipped_rows,
             )
 
         return render_template(
@@ -1505,6 +1583,8 @@ def create_app(test_config=None):
             has_header=saved_payload.get("has_header", False),
             detected_format=saved_payload.get("detected_format", ""),
             auto_mapping_applied=False,
+            header_row_index=None,
+            skipped_rows=0,
         )
 
     @app.route("/rules")
