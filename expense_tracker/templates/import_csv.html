@@ -82,7 +82,8 @@
 <section class="card">
   <h3>Preview (first 20 rows)</h3>
   <p class="legend-text">Legend: <span class="confidence-badge confidence-high">High</span> = high confidence, <span class="confidence-badge confidence-medium">Medium</span> = review, <span class="confidence-badge confidence-low">Low</span> = needs review.</p>
-  <p>Detected format: <strong>{{ detected_mode }}</strong>{% if header_row_index is not none %} · header_row_index: <strong>{{ header_row_index }}</strong>{% endif %}{% if skipped_rows %} · skipped_rows: <strong>{{ skipped_rows }}</strong>{% endif %}</p>
+  <p>Detected format: <strong>{{ detected_mode }}</strong> · detected_format: <strong>{{ detected_format or 'n/a' }}</strong>{% if header_row_index is not none %} · header_row_index: <strong>{{ header_row_index }}</strong>{% endif %}{% if skipped_rows %} · skipped_rows: <strong>{{ skipped_rows }}</strong>{% endif %}</p>
+  <p><small>auto_mapped_fields: date=<strong>{{ auto_mapped_fields.date if auto_mapped_fields else 'None' }}</strong>, description=<strong>{{ auto_mapped_fields.description if auto_mapped_fields else 'None' }}</strong>, amount=<strong>{{ auto_mapped_fields.amount if auto_mapped_fields else 'None' }}</strong>, vendor=<strong>{{ auto_mapped_fields.vendor if auto_mapped_fields else 'None' }}</strong>, debit=<strong>{{ auto_mapped_fields.debit if auto_mapped_fields else 'None' }}</strong>, credit=<strong>{{ auto_mapped_fields.credit if auto_mapped_fields else 'None' }}</strong></small></p>
   {% if auto_mapping_applied %}
   <p><small>Auto-mapped CIBC headerless format: Date=1, Desc=2, Debit=3, Credit=4 (ignored extra columns).</small></p>
   {% endif %}
@@ -141,6 +142,7 @@
     <input type="hidden" name="map_category" value="{{ mapping.category }}">
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
+    <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
     <p id="applyVendorMessage" class="legend-text"></p>
     <button type="submit">Confirm Import</button>
   </form>

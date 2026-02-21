@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import os
 import sqlite3
@@ -387,7 +388,7 @@ def detect_header_and_mapping(rows):
     mapping["amount"] = normalized_lookup.get("amount", "")
     mapping["debit"] = normalized_lookup.get("debit", "")
     mapping["credit"] = normalized_lookup.get("credit", "")
-    mapping["vendor"] = normalized_lookup.get("merchant", "") or normalized_lookup.get("vendor", "")
+    mapping["vendor"] = normalized_lookup.get("merchant", "") or normalized_lookup.get("vendor", "") or normalized_lookup.get("description", "")
     mapping["category"] = normalized_lookup.get("category", "")
 
     has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
@@ -439,7 +440,34 @@ def detect_cibc_headerless_mapping(rows):
     return None
 
 
-def build_csv_mapping_payload(mapping, has_header, detected_format):
+def detect_amex_headered_mapping(rows, header_row_index):
+    if not rows:
+        return None
+
+    header_row = rows[header_row_index] if 0 <= header_row_index < len(rows) else []
+    normalized = [normalize_header_name(col) for col in header_row]
+    lookup = {value: str(i) for i, value in enumerate(normalized) if value}
+
+    if "amount" not in lookup:
+        return None
+
+    mapping = {
+        "date": lookup.get("date", "") or lookup.get("transaction date", "") or lookup.get("date processed", ""),
+        "description": lookup.get("description", "") or lookup.get("merchant", ""),
+        "vendor": lookup.get("merchant", "") or lookup.get("description", ""),
+        "amount": lookup.get("amount", ""),
+        "debit": "",
+        "credit": "",
+        "category": lookup.get("category", ""),
+    }
+
+    if mapping["date"] == "" or mapping["description"] == "":
+        return None
+
+    return mapping
+
+
+def build_csv_mapping_payload(mapping, has_header, detected_format, file_signature=""):
     return {
         "date_col": mapping.get("date", ""),
         "desc_col": mapping.get("description", ""),
@@ -450,7 +478,15 @@ def build_csv_mapping_payload(mapping, has_header, detected_format):
         "category_col": mapping.get("category", ""),
         "has_header": bool(has_header),
         "detected_format": detected_format,
+        "file_signature": file_signature or "",
     }
+
+
+def build_file_signature(filename, header_row):
+    cleaned_filename = (filename or "").strip().lower()
+    cleaned_header = [cell.strip() for cell in (header_row or [])]
+    signature_base = f"{cleaned_filename}|{'|'.join(cleaned_header)}"
+    return hashlib.sha256(signature_base.encode("utf-8")).hexdigest()
 
 
 def mapping_from_payload(payload):
@@ -467,16 +503,24 @@ def mapping_from_payload(payload):
     }
 
 
-def get_saved_csv_mapping_for_user(user_id):
+def get_saved_csv_mapping_for_user(user_id, file_signature=""):
     mapping_by_user = session.get("csv_mapping_by_user") or {}
     payload = mapping_by_user.get(str(user_id))
     if payload:
-        return payload
-    return session.get("csv_mapping") or {}
+        payload_signature = payload.get("file_signature", "")
+        if not file_signature or payload_signature == file_signature:
+            return payload
+        return {}
+
+    legacy_payload = session.get("csv_mapping") or {}
+    legacy_signature = legacy_payload.get("file_signature", "")
+    if not file_signature or legacy_signature == file_signature:
+        return legacy_payload
+    return {}
 
 
-def save_csv_mapping_for_user(user_id, mapping, has_header, detected_format):
-    payload = build_csv_mapping_payload(mapping, has_header, detected_format)
+def save_csv_mapping_for_user(user_id, mapping, has_header, detected_format, file_signature=""):
+    payload = build_csv_mapping_payload(mapping, has_header, detected_format, file_signature=file_signature)
     mapping_by_user = session.get("csv_mapping_by_user") or {}
     mapping_by_user[str(user_id)] = payload
     session["csv_mapping_by_user"] = mapping_by_user
@@ -1474,7 +1518,7 @@ def create_app(test_config=None):
                 }
                 detected_format = request.form.get("detected_format", "manual")
                 has_header = request.form.get("has_header", "0") == "1"
-                save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format)
+                save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=request.form.get("file_signature", ""))
 
                 db.commit()
                 save_import_preview_state(g.user["id"], [])
@@ -1500,38 +1544,48 @@ def create_app(test_config=None):
 
             has_header, inferred_mapping, header_row_index = detect_header_and_mapping(rows)
             detected_format = "header" if has_header else "headerless"
-            explicit_mapping = {
-                "date": request.form.get("map_date", ""),
-                "description": request.form.get("map_description", ""),
-                "vendor": request.form.get("map_vendor", ""),
-                "amount": request.form.get("map_amount", ""),
-                "debit": request.form.get("map_debit", ""),
-                "credit": request.form.get("map_credit", ""),
-                "category": request.form.get("map_category", ""),
-            }
-            auto_mapping = should_auto_map_cibc_headerless(rows, explicit_mapping, detected_format) if header_row_index == 0 else None
-            if auto_mapping:
-                mapping = auto_mapping
-                detected_format = "cibc_headerless"
+            columns = rows[header_row_index] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
+            file_signature = build_file_signature(file.filename, rows[header_row_index] if has_header else [])
+            saved_payload = get_saved_csv_mapping_for_user(g.user["id"], file_signature=file_signature)
+            saved_mapping = mapping_from_payload(saved_payload)
+
+            amex_mapping = detect_amex_headered_mapping(rows, header_row_index) if has_header else None
+            if amex_mapping:
+                mapping = amex_mapping
+                detected_format = "headered"
             else:
-                auto_detected_mapping = detect_cibc_headerless_mapping(rows) if not has_header and header_row_index == 0 else None
-                if auto_detected_mapping:
-                    inferred_mapping = auto_detected_mapping
-                    detected_format = "cibc_headerless"
-
-                mapping = {
-                    "date": request.form.get("map_date") if request.form.get("map_date") is not None else inferred_mapping["date"],
-                    "description": request.form.get("map_description") if request.form.get("map_description") is not None else inferred_mapping["description"],
-                    "vendor": request.form.get("map_vendor") if request.form.get("map_vendor") is not None else inferred_mapping["vendor"],
-                    "amount": request.form.get("map_amount") if request.form.get("map_amount") is not None else inferred_mapping["amount"],
-                    "debit": request.form.get("map_debit") if request.form.get("map_debit") is not None else inferred_mapping["debit"],
-                    "credit": request.form.get("map_credit") if request.form.get("map_credit") is not None else inferred_mapping["credit"],
-                    "category": request.form.get("map_category") if request.form.get("map_category") is not None else inferred_mapping["category"],
+                explicit_mapping = {
+                    "date": request.form.get("map_date", ""),
+                    "description": request.form.get("map_description", ""),
+                    "vendor": request.form.get("map_vendor", ""),
+                    "amount": request.form.get("map_amount", ""),
+                    "debit": request.form.get("map_debit", ""),
+                    "credit": request.form.get("map_credit", ""),
+                    "category": request.form.get("map_category", ""),
                 }
+                auto_mapping = should_auto_map_cibc_headerless(rows, explicit_mapping, detected_format) if header_row_index == 0 else None
+                if auto_mapping:
+                    mapping = auto_mapping
+                    detected_format = "cibc_headerless"
+                else:
+                    auto_detected_mapping = detect_cibc_headerless_mapping(rows) if not has_header and header_row_index == 0 else None
+                    if auto_detected_mapping:
+                        inferred_mapping = auto_detected_mapping
+                        detected_format = "cibc_headerless"
 
-                for field in mapping:
-                    if mapping[field] == "" and saved_mapping.get(field, "") != "":
-                        mapping[field] = saved_mapping[field]
+                    mapping = {
+                        "date": request.form.get("map_date") if request.form.get("map_date") is not None else inferred_mapping["date"],
+                        "description": request.form.get("map_description") if request.form.get("map_description") is not None else inferred_mapping["description"],
+                        "vendor": request.form.get("map_vendor") if request.form.get("map_vendor") is not None else inferred_mapping["vendor"],
+                        "amount": request.form.get("map_amount") if request.form.get("map_amount") is not None else inferred_mapping["amount"],
+                        "debit": request.form.get("map_debit") if request.form.get("map_debit") is not None else inferred_mapping["debit"],
+                        "credit": request.form.get("map_credit") if request.form.get("map_credit") is not None else inferred_mapping["credit"],
+                        "category": request.form.get("map_category") if request.form.get("map_category") is not None else inferred_mapping["category"],
+                    }
+
+                    for field in mapping:
+                        if mapping[field] == "" and saved_mapping.get(field, "") != "":
+                            mapping[field] = saved_mapping[field]
 
             data_rows = rows[(header_row_index + 1):] if has_header else rows
             bank_type = detect_bank_type(rows[header_row_index] if has_header else [])
@@ -1553,9 +1607,26 @@ def create_app(test_config=None):
 
             save_import_preview_state(g.user["id"], parsed_rows)
             preview_rows = parsed_rows[:20]
-            columns = rows[header_row_index] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
+            def mapped_column_name(field):
+                value = mapping.get(field, "")
+                if value == "":
+                    return None
+                try:
+                    idx = int(value)
+                except (TypeError, ValueError):
+                    return value
+                return columns[idx] if 0 <= idx < len(columns) else None
 
-            save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format)
+            auto_mapped_fields = {
+                "date": mapped_column_name("date"),
+                "description": mapped_column_name("description"),
+                "amount": mapped_column_name("amount"),
+                "vendor": mapped_column_name("vendor"),
+                "debit": mapped_column_name("debit"),
+                "credit": mapped_column_name("credit"),
+            }
+
+            save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=file_signature)
 
             return render_template(
                 "import_csv.html",
@@ -1570,6 +1641,8 @@ def create_app(test_config=None):
                 auto_mapping_applied=(detected_format == "cibc_headerless"),
                 header_row_index=header_row_index if has_header else None,
                 skipped_rows=skipped_rows,
+                auto_mapped_fields=auto_mapped_fields,
+                file_signature=file_signature,
             )
 
         return render_template(
@@ -1585,6 +1658,8 @@ def create_app(test_config=None):
             auto_mapping_applied=False,
             header_row_index=None,
             skipped_rows=0,
+            auto_mapped_fields={},
+            file_signature=saved_payload.get("file_signature", ""),
         )
 
     @app.route("/rules")
