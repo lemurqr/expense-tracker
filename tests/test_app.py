@@ -997,6 +997,35 @@ def test_apply_same_vendor_endpoint_updates_preview_state(client):
     assert rows[2].get("override_category", "") == ""
 
 
+
+
+def test_amex_headered_preview_auto_maps_expected_columns(client):
+    register(client)
+    login(client)
+
+    fixture = Path(__file__).parent / "fixtures" / "amex_headered.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={"action": "preview", "csv_file": (f, "amex_headered.csv")},
+            content_type="multipart/form-data",
+        )
+
+    text = preview_response.get_data(as_text=True)
+    assert preview_response.status_code == 200
+    assert "Detected format: <strong>headered</strong> · detected_format: <strong>headered</strong>" in text
+    assert "auto_mapped_fields: date=<strong>Date</strong>, description=<strong>Description</strong>, amount=<strong>Amount</strong>, vendor=<strong>Merchant</strong>, debit=<strong>None</strong>, credit=<strong>None</strong>" in text
+
+    with client.session_transaction() as sess:
+        mapping = sess["csv_mapping"]
+    assert mapping["date_col"] == "0"
+    assert mapping["desc_col"] == "2"
+    assert mapping["amount_col"] == "3"
+    assert mapping["vendor_col"] == "4"
+    assert mapping["debit_col"] == ""
+    assert mapping["credit_col"] == ""
+
+
 def test_amex_header_auto_mapping_with_summary_rows(client):
     register(client)
     login(client)
