@@ -323,7 +323,16 @@ def is_transfer_transaction(description, category_name):
     if normalized_category and normalized_category not in {"transfers", "credit card payments"}:
         return False
     normalized_desc = normalize_description(description)
-    return any(keyword in normalized_desc for keyword in TRANSFER_KEYWORDS)
+    transfer_terms = TRANSFER_KEYWORDS + PAYMENT_KEYWORDS
+    return any(keyword in normalized_desc for keyword in transfer_terms)
+
+
+def confidence_label(confidence):
+    if confidence >= 80:
+        return "High"
+    if confidence >= 50:
+        return "Medium"
+    return "Low"
 
 
 def detect_header_and_mapping(rows):
@@ -667,6 +676,10 @@ def create_app(test_config=None):
             db.execute("ALTER TABLE expenses ADD COLUMN vendor TEXT")
         if "paid_by" not in columns:
             db.execute("ALTER TABLE expenses ADD COLUMN paid_by TEXT NOT NULL DEFAULT 'DK'")
+        if "category_confidence" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN category_confidence INTEGER")
+        if "category_source" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN category_source TEXT")
 
         db.execute(
             """
@@ -774,32 +787,33 @@ def create_app(test_config=None):
 
     def categorize_transaction(user_id, description, vendor, raw_category, available_categories, db):
         if is_transfer_transaction(description, raw_category):
-            return {"category": pick_existing_category("Transfers", available_categories, "Credit Card Payments"), "confidence": "High", "source": "transfer"}
+            transfer_category = pick_existing_category("Credit Card Payments", available_categories, "Transfers")
+            return {"category": transfer_category, "confidence": 100, "source": "transfer"}
 
         vendor_pattern = extract_pattern(vendor or derive_vendor(description), max_words=4)
         learned_vendor = resolve_learned_category(user_id, "vendor", vendor_pattern, available_categories, db)
         if learned_vendor:
-            return {"category": learned_vendor, "confidence": "High", "source": "learned_vendor"}
+            return {"category": learned_vendor, "confidence": 95, "source": "learned_vendor"}
 
         desc_pattern = extract_pattern(description)
         learned_description = resolve_learned_category(user_id, "description", desc_pattern, available_categories, db)
         if learned_description:
-            return {"category": learned_description, "confidence": "High", "source": "learned_description"}
+            return {"category": learned_description, "confidence": 90, "source": "learned_description"}
 
         keyword_vendor = infer_category(vendor or "", raw_category, available_categories)
         if keyword_vendor:
-            return {"category": keyword_vendor, "confidence": "Medium", "source": "keyword_vendor"}
+            return {"category": keyword_vendor, "confidence": 75, "source": "keyword_vendor"}
 
         keyword_description = infer_category(description, raw_category, available_categories)
         if keyword_description:
-            return {"category": keyword_description, "confidence": "Medium", "source": "keyword_description"}
+            return {"category": keyword_description, "confidence": 65, "source": "keyword_description"}
 
         if app.config.get("ENABLE_AI_CATEGORIZATION", False):
             ai_category = ai_categorize_stub(description, vendor or "")
             if ai_category:
-                return {"category": ai_category, "confidence": "Low", "source": "ai_fallback"}
+                return {"category": ai_category, "confidence": 25, "source": "unknown"}
 
-        return {"category": "", "confidence": "Low", "source": "unknown"}
+        return {"category": "", "confidence": 25, "source": "unknown"}
 
     def learn_rule(user_id, description, vendor, category_id, source):
         if not app.config.get("ENABLE_LEARNING_RULES", True):
@@ -966,7 +980,8 @@ def create_app(test_config=None):
 
         expenses = db.execute(
             """
-            SELECT e.id, e.date, e.amount, e.description, c.name as category
+            SELECT e.id, e.date, e.amount, e.description, c.name as category,
+                   e.category_confidence, e.category_source
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
             WHERE e.user_id = ? AND e.date LIKE ?
@@ -1044,6 +1059,12 @@ def create_app(test_config=None):
                     if found:
                         category_id = found["id"]
 
+            categorization = categorize_transaction(
+                g.user["id"], description, derive_vendor(description), resolved_category, [row["name"] for row in categories], db
+            )
+            if resolved_category and categorization["source"] == "unknown":
+                categorization = {"category": resolved_category, "confidence": 25, "source": "unknown"}
+
             try:
                 amount_value = float(amount)
                 if amount_value <= 0:
@@ -1054,20 +1075,25 @@ def create_app(test_config=None):
 
             db.execute(
                 """
-                INSERT INTO expenses (user_id, date, amount, category_id, description, vendor, paid_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO expenses (
+                    user_id, date, amount, category_id, description, vendor, paid_by,
+                    is_transfer, is_personal, category_confidence, category_source, tags
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (g.user["id"], expense_date, amount_value, category_id, description, derive_vendor(description), "DK"),
-            )
-            expense_id = db.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
-            db.execute(
-                "UPDATE expenses SET is_transfer = ?, is_personal = ?, tags = ? WHERE id = ? AND user_id = ?",
                 (
+                    g.user["id"],
+                    expense_date,
+                    amount_value,
+                    category_id,
+                    description,
+                    derive_vendor(description),
+                    "DK",
                     1 if is_transfer_transaction(description, resolved_category) else 0,
                     1 if resolved_category == "Personal" else 0,
+                    categorization["confidence"],
+                    categorization["source"],
                     json.dumps(derive_tags(description)),
-                    expense_id,
-                    g.user["id"],
                 ),
             )
             db.commit()
@@ -1118,6 +1144,12 @@ def create_app(test_config=None):
                 if found:
                     category_id = found["id"]
 
+            categorization = categorize_transaction(
+                g.user["id"], description, derive_vendor(description), resolved_category, available_category_names, db
+            )
+            if resolved_category and categorization["source"] == "unknown":
+                categorization = {"category": resolved_category, "confidence": 25, "source": "unknown"}
+
             try:
                 amount_value = float(amount)
                 if amount_value <= 0:
@@ -1129,7 +1161,8 @@ def create_app(test_config=None):
             db.execute(
                 """
                 UPDATE expenses
-                SET date = ?, amount = ?, category_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?, tags = ?
+                SET date = ?, amount = ?, category_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?,
+                    category_confidence = ?, category_source = ?, tags = ?
                 WHERE id = ? AND user_id = ?
                 """,
                 (
@@ -1140,6 +1173,8 @@ def create_app(test_config=None):
                     derive_vendor(description),
                     1 if is_transfer_transaction(description, resolved_category) else 0,
                     1 if resolved_category == "Personal" else 0,
+                    categorization["confidence"],
+                    categorization["source"],
                     json.dumps(derive_tags(description)),
                     expense_id,
                     g.user["id"],
@@ -1323,8 +1358,11 @@ def create_app(test_config=None):
 
                     db.execute(
                         """
-                        INSERT INTO expenses (user_id, date, amount, category_id, description, vendor, paid_by, is_transfer, is_personal, tags)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO expenses (
+                            user_id, date, amount, category_id, description, vendor, paid_by,
+                            is_transfer, is_personal, category_confidence, category_source, tags
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             g.user["id"],
@@ -1336,6 +1374,8 @@ def create_app(test_config=None):
                             row.get("paid_by", "DK") or "DK",
                             1 if is_transfer else 0,
                             1 if is_personal else 0,
+                            categorized["confidence"],
+                            categorized["source"],
                             json.dumps(row.get("tags") or derive_tags(row.get("description", ""))),
                         ),
                     )
@@ -1430,6 +1470,7 @@ def create_app(test_config=None):
                 row["category"] = categorized["category"]
                 row["suggested_source"] = categorized["source"]
                 row["confidence"] = categorized["confidence"]
+                row["confidence_label"] = confidence_label(categorized["confidence"])
             preview_rows = parsed_rows[:20]
             columns = rows[0] if has_header else [f"Column {i + 1}" for i in range(len(rows[0]))]
 

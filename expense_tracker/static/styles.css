@@ -13,4 +13,10 @@ table { width: 100%; border-collapse: collapse; font-size: .95rem; }
 th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .flash-list { list-style: none; padding: 0; }
 .flash-list li { background: #edf3ff; padding: .5rem; border-left: 4px solid #274690; margin-bottom: .5rem; }
+.legend-text { margin: .5rem 0 .75rem; }
+.confidence-badge { display: inline-block; padding: .15rem .45rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+.confidence-high { background: #d1fae5; color: #065f46; }
+.confidence-medium { background: #fef3c7; color: #92400e; }
+.confidence-low { background: #fee2e2; color: #991b1b; }
+.confidence-transfer { background: #e5e7eb; color: #374151; }
 @media (min-width: 768px) { .grid-two { grid-template-columns: 1fr 2fr; } }

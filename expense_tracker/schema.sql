@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS expenses (
     paid_by TEXT NOT NULL DEFAULT 'DK',
     is_transfer INTEGER NOT NULL DEFAULT 0,
     is_personal INTEGER NOT NULL DEFAULT 0,
+    category_confidence INTEGER,
+    category_source TEXT,
     tags TEXT,
     FOREIGN KEY (user_id) REFERENCES users (id),
     FOREIGN KEY (category_id) REFERENCES categories (id)

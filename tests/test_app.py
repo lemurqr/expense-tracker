@@ -803,3 +803,108 @@ def test_vendor_first_learning_and_reuse(client):
             """
         ).fetchone()
     assert row["category"] == "Bakery & Coffee"
+
+
+def test_learned_vendor_sets_confidence_and_source(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-10-01", "amount": -8.0, "description": "TIM HORTONS #1", "vendor": "Tim Hortons", "normalized_description": "tim hortons 1", "category": ""}
+            ]),
+            "override_category_0": "Bakery & Coffee",
+        },
+        follow_redirects=True,
+    )
+
+    client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-10-02", "amount": -9.0, "description": "TIM HORTONS #2", "vendor": "Tim Hortons", "normalized_description": "tim hortons 2", "category": ""}
+            ]),
+        },
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT category_confidence, category_source FROM expenses WHERE date = '2026-10-02'").fetchone()
+
+    assert row["category_confidence"] == 95
+    assert row["category_source"] == "learned_vendor"
+
+
+def test_keyword_vendor_and_description_confidence_scores(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+                "parsed_rows": json.dumps([
+                    {"user_id": 1, "date": "2026-10-03", "amount": -20.0, "description": "Unknown lunch", "vendor": "metro", "normalized_description": "unknown lunch", "category": ""},
+                    {"user_id": 1, "date": "2026-10-04", "amount": -30.0, "description": "metro", "vendor": "random vendor", "normalized_description": "metro", "category": ""},
+                ]),
+            },
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        vendor_row = db.execute("SELECT category_confidence, category_source FROM expenses WHERE date = '2026-10-03'").fetchone()
+        description_row = db.execute("SELECT category_confidence, category_source FROM expenses WHERE date = '2026-10-04'").fetchone()
+
+    assert vendor_row["category_confidence"] == 75
+    assert vendor_row["category_source"] == "keyword_vendor"
+    assert description_row["category_confidence"] == 65
+    assert description_row["category_source"] == "keyword_description"
+
+
+def test_transfer_sets_source_transfer_and_confidence_100(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "parsed_rows": json.dumps([
+                {"user_id": 1, "date": "2026-10-05", "amount": -125.0, "description": "Payment thank you", "normalized_description": "payment thank you", "category": ""}
+            ]),
+        },
+        follow_redirects=True,
+    )
+
+    dashboard = client.get("/dashboard?month=2026-10")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT category_confidence, category_source FROM expenses WHERE date = '2026-10-05'").fetchone()
+
+    assert row["category_confidence"] == 100
+    assert row["category_source"] == "transfer"
+    assert b'confidence-transfer">Transfer<' in dashboard.data
+
+
+def test_preview_renders_confidence_badges(client):
+    register(client)
+    login(client)
+
+    csv_content = "date,description,debit,credit\n2026-10-06,TIM HORTONS,8.00,\n"
+    preview_response = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "preview.csv")},
+        content_type="multipart/form-data",
+    )
+
+    html = preview_response.get_data(as_text=True)
+    assert "Legend:" in html
+    assert "confidence-badge" in html
+    assert "Source" in html
