@@ -5,7 +5,7 @@ import sqlite3
 import json
 import re
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from functools import wraps
 
 from flask import (
@@ -328,8 +328,31 @@ def is_transfer_transaction(description, category_name):
 
 def detect_header_and_mapping(rows):
     first_row = rows[0] if rows else []
+
+    while first_row and not first_row[-1].strip():
+        first_row = first_row[:-1]
+
     normalized = [normalize_header_name(col) for col in first_row]
     mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+
+    def is_parseable_date(value):
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return False
+
+        for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%d/%m/%y"]:
+            try:
+                datetime.strptime(cleaned, fmt)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def is_numeric_or_blank(value):
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return True
+        return parse_money(cleaned) is not None
 
     for field, aliases in HEADER_ALIASES.items():
         for idx, value in enumerate(normalized):
@@ -339,8 +362,16 @@ def detect_header_and_mapping(rows):
 
     has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
     if not has_header:
-        first_date = first_row[0].strip() if len(first_row) > 0 else ""
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", first_date):
+        first_date = first_row[0] if len(first_row) > 0 else ""
+        description = first_row[1].strip() if len(first_row) > 1 else ""
+        debit = first_row[2] if len(first_row) > 2 else ""
+        credit = first_row[3] if len(first_row) > 3 else ""
+
+        if (
+            is_parseable_date(first_date)
+            and bool(description)
+            and (is_numeric_or_blank(debit) or is_numeric_or_blank(credit))
+        ):
             mapping.update({"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": ""})
     return has_header, mapping
 
