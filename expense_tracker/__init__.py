@@ -1317,6 +1317,7 @@ def create_app(test_config=None):
                 ).fetchall()
                 category_lookup = {normalize_description(row["name"]): row["id"] for row in category_rows}
                 available_category_names = [row["name"] for row in category_rows]
+                learned_vendor_rules = set()
 
                 for index, row in enumerate(parsed_rows):
                     override = request.form.get(f"override_category_{index}", "")
@@ -1382,7 +1383,11 @@ def create_app(test_config=None):
                     if override and category_id and normalize_description(override) != normalize_description(
                         row.get("auto_category", "")
                     ):
-                        learn_rule(g.user["id"], row.get("description", ""), row.get("vendor", ""), category_id, "import_override")
+                        vendor_pattern = extract_pattern(row.get("vendor", ""), max_words=4)
+                        vendor_rule_key = (vendor_pattern, category_id)
+                        if vendor_pattern and vendor_rule_key not in learned_vendor_rules:
+                            learn_rule(g.user["id"], row.get("description", ""), row.get("vendor", ""), category_id, "import_override")
+                            learned_vendor_rules.add(vendor_rule_key)
                     imported_count += 1
 
                 mapping = {
