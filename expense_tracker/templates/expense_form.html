@@ -7,7 +7,8 @@
       <input type="date" name="date" value="{{ expense.date if expense else '' }}" required>
     </label>
     <label>Amount
-      <input type="number" step="0.01" min="0.01" name="amount" value="{{ expense.amount if expense else '' }}" required>
+      <input type="number" step="0.01" name="amount" value="{{ expense.amount if expense else '' }}" required>
+      <small>Use negative for expenses, positive for refunds/credits.</small>
     </label>
     <label>Category
       <select name="category_id">
