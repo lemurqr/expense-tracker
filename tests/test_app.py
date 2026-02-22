@@ -1140,3 +1140,112 @@ def test_household_settlement_missing_paid_by_warning(client):
     text = response.get_data(as_text=True)
 
     assert "⚠ 2 transactions missing Paid by — settlement may be incomplete." in text
+
+
+def test_import_preview_applies_default_paid_by_when_column_missing(client):
+    register(client)
+    login(client)
+
+    csv_content = "Date,Description,Debit,Credit\n2026-01-10,Coffee,12.00,\n"
+    response = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "import_default_paid_by": "YZ",
+            "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "default.csv"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    assert 'name="override_paid_by_0"' in response.get_data(as_text=True)
+    with client.session_transaction() as session_data:
+        rows = session_data["import_preview_by_user"]["1"]["rows"]
+    assert rows[0]["paid_by"] == "YZ"
+
+
+def test_import_confirm_uses_per_row_paid_by_override(client):
+    register(client)
+    login(client)
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "row_index": 0,
+            "date": "2026-02-10",
+            "amount": -10.0,
+            "description": "Coffee",
+            "normalized_description": "coffee",
+            "vendor": "Coffee",
+            "category": "",
+            "paid_by": "",
+        }
+    ]
+    client.post(
+        "/import/csv",
+        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows), "override_paid_by_0": "YZ"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT paid_by FROM expenses WHERE description = 'Coffee'").fetchone()
+    assert row["paid_by"] == "YZ"
+
+
+def test_manual_add_edit_paid_by_saved_and_shown_on_dashboard(client):
+    register(client)
+    login(client)
+
+    add_response = client.post(
+        "/expenses/new",
+        data={"date": "2026-03-05", "amount": "21", "category_id": "", "description": "Manual", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert b"Expense added" in add_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Manual'").fetchone()["id"]
+
+    edit_response = client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-03-05", "amount": "21", "category_id": "", "description": "Manual", "paid_by": "YZ"},
+        follow_redirects=True,
+    )
+    assert b"Expense updated" in edit_response.data
+
+    dashboard = client.get("/dashboard?month=2026-03")
+    assert b"Manual" in dashboard.data
+    assert b">YZ<" in dashboard.data
+
+
+def test_import_confirm_blocks_missing_paid_by_for_spending_rows(client):
+    register(client)
+    login(client)
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "row_index": 0,
+            "date": "2026-04-10",
+            "amount": -25.0,
+            "description": "No payer",
+            "normalized_description": "no payer",
+            "vendor": "No payer",
+            "category": "",
+            "paid_by": "",
+        }
+    ]
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows), "import_default_paid_by": ""},
+        follow_redirects=True,
+    )
+    assert b"Cannot import spending rows with missing Paid by" in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) as c FROM expenses WHERE description = 'No payer'").fetchone()["c"]
+    assert count == 0

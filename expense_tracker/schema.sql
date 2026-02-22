@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     category_id INTEGER,
     description TEXT,
     vendor TEXT,
-    paid_by TEXT NOT NULL DEFAULT 'DK',
+    paid_by TEXT,
     is_transfer INTEGER NOT NULL DEFAULT 0,
     is_personal INTEGER NOT NULL DEFAULT 0,
     category_confidence INTEGER,

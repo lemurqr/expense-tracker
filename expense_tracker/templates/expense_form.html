@@ -20,6 +20,13 @@
     <label>Description
       <input name="description" value="{{ expense.description if expense else '' }}">
     </label>
+    <label>Paid by
+      <select name="paid_by">
+        <option value="" {% if not expense or not expense.paid_by %}selected{% endif %}>-- Select --</option>
+        <option value="DK" {% if expense and expense.paid_by == 'DK' %}selected{% endif %}>DK</option>
+        <option value="YZ" {% if expense and expense.paid_by == 'YZ' %}selected{% endif %}>YZ</option>
+      </select>
+    </label>
     <button type="submit">Save</button>
   </form>
 </section>
