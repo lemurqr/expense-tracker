@@ -1052,3 +1052,91 @@ def test_amex_header_auto_mapping_with_summary_rows(client):
     assert mapping["vendor_col"] == "4"
     assert mapping["debit_col"] == ""
     assert mapping["credit_col"] == ""
+
+
+def _insert_expense(client, *, date, amount, category, paid_by=None, is_transfer=0):
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = 'user1'").fetchone()["id"]
+        category_row = db.execute(
+            "SELECT id FROM categories WHERE user_id = ? AND name = ?",
+            (user_id, category),
+        ).fetchone()
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, date, amount, category_id, description, paid_by, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                date,
+                amount,
+                category_row["id"] if category_row else None,
+                f"{category} test",
+                paid_by if paid_by is not None else "",
+                is_transfer,
+                1 if category == "Personal" else 0,
+            ),
+        )
+        db.commit()
+
+
+def test_household_settlement_pet_rule(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-01-02", amount=-100, category="Pet Food & Care", paid_by="DK")
+    _insert_expense(client, date="2026-01-03", amount=-60, category="Pet Food & Care", paid_by="YZ")
+
+    response = client.get("/dashboard?month=2026-01")
+    text = response.get_data(as_text=True)
+
+    assert "Pet paid by DK (reimbursed by YZ): $100.00" in text
+    assert "Pet paid by YZ (not shared): $60.00" in text
+    assert "Result:</strong> YZ owes DK $100.00" in text
+
+
+def test_household_settlement_combined_netting(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-02-02", amount=-70, category="Groceries", paid_by="DK")
+    _insert_expense(client, date="2026-02-03", amount=-130, category="Groceries", paid_by="YZ")
+    _insert_expense(client, date="2026-02-04", amount=-100, category="Pet Food & Care", paid_by="DK")
+
+    response = client.get("/dashboard?month=2026-02")
+    text = response.get_data(as_text=True)
+
+    assert "DK shared paid: $70.00" in text
+    assert "YZ shared paid: $130.00" in text
+    assert "Result:</strong> YZ owes DK $70.00" in text
+
+
+def test_household_settlement_excludes_personal_transfer_and_credit_card_payments(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-03-02", amount=-40, category="Personal", paid_by="DK")
+    _insert_expense(client, date="2026-03-03", amount=-70, category="Credit Card Payments", paid_by="DK")
+    _insert_expense(client, date="2026-03-04", amount=-60, category="Groceries", paid_by="DK", is_transfer=1)
+    _insert_expense(client, date="2026-03-05", amount=-20, category="Groceries", paid_by="DK")
+
+    response = client.get("/dashboard?month=2026-03")
+    text = response.get_data(as_text=True)
+
+    assert "DK shared paid: $20.00" in text
+    assert "Shared total: $20.00" in text
+
+
+def test_household_settlement_missing_paid_by_warning(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-04-02", amount=-10, category="Groceries", paid_by=None)
+    _insert_expense(client, date="2026-04-03", amount=-15, category="Pet Food & Care", paid_by="")
+    _insert_expense(client, date="2026-04-04", amount=-20, category="Personal", paid_by=None)
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+
+    assert "⚠ 2 transactions missing Paid by — settlement may be incomplete." in text

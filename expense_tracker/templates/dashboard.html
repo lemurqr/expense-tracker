@@ -11,6 +11,28 @@
   <p><strong>Shared spending (excludes Personal + Transfers):</strong> ${{ '%.2f'|format(shared_total) }}</p>
 </section>
 
+<section class="card">
+  <h3>Household Settlement</h3>
+  <ul>
+    <li>DK shared paid: ${{ '%.2f'|format(settlement.dk_shared) }}</li>
+    <li>YZ shared paid: ${{ '%.2f'|format(settlement.yz_shared) }}</li>
+    <li>Shared total: ${{ '%.2f'|format(settlement.shared_total) }}</li>
+    <li>Each share: ${{ '%.2f'|format(settlement.each_share) }}</li>
+    <li>Pet paid by DK (reimbursed by YZ): ${{ '%.2f'|format(settlement.pet_paid_by_dk) }}</li>
+    <li>Pet paid by YZ (not shared): ${{ '%.2f'|format(settlement.pet_paid_by_yz) }}</li>
+  </ul>
+  {% if settlement.result_direction == 'Settled' %}
+  <p><strong>Result:</strong> Settled</p>
+  {% else %}
+  <p><strong>Result:</strong> {{ settlement.result_direction }} ${{ '%.2f'|format(settlement.result_amount) }}</p>
+  {% endif %}
+  {% if settlement.missing_paid_by_count > 0 %}
+  <p>⚠ {{ settlement.missing_paid_by_count }} transactions missing Paid by — settlement may be incomplete.</p>
+  {% endif %}
+  <p><small>Pet category is 100% YZ responsibility.</small></p>
+  <p><small>Excludes Personal and Transfers/Credit Card Payments.</small></p>
+</section>
+
 <section class="grid-two">
   <div class="card">
     <h3>Monthly Summary</h3>
