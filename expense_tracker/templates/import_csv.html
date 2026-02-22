@@ -72,6 +72,16 @@
           {% endfor %}
         </select>
       </label>
+
+
+      <label>Paid by (optional)
+        <select name="map_paid_by">
+          <option value="">-- Select --</option>
+          {% for idx in range(columns|length) %}
+          <option value="{{ idx }}" {% if mapping.paid_by == idx|string %}selected{% endif %}>{{ columns[idx] }}</option>
+          {% endfor %}
+        </select>
+      </label>
     </div>
 
     <button type="submit" name="action" value="preview">Preview Import</button>
@@ -89,10 +99,18 @@
   {% endif %}
   {% if preview_rows %}
   <form method="post">
+    <label>Paid by (default for this import)
+      <select name="import_default_paid_by" id="importDefaultPaidBy">
+        <option value="" {% if not import_default_paid_by %}selected{% endif %}>-- Select --</option>
+        <option value="DK" {% if import_default_paid_by == 'DK' %}selected{% endif %}>DK</option>
+        <option value="YZ" {% if import_default_paid_by == 'YZ' %}selected{% endif %}>YZ</option>
+      </select>
+    </label>
+    <p><button type="button" id="fillPaidByFromDefault">Fill missing with default</button></p>
     <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle"> Show only low-confidence (&lt; 80)</label>
     <table>
       <thead>
-        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Suggested Category</th><th>Confidence</th><th>Source</th></tr>
+        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Confidence</th><th>Source</th></tr>
       </thead>
       <tbody>
         {% for row in preview_rows %}
@@ -102,6 +120,13 @@
           <td>{{ '%.2f'|format(row.amount) }}</td>
           <td>{{ row.description }}</td>
           <td><input name="override_vendor_{{ row.row_index }}" value="{{ row.vendor or "" }}"></td>
+          <td>
+            <select name="override_paid_by_{{ row.row_index }}" class="paid-by-select">
+              <option value="" {% if not row.paid_by %}selected{% endif %}>-- Select --</option>
+              <option value="DK" {% if row.paid_by == 'DK' %}selected{% endif %}>DK</option>
+              <option value="YZ" {% if row.paid_by == 'YZ' %}selected{% endif %}>YZ</option>
+            </select>
+          </td>
           <td>
             <select name="override_category_{{ row.row_index }}" class="category-select">
               <option value="">Use suggested ({{ row.category or 'Uncategorized' }})</option>
@@ -140,6 +165,7 @@
     <input type="hidden" name="map_credit" value="{{ mapping.credit }}">
     <input type="hidden" name="map_vendor" value="{{ mapping.vendor }}">
     <input type="hidden" name="map_category" value="{{ mapping.category }}">
+    <input type="hidden" name="map_paid_by" value="{{ mapping.paid_by }}">
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
@@ -155,6 +181,8 @@
 <script>
   const lowConfidenceToggle = document.getElementById('lowConfidenceToggle');
   const applyVendorMessage = document.getElementById('applyVendorMessage');
+  const fillPaidByFromDefaultButton = document.getElementById('fillPaidByFromDefault');
+  const importDefaultPaidBy = document.getElementById('importDefaultPaidBy');
 
   const badgeClassFor = (source, confidence) => {
     if (source === 'transfer') return ['confidence-transfer', 'badge-transfer'];
@@ -236,6 +264,16 @@
       event.target.checked = false;
     });
   });
+
+  if (fillPaidByFromDefaultButton) {
+    fillPaidByFromDefaultButton.addEventListener('click', () => {
+      const value = importDefaultPaidBy ? importDefaultPaidBy.value : '';
+      if (!value) return;
+      document.querySelectorAll('.paid-by-select').forEach((select) => {
+        if (!select.value) select.value = value;
+      });
+    });
+  }
 
   if (lowConfidenceToggle) {
     lowConfidenceToggle.addEventListener('change', (event) => {

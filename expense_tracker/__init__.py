@@ -147,6 +147,7 @@ HEADER_ALIASES = {
     "description": ["description", "details", "memo", "merchant", "payee"],
     "vendor": ["vendor", "merchant", "payee", "name", "merchant name"],
     "category": ["category"],
+    "paid_by": ["paid by", "paid_by", "payer", "owner"],
 }
 VENDOR_NOISE_TOKENS = {
     "pos",
@@ -204,6 +205,15 @@ def parse_transaction_date(value):
         except ValueError:
             continue
     return None
+
+
+def normalize_paid_by(value):
+    cleaned = normalize_header_name(value)
+    if cleaned in {"dk", "denys", "d"}:
+        return "DK"
+    if cleaned in {"yz", "yuliya", "wife", "y"}:
+        return "YZ"
+    return ""
 
 
 def extract_embedded_amount(description):
@@ -366,7 +376,7 @@ def confidence_label(confidence):
 
 
 def detect_header_and_mapping(rows):
-    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "paid_by": ""}
     if not rows:
         return False, mapping, 0
 
@@ -396,6 +406,7 @@ def detect_header_and_mapping(rows):
     mapping["credit"] = normalized_lookup.get("credit", "")
     mapping["vendor"] = normalized_lookup.get("merchant", "") or normalized_lookup.get("vendor", "") or normalized_lookup.get("description", "")
     mapping["category"] = normalized_lookup.get("category", "")
+    mapping["paid_by"] = normalized_lookup.get("paid by", "") or normalized_lookup.get("paid_by", "") or normalized_lookup.get("payer", "")
 
     has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
     if has_header:
@@ -441,7 +452,7 @@ def detect_cibc_headerless_mapping(rows):
         and is_numeric_or_blank(first_non_empty_row[2])
         and is_numeric_or_blank(first_non_empty_row[3])
     ):
-        return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": ""}
+        return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": "", "paid_by": ""}
 
     return None
 
@@ -465,6 +476,7 @@ def detect_amex_headered_mapping(rows, header_row_index):
         "debit": "",
         "credit": "",
         "category": lookup.get("category", ""),
+        "paid_by": lookup.get("paid by", "") or lookup.get("paid_by", "") or lookup.get("payer", ""),
     }
 
     if mapping["date"] == "" or mapping["description"] == "":
@@ -482,6 +494,7 @@ def build_csv_mapping_payload(mapping, has_header, detected_format, file_signatu
         "credit_col": mapping.get("credit", ""),
         "vendor_col": mapping.get("vendor", ""),
         "category_col": mapping.get("category", ""),
+        "paid_by_col": mapping.get("paid_by", ""),
         "has_header": bool(has_header),
         "detected_format": detected_format,
         "file_signature": file_signature or "",
@@ -497,7 +510,7 @@ def build_file_signature(filename, header_row):
 
 def mapping_from_payload(payload):
     if not payload:
-        return {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+        return {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "paid_by": ""}
     return {
         "date": payload.get("date_col", ""),
         "description": payload.get("desc_col", ""),
@@ -506,6 +519,7 @@ def mapping_from_payload(payload):
         "debit": payload.get("debit_col", ""),
         "credit": payload.get("credit_col", ""),
         "category": payload.get("category_col", ""),
+        "paid_by": payload.get("paid_by_col", ""),
     }
 
 
@@ -564,7 +578,7 @@ def should_auto_map_cibc_headerless(rows, mapping, detected_format):
     if detected_format != "headerless":
         return None
 
-    if any((mapping.get(field) or "").strip() for field in ["date", "description", "amount", "debit", "credit", "vendor", "category"]):
+    if any((mapping.get(field) or "").strip() for field in ["date", "description", "amount", "debit", "credit", "vendor", "category", "paid_by"]):
         return None
 
     def is_numeric_or_blank(value):
@@ -588,7 +602,7 @@ def should_auto_map_cibc_headerless(rows, mapping, detected_format):
         and is_numeric_or_blank(first_non_empty_row[2])
         and is_numeric_or_blank(first_non_empty_row[3])
     ):
-        return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": ""}
+        return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": "", "paid_by": ""}
 
     return None
 
@@ -614,6 +628,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
         row_category = get_value("category")
         normalized_description = normalize_description(row_description)
         row_vendor = get_value("vendor") or derive_vendor(row_description)
+        row_paid_by = normalize_paid_by(get_value("paid_by"))
 
         amount = None
         amount_col = mapping.get("amount", "")
@@ -657,6 +672,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 "normalized_description": normalized_description,
                 "category": infer_category(row_description, row_category),
                 "tags": derive_tags(row_description),
+                "paid_by": row_paid_by,
             }
         )
     return parsed_rows, skipped_rows
@@ -746,7 +762,7 @@ def create_app(test_config=None):
         if "vendor" not in columns:
             db.execute("ALTER TABLE expenses ADD COLUMN vendor TEXT")
         if "paid_by" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN paid_by TEXT NOT NULL DEFAULT 'DK'")
+            db.execute("ALTER TABLE expenses ADD COLUMN paid_by TEXT")
         if "category_confidence" not in columns:
             db.execute("ALTER TABLE expenses ADD COLUMN category_confidence INTEGER")
         if "category_source" not in columns:
@@ -1052,7 +1068,7 @@ def create_app(test_config=None):
         expenses = db.execute(
             """
             SELECT e.id, e.date, e.amount, e.description, c.name as category,
-                   e.category_confidence, e.category_source
+                   e.category_confidence, e.category_source, e.paid_by
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
             WHERE e.user_id = ? AND e.date LIKE ?
@@ -1212,6 +1228,7 @@ def create_app(test_config=None):
         if request.method == "POST":
             expense_date = request.form["date"]
             amount = request.form["amount"]
+            paid_by = normalize_paid_by(request.form.get("paid_by", ""))
             category_id = request.form.get("category_id") or None
             description = request.form.get("description", "").strip()
             category_name = db.execute(
@@ -1245,6 +1262,10 @@ def create_app(test_config=None):
                 flash("Amount must be a positive number.")
                 return render_template("expense_form.html", categories=categories, expense=None)
 
+            if paid_by not in {"", "DK", "YZ"}:
+                flash("Paid by must be DK or YZ.")
+                return render_template("expense_form.html", categories=categories, expense=None)
+
             db.execute(
                 """
                 INSERT INTO expenses (
@@ -1260,7 +1281,7 @@ def create_app(test_config=None):
                     category_id,
                     description,
                     derive_vendor(description),
-                    "DK",
+                    paid_by,
                     1 if is_transfer_transaction(description, resolved_category) else 0,
                     1 if resolved_category == "Personal" else 0,
                     categorization["confidence"],
@@ -1296,6 +1317,7 @@ def create_app(test_config=None):
         if request.method == "POST":
             expense_date = request.form["date"]
             amount = request.form["amount"]
+            paid_by = normalize_paid_by(request.form.get("paid_by", ""))
             category_id = request.form.get("category_id") or None
             description = request.form.get("description", "").strip()
             category_name = db.execute(
@@ -1330,11 +1352,15 @@ def create_app(test_config=None):
                 flash("Amount must be a positive number.")
                 return render_template("expense_form.html", categories=categories, expense=expense)
 
+            if paid_by not in {"", "DK", "YZ"}:
+                flash("Paid by must be DK or YZ.")
+                return render_template("expense_form.html", categories=categories, expense=expense)
+
             db.execute(
                 """
                 UPDATE expenses
                 SET date = ?, amount = ?, category_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?,
-                    category_confidence = ?, category_source = ?, tags = ?
+                    category_confidence = ?, category_source = ?, tags = ?, paid_by = ?
                 WHERE id = ? AND user_id = ?
                 """,
                 (
@@ -1348,6 +1374,7 @@ def create_app(test_config=None):
                     categorization["confidence"],
                     categorization["source"],
                     json.dumps(derive_tags(description)),
+                    paid_by,
                     expense_id,
                     g.user["id"],
                 ),
@@ -1519,12 +1546,13 @@ def create_app(test_config=None):
     @app.route("/import/csv", methods=("GET", "POST"))
     @login_required
     def import_csv():
-        default_mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": ""}
+        default_mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "paid_by": ""}
         saved_payload = get_saved_csv_mapping_for_user(g.user["id"])
         saved_mapping = mapping_from_payload(saved_payload)
 
         if request.method == "POST":
             action = request.form.get("action", "preview")
+            import_default_paid_by = normalize_paid_by(request.form.get("import_default_paid_by", ""))
 
             if action == "confirm":
                 preview_state = get_import_preview_state(g.user["id"])
@@ -1542,9 +1570,17 @@ def create_app(test_config=None):
                 available_category_names = [row["name"] for row in category_rows]
                 learned_vendor_rules = set()
 
+                raw_default_paid_by = request.form.get("import_default_paid_by")
+                default_paid_by = normalize_paid_by(raw_default_paid_by or "")
+                has_paid_by_overrides = any(key.startswith("override_paid_by_") for key in request.form.keys())
+                if raw_default_paid_by is None and not has_paid_by_overrides:
+                    default_paid_by = "DK"
                 for index, row in enumerate(parsed_rows):
                     row_index = row.get("row_index", index)
                     override = request.form.get(f"override_category_{row_index}", "") or row.get("override_category", "")
+                    paid_by_override = normalize_paid_by(
+                        request.form.get(f"override_paid_by_{row_index}", "") or row.get("paid_by", "") or default_paid_by
+                    )
                     vendor_override = request.form.get(f"override_vendor_{row_index}", "").strip()
                     if vendor_override:
                         row["vendor"] = vendor_override
@@ -1552,6 +1588,11 @@ def create_app(test_config=None):
                         row["vendor"] = derive_vendor(row.get("description", ""))
                     if override:
                         row["category"] = override
+                    row["paid_by"] = paid_by_override
+
+                    if row.get("amount", 0) < 0 and not paid_by_override:
+                        flash("Cannot import spending rows with missing Paid by. Fill missing values and confirm again.")
+                        return redirect(url_for("import_csv"))
 
                     candidates = db.execute(
                         """
@@ -1596,7 +1637,7 @@ def create_app(test_config=None):
                             category_id,
                             row["description"],
                             row.get("vendor", "") or derive_vendor(row.get("description", "")),
-                            row.get("paid_by", "DK") or "DK",
+                            row.get("paid_by", ""),
                             1 if is_transfer else 0,
                             1 if is_personal else 0,
                             categorized["confidence"],
@@ -1622,6 +1663,7 @@ def create_app(test_config=None):
                     "debit": request.form.get("map_debit", ""),
                     "credit": request.form.get("map_credit", ""),
                     "category": request.form.get("map_category", ""),
+                    "paid_by": request.form.get("map_paid_by", ""),
                 }
                 detected_format = request.form.get("detected_format", "manual")
                 has_header = request.form.get("has_header", "0") == "1"
@@ -1669,6 +1711,7 @@ def create_app(test_config=None):
                     "debit": request.form.get("map_debit", ""),
                     "credit": request.form.get("map_credit", ""),
                     "category": request.form.get("map_category", ""),
+                    "paid_by": request.form.get("map_paid_by", ""),
                 }
                 auto_mapping = should_auto_map_cibc_headerless(rows, explicit_mapping, detected_format) if header_row_index == 0 else None
                 if auto_mapping:
@@ -1688,6 +1731,7 @@ def create_app(test_config=None):
                         "debit": request.form.get("map_debit") if request.form.get("map_debit") is not None else inferred_mapping["debit"],
                         "credit": request.form.get("map_credit") if request.form.get("map_credit") is not None else inferred_mapping["credit"],
                         "category": request.form.get("map_category") if request.form.get("map_category") is not None else inferred_mapping["category"],
+                        "paid_by": request.form.get("map_paid_by") if request.form.get("map_paid_by") is not None else inferred_mapping["paid_by"],
                     }
 
                     for field in mapping:
@@ -1697,6 +1741,9 @@ def create_app(test_config=None):
             data_rows = rows[(header_row_index + 1):] if has_header else rows
             bank_type = detect_bank_type(rows[header_row_index] if has_header else [])
             parsed_rows, skipped_rows = parse_csv_transactions(data_rows, mapping, g.user["id"], bank_type=bank_type)
+            for row in parsed_rows:
+                if not row.get("paid_by"):
+                    row["paid_by"] = import_default_paid_by
             db = get_db()
             category_rows = db.execute(
                 "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
@@ -1731,6 +1778,7 @@ def create_app(test_config=None):
                 "vendor": mapped_column_name("vendor"),
                 "debit": mapped_column_name("debit"),
                 "credit": mapped_column_name("credit"),
+                "paid_by": mapped_column_name("paid_by"),
             }
 
             save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=file_signature)
@@ -1750,6 +1798,7 @@ def create_app(test_config=None):
                 skipped_rows=skipped_rows,
                 auto_mapped_fields=auto_mapped_fields,
                 file_signature=file_signature,
+                import_default_paid_by=import_default_paid_by,
             )
 
         return render_template(
@@ -1767,6 +1816,7 @@ def create_app(test_config=None):
             skipped_rows=0,
             auto_mapped_fields={},
             file_signature=saved_payload.get("file_signature", ""),
+            import_default_paid_by="",
         )
 
     @app.route("/rules")

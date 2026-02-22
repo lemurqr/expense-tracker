@@ -49,13 +49,14 @@
     <h3>Transactions</h3>
     <table>
       <thead>
-      <tr><th>Date</th><th>Amount</th><th>Category</th><th>Description</th><th>Confidence</th><th>Source</th><th>Actions</th></tr>
+      <tr><th>Date</th><th>Amount</th><th>Paid by</th><th>Category</th><th>Description</th><th>Confidence</th><th>Source</th><th>Actions</th></tr>
       </thead>
       <tbody>
       {% for expense in expenses %}
       <tr>
         <td>{{ expense.date }}</td>
         <td>${{ '%.2f'|format(expense.amount) }}</td>
+        <td>{{ expense.paid_by or '—' }}</td>
         <td>{{ expense.category or 'Uncategorized' }}</td>
         <td>{{ expense.description }}</td>
         <td>
@@ -82,7 +83,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="7">No expenses added yet.</td></tr>
+      <tr><td colspan="8">No expenses added yet.</td></tr>
       {% endfor %}
       </tbody>
     </table>
