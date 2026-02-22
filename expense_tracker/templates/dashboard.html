@@ -47,46 +47,117 @@
 
   <div class="card">
     <h3>Transactions</h3>
-    <table>
-      <thead>
-      <tr><th>Date</th><th>Amount</th><th>Paid by</th><th>Category</th><th>Description</th><th>Confidence</th><th>Source</th><th>Actions</th></tr>
-      </thead>
-      <tbody>
-      {% for expense in expenses %}
-      <tr>
-        <td>{{ expense.date }}</td>
-        <td>${{ '%.2f'|format(expense.amount) }}</td>
-        <td>{{ expense.paid_by or '—' }}</td>
-        <td>{{ expense.category or 'Uncategorized' }}</td>
-        <td>{{ expense.description }}</td>
-        <td>
-          {% if expense.category_source == 'transfer' %}
-            <span class="confidence-badge confidence-transfer">Transfer</span>
-          {% elif expense.category_confidence is not none %}
-            {% if expense.category_confidence >= 80 %}
-              <span class="confidence-badge confidence-high">{{ expense.category_confidence }}</span>
-            {% elif expense.category_confidence >= 50 %}
-              <span class="confidence-badge confidence-medium">{{ expense.category_confidence }}</span>
+    <form method="post" action="{{ url_for('bulk_expense_action') }}" id="bulk-actions-form">
+      <input type="hidden" name="month" value="{{ selected_month }}">
+      <div id="bulk-actions-bar" class="bulk-actions-bar" hidden>
+        <strong><span id="selected-count">0</span> selected</strong>
+        <button type="submit" name="action" value="delete" id="bulk-delete-button">Delete selected</button>
+        <label>Set category
+          <select name="category_id">
+            <option value="">Choose category</option>
+            {% for category in all_categories %}
+            <option value="{{ category.id }}">{{ category.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" name="action" value="set_category">Apply</button>
+        <label>Set paid by
+          <select name="paid_by">
+            <option value="">Blank</option>
+            <option value="DK">DK</option>
+            <option value="YZ">YZ</option>
+          </select>
+        </label>
+        <button type="submit" name="action" value="set_paid_by">Apply</button>
+        <label>
+          <input type="checkbox" name="is_transfer" value="1">
+          Mark as transfer
+        </label>
+        <button type="submit" name="action" value="set_transfer">Apply</button>
+      </div>
+
+      <table>
+        <thead>
+        <tr><th><input type="checkbox" id="select-all-expenses" aria-label="Select all"></th><th>Date</th><th>Amount</th><th>Paid by</th><th>Category</th><th>Description</th><th>Confidence</th><th>Source</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+        {% for expense in expenses %}
+        <tr>
+          <td><input type="checkbox" class="expense-checkbox" name="expense_ids" value="{{ expense.id }}" aria-label="Select expense {{ expense.id }}"></td>
+          <td>{{ expense.date }}</td>
+          <td>${{ '%.2f'|format(expense.amount) }}</td>
+          <td>{{ expense.paid_by or '—' }}</td>
+          <td>{{ expense.category or 'Uncategorized' }}</td>
+          <td>{{ expense.description }}</td>
+          <td>
+            {% if expense.category_source == 'transfer' %}
+              <span class="confidence-badge confidence-transfer">Transfer</span>
+            {% elif expense.category_confidence is not none %}
+              {% if expense.category_confidence >= 80 %}
+                <span class="confidence-badge confidence-high">{{ expense.category_confidence }}</span>
+              {% elif expense.category_confidence >= 50 %}
+                <span class="confidence-badge confidence-medium">{{ expense.category_confidence }}</span>
+              {% else %}
+                <span class="confidence-badge confidence-low">{{ expense.category_confidence }}</span>
+              {% endif %}
             {% else %}
-              <span class="confidence-badge confidence-low">{{ expense.category_confidence }}</span>
+              <span class="confidence-badge confidence-low">N/A</span>
             {% endif %}
-          {% else %}
-            <span class="confidence-badge confidence-low">N/A</span>
-          {% endif %}
-        </td>
-        <td><small>{{ expense.category_source or 'unknown' }}</small></td>
-        <td>
-          <a href="{{ url_for('edit_expense', expense_id=expense.id) }}">Edit</a>
-          <form method="post" action="{{ url_for('delete_expense', expense_id=expense.id) }}" class="inline-form">
-            <button type="submit">Delete</button>
-          </form>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="8">No expenses added yet.</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
+          </td>
+          <td><small>{{ expense.category_source or 'unknown' }}</small></td>
+          <td>
+            <a href="{{ url_for('edit_expense', expense_id=expense.id) }}">Edit</a>
+            <form method="post" action="{{ url_for('delete_expense', expense_id=expense.id) }}" class="inline-form">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9">No expenses added yet.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </form>
   </div>
+  <script>
+    (function () {
+      const form = document.getElementById('bulk-actions-form');
+      if (!form) return;
+      const selectAll = document.getElementById('select-all-expenses');
+      const checkboxes = Array.from(form.querySelectorAll('.expense-checkbox'));
+      const bar = document.getElementById('bulk-actions-bar');
+      const countEl = document.getElementById('selected-count');
+      const deleteButton = document.getElementById('bulk-delete-button');
+
+      function syncSelection() {
+        const selected = checkboxes.filter((box) => box.checked).length;
+        countEl.textContent = String(selected);
+        bar.hidden = selected === 0;
+        if (selectAll) {
+          selectAll.checked = checkboxes.length > 0 && selected === checkboxes.length;
+          selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
+        }
+      }
+
+      if (selectAll) {
+        selectAll.addEventListener('change', function () {
+          checkboxes.forEach((box) => {
+            box.checked = selectAll.checked;
+          });
+          syncSelection();
+        });
+      }
+
+      checkboxes.forEach((box) => box.addEventListener('change', syncSelection));
+      if (deleteButton) {
+        deleteButton.addEventListener('click', function (event) {
+          if (!window.confirm('Delete selected transactions?')) {
+            event.preventDefault();
+          }
+        });
+      }
+      syncSelection();
+    })();
+  </script>
 </section>
 {% endblock %}

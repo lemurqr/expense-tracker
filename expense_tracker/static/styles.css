@@ -31,3 +31,6 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
   0% { background-color: #dbeafe; }
   100% { background-color: transparent; }
 }
+
+.bulk-actions-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: .75rem; padding: .6rem; background: #f2f6ff; border: 1px solid #d7e3ff; border-radius: 8px; }
+.bulk-actions-bar label { display: inline-flex; align-items: center; gap: .35rem; }

@@ -1234,6 +1234,11 @@ def create_app(test_config=None):
             "result_amount": round(final_amount, 2),
         }
 
+        all_categories = db.execute(
+            "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name",
+            (g.user["id"],),
+        ).fetchall()
+
         return render_template(
             "dashboard.html",
             expenses=expenses,
@@ -1242,6 +1247,7 @@ def create_app(test_config=None):
             shared_total=shared_total,
             settlement=settlement,
             selected_month=selected_month,
+            all_categories=all_categories,
         )
 
     @app.route("/expenses/new", methods=("GET", "POST"))
@@ -1418,6 +1424,95 @@ def create_app(test_config=None):
         db.commit()
         flash("Expense deleted.")
         return redirect(url_for("dashboard"))
+
+    @app.post("/expenses/bulk")
+    @login_required
+    def bulk_expense_action():
+        db = get_db()
+        action = (request.form.get("action") or "").strip()
+        month = (request.form.get("month") or "").strip()
+
+        def redirect_dashboard():
+            if month:
+                return redirect(url_for("dashboard", month=month))
+            return redirect(url_for("dashboard"))
+
+        raw_ids = request.form.getlist("expense_ids")
+        ids = []
+        for raw_id in raw_ids:
+            try:
+                ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            flash("Please select at least one transaction.")
+            return redirect_dashboard()
+
+        placeholders = ", ".join(["?"] * len(ids))
+        owner_count = db.execute(
+            f"SELECT COUNT(*) as count FROM expenses WHERE user_id = ? AND id IN ({placeholders})",
+            [g.user["id"], *ids],
+        ).fetchone()["count"]
+        if owner_count != len(ids):
+            flash("One or more selected transactions are invalid.")
+            return redirect_dashboard()
+
+        if action == "delete":
+            result = db.execute(
+                f"DELETE FROM expenses WHERE user_id = ? AND id IN ({placeholders})",
+                [g.user["id"], *ids],
+            )
+            db.commit()
+            flash(f"Deleted {result.rowcount} transactions")
+            return redirect_dashboard()
+
+        if action == "set_category":
+            category_id = (request.form.get("category_id") or "").strip()
+            if not category_id:
+                flash("Please choose a category.")
+                return redirect_dashboard()
+            category = db.execute(
+                "SELECT id FROM categories WHERE id = ? AND user_id = ?",
+                (category_id, g.user["id"]),
+            ).fetchone()
+            if category is None:
+                flash("Invalid category.")
+                return redirect_dashboard()
+            result = db.execute(
+                f"UPDATE expenses SET category_id = ? WHERE user_id = ? AND id IN ({placeholders})",
+                [category_id, g.user["id"], *ids],
+            )
+            db.commit()
+            flash(f"Updated {result.rowcount} transactions")
+            return redirect_dashboard()
+
+        if action == "set_paid_by":
+            paid_by = normalize_paid_by(request.form.get("paid_by", ""))
+            if paid_by not in {"", "DK", "YZ"}:
+                flash("Invalid Paid by value.")
+                return redirect_dashboard()
+            result = db.execute(
+                f"UPDATE expenses SET paid_by = ? WHERE user_id = ? AND id IN ({placeholders})",
+                [paid_by, g.user["id"], *ids],
+            )
+            db.commit()
+            flash(f"Updated {result.rowcount} transactions")
+            return redirect_dashboard()
+
+        if action == "set_transfer":
+            is_transfer = 1 if request.form.get("is_transfer") in {"1", "true", "on", "yes"} else 0
+            result = db.execute(
+                f"UPDATE expenses SET is_transfer = ? WHERE user_id = ? AND id IN ({placeholders})",
+                [is_transfer, g.user["id"], *ids],
+            )
+            db.commit()
+            flash(f"Updated {result.rowcount} transactions")
+            return redirect_dashboard()
+
+        flash("Unknown bulk action.")
+        return redirect_dashboard()
 
     @app.route("/categories", methods=("GET", "POST"))
     @login_required

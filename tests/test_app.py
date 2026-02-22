@@ -1312,3 +1312,114 @@ def test_import_confirm_applies_vendor_and_category_overrides(client):
         ).fetchone()
     assert row["vendor"] == "Updated Vendor"
     assert row["category"] == "Restaurants"
+
+def test_bulk_delete_removes_multiple_rows_for_same_user(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-01", "amount": "10", "category_id": "", "description": "Bulk A", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-02", "amount": "20", "category_id": "", "description": "Bulk B", "paid_by": "YZ"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        ids = [row["id"] for row in db.execute("SELECT id FROM expenses WHERE description IN ('Bulk A', 'Bulk B')").fetchall()]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "delete", "month": "2026-02", "expense_ids": [str(v) for v in ids]},
+        follow_redirects=True,
+    )
+
+    assert b"Deleted 2 transactions" in response.data
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) as count FROM expenses WHERE description IN ('Bulk A', 'Bulk B')").fetchone()["count"]
+    assert count == 0
+
+
+def test_bulk_update_category_sets_multiple_rows(client):
+    register(client)
+    login(client)
+
+    client.post("/categories", data={"name": "Bulk Category"}, follow_redirects=True)
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-03", "amount": "30", "category_id": "", "description": "Cat A"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-04", "amount": "40", "category_id": "", "description": "Cat B"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        category_id = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Bulk Category'").fetchone()["id"]
+        ids = [row["id"] for row in db.execute("SELECT id FROM expenses WHERE description IN ('Cat A', 'Cat B')").fetchall()]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "set_category", "category_id": str(category_id), "expense_ids": [str(v) for v in ids]},
+        follow_redirects=True,
+    )
+
+    assert b"Updated 2 transactions" in response.data
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute(
+            "SELECT category_id FROM expenses WHERE id IN (?, ?) ORDER BY id",
+            (ids[0], ids[1]),
+        ).fetchall()
+    assert all(row["category_id"] == category_id for row in rows)
+
+
+def test_bulk_actions_prevent_cross_user_modification(client):
+    register(client, username="user1", password="password")
+    register(client, username="user2", password="password")
+
+    login(client, username="user1", password="password")
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-10", "amount": "50", "category_id": "", "description": "Owner Row"},
+        follow_redirects=True,
+    )
+    client.get("/logout")
+
+    login(client, username="user2", password="password")
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-11", "amount": "60", "category_id": "", "description": "Other Row"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user1_expense_id = db.execute(
+            "SELECT id FROM expenses WHERE description = 'Owner Row'"
+        ).fetchone()["id"]
+        user2_expense_id = db.execute(
+            "SELECT id FROM expenses WHERE description = 'Other Row'"
+        ).fetchone()["id"]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "delete", "expense_ids": [str(user1_expense_id), str(user2_expense_id)]},
+        follow_redirects=True,
+    )
+
+    assert b"invalid" in response.data.lower()
+    with client.application.app_context():
+        db = client.application.get_db()
+        owner_row_exists = db.execute("SELECT 1 FROM expenses WHERE id = ?", (user1_expense_id,)).fetchone()
+        other_row_exists = db.execute("SELECT 1 FROM expenses WHERE id = ?", (user2_expense_id,)).fetchone()
+    assert owner_row_exists is not None
+    assert other_row_exists is not None
