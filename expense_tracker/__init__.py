@@ -159,6 +159,12 @@ VENDOR_NOISE_TOKENS = {
     "card",
     "payment",
 }
+PET_CATEGORIES = [
+    "Pet Food & Care",
+    "Pet",
+    "Vet",
+    "Pet Insurance",
+]
 
 
 def normalize_header_name(value):
@@ -1085,12 +1091,113 @@ def create_app(test_config=None):
             (g.user["id"], month_like),
         ).fetchone()["total"]
 
+        pet_placeholders = ", ".join(["?"] * len(PET_CATEGORIES))
+        settlement_row = db.execute(
+            f"""
+            SELECT
+                ROUND(COALESCE(SUM(CASE
+                    WHEN e.amount < 0
+                         AND e.paid_by = 'DK'
+                         AND COALESCE(c.name, '') IN ({pet_placeholders})
+                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as pet_paid_by_dk,
+                ROUND(COALESCE(SUM(CASE
+                    WHEN e.amount < 0
+                         AND e.paid_by = 'YZ'
+                         AND COALESCE(c.name, '') IN ({pet_placeholders})
+                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as pet_paid_by_yz,
+                ROUND(COALESCE(SUM(CASE
+                    WHEN e.amount < 0
+                         AND e.paid_by = 'DK'
+                         AND e.is_transfer = 0
+                         AND COALESCE(c.name, '') <> 'Personal'
+                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
+                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
+                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as dk_shared,
+                ROUND(COALESCE(SUM(CASE
+                    WHEN e.amount < 0
+                         AND e.paid_by = 'YZ'
+                         AND e.is_transfer = 0
+                         AND COALESCE(c.name, '') <> 'Personal'
+                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
+                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
+                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as yz_shared,
+                SUM(CASE
+                    WHEN e.amount < 0
+                         AND (
+                            (e.is_transfer = 0
+                             AND COALESCE(c.name, '') <> 'Personal'
+                             AND COALESCE(c.name, '') <> 'Credit Card Payments')
+                            OR COALESCE(c.name, '') IN ({pet_placeholders})
+                         )
+                         AND (e.paid_by IS NULL OR TRIM(e.paid_by) = '')
+                    THEN 1 ELSE 0 END) as missing_paid_by_count
+            FROM expenses e
+            LEFT JOIN categories c ON e.category_id = c.id
+            WHERE e.user_id = ? AND e.date LIKE ?
+            """,
+            PET_CATEGORIES * 5 + [g.user["id"], month_like],
+        ).fetchone()
+
+        dk_shared = settlement_row["dk_shared"] or 0
+        yz_shared = settlement_row["yz_shared"] or 0
+        shared_total_abs = round(dk_shared + yz_shared, 2)
+        each_share = round(shared_total_abs / 2, 2)
+        pet_paid_by_dk = settlement_row["pet_paid_by_dk"] or 0
+        pet_paid_by_yz = settlement_row["pet_paid_by_yz"] or 0
+        missing_paid_by_count = settlement_row["missing_paid_by_count"] or 0
+
+        shared_receiver = "DK" if dk_shared > each_share else "YZ"
+        shared_payer = "YZ" if shared_receiver == "DK" else "DK"
+        shared_owes = round(abs(dk_shared - each_share), 2)
+
+        obligations = []
+        if pet_paid_by_dk > 0:
+            obligations.append({"from": "YZ", "to": "DK", "amount": pet_paid_by_dk})
+        if shared_owes > 0:
+            obligations.append({"from": shared_payer, "to": shared_receiver, "amount": shared_owes})
+
+        final_direction = "Settled"
+        final_amount = 0.0
+        if len(obligations) == 1:
+            final_direction = f"{obligations[0]['from']} owes {obligations[0]['to']}"
+            final_amount = obligations[0]["amount"]
+        elif len(obligations) == 2:
+            first, second = obligations
+            if first["from"] == second["from"] and first["to"] == second["to"]:
+                final_direction = f"{first['from']} owes {first['to']}"
+                final_amount = first["amount"] + second["amount"]
+            else:
+                diff = first["amount"] - second["amount"]
+                if diff > 0:
+                    final_direction = f"{first['from']} owes {first['to']}"
+                    final_amount = diff
+                elif diff < 0:
+                    final_direction = f"{second['from']} owes {second['to']}"
+                    final_amount = abs(diff)
+
+        if final_amount <= 0.005:
+            final_direction = "Settled"
+            final_amount = 0.0
+
+        settlement = {
+            "dk_shared": dk_shared,
+            "yz_shared": yz_shared,
+            "shared_total": shared_total_abs,
+            "each_share": each_share,
+            "pet_paid_by_dk": pet_paid_by_dk,
+            "pet_paid_by_yz": pet_paid_by_yz,
+            "missing_paid_by_count": missing_paid_by_count,
+            "result_direction": final_direction,
+            "result_amount": round(final_amount, 2),
+        }
+
         return render_template(
             "dashboard.html",
             expenses=expenses,
             summary=summary,
             total=total,
             shared_total=shared_total,
+            settlement=settlement,
             selected_month=selected_month,
         )
 
