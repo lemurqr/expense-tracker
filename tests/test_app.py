@@ -1,6 +1,7 @@
 from pathlib import Path
 import io
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -37,6 +38,22 @@ def register(client, username="user1", password="password"):
 
 def login(client, username="user1", password="password"):
     return client.post("/login", data={"username": username, "password": password}, follow_redirects=True)
+
+
+def stage_import_preview(client, rows, preview_id="preview-1", created_at=None):
+    timestamp = created_at or datetime.utcnow().isoformat()
+    with client.session_transaction() as session_data:
+        previews = session_data.get("import_preview_by_user") or {}
+        previews["1"] = {"preview_id": preview_id, "rows": rows, "created_at": timestamp}
+        session_data["import_preview_by_user"] = previews
+    return preview_id
+
+
+def confirm_import(client, rows, **form_data):
+    preview_id = stage_import_preview(client, rows)
+    payload = {"action": "confirm", "preview_id": preview_id}
+    payload.update(form_data)
+    return client.post("/import/csv", data=payload, follow_redirects=True)
 
 
 def test_register_login_logout(client):
@@ -150,11 +167,7 @@ def test_import_cibc_headerless_csv(client):
             "category": "",
         },
     ]
-    confirm_response = client.post(
-        "/import/csv",
-        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
-        follow_redirects=True,
-    )
+    confirm_response = confirm_import(client, parsed_rows)
     assert b"Imported 2 transaction(s)." in confirm_response.data
 
     with client.application.app_context():
@@ -347,16 +360,7 @@ def test_import_confirm_apply_same_vendor_learns_single_vendor_rule(client):
         },
     ]
 
-    confirm_response = client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps(parsed_rows),
-            "override_category_0": "Restaurants",
-            "override_category_1": "Restaurants",
-        },
-        follow_redirects=True,
-    )
+    confirm_response = confirm_import(client, parsed_rows, override_category_0="Restaurants", override_category_1="Restaurants")
 
     assert b"Imported 2 transaction(s)." in confirm_response.data
 
@@ -432,18 +436,10 @@ def test_import_header_based_csv_with_mapping(client):
             "category": "Other",
         },
     ]
-    confirm_response = client.post(
-        "/import/csv",
-        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
-        follow_redirects=True,
-    )
+    confirm_response = confirm_import(client, parsed_rows)
     assert b"Imported 2 transaction(s)." in confirm_response.data
 
-    duplicate_response = client.post(
-        "/import/csv",
-        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
-        follow_redirects=True,
-    )
+    duplicate_response = confirm_import(client, parsed_rows)
     assert b"Imported 0 transaction(s)." in duplicate_response.data
 
 
@@ -493,11 +489,7 @@ def test_refund_keeps_original_category_not_transfer(client):
             "category": "Groceries",
         }
     ]
-    client.post(
-        "/import/csv",
-        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
-        follow_redirects=True,
-    )
+    confirm_import(client, parsed_rows)
 
     with client.application.app_context():
         db = client.application.get_db()
@@ -537,11 +529,7 @@ def test_legacy_category_mapping_and_transfer_mapping_on_import(client):
         },
     ]
 
-    client.post(
-        "/import/csv",
-        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)},
-        follow_redirects=True,
-    )
+    confirm_import(client, parsed_rows)
 
     with client.application.app_context():
         db = client.application.get_db()
@@ -690,15 +678,9 @@ def test_categorizer_prefers_learned_rule_before_heuristics(client):
         follow_redirects=True,
     )
 
-    preview = client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-07-04", "amount": -15.0, "description": "Apple Store Downtown", "normalized_description": "apple store downtown", "category": ""}
-            ]),
-        },
-        follow_redirects=True,
+    preview = confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-07-04", "amount": -15.0, "description": "Apple Store Downtown", "normalized_description": "apple store downtown", "category": ""}],
     )
     assert b"Imported 1 transaction(s)." in preview.data
 
@@ -718,28 +700,16 @@ def test_import_learning_integration_apple_to_subscriptions(client):
     register(client)
     login(client)
 
-    first_import = client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-08-01", "amount": -9.99, "description": "Apple", "normalized_description": "apple", "category": ""}
-            ]),
-            "override_category_0": "Subscriptions",
-        },
-        follow_redirects=True,
+    first_import = confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-08-01", "amount": -9.99, "description": "Apple", "normalized_description": "apple", "category": ""}],
+        override_category_0="Subscriptions",
     )
     assert b"Imported 1 transaction(s)." in first_import.data
 
-    second_import = client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-08-02", "amount": -9.99, "description": "Apple", "normalized_description": "apple", "category": ""}
-            ]),
-        },
-        follow_redirects=True,
+    second_import = confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-08-02", "amount": -9.99, "description": "Apple", "normalized_description": "apple", "category": ""}],
     )
     assert b"Imported 1 transaction(s)." in second_import.data
 
@@ -806,7 +776,7 @@ def test_vendor_mapped_column_is_stored_on_import(client):
             "category": "",
         }
     ]
-    client.post('/import/csv', data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows)}, follow_redirects=True)
+    confirm_import(client, parsed_rows)
 
     with client.application.app_context():
         db = client.application.get_db()
@@ -822,16 +792,10 @@ def test_vendor_first_learning_and_reuse(client):
     register(client)
     login(client)
 
-    first_import = client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-09-04", "amount": -7.0, "description": "POS PURCHASE TIM HORTONS 101", "vendor": "Tim Hortons", "normalized_description": "pos purchase tim hortons 101", "category": ""}
-            ]),
-            "override_category_0": "Bakery & Coffee",
-        },
-        follow_redirects=True,
+    first_import = confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-09-04", "amount": -7.0, "description": "POS PURCHASE TIM HORTONS 101", "vendor": "Tim Hortons", "normalized_description": "pos purchase tim hortons 101", "category": ""}],
+        override_category_0="Bakery & Coffee",
     )
     assert b"Imported 1 transaction(s)." in first_import.data
 
@@ -840,15 +804,9 @@ def test_vendor_first_learning_and_reuse(client):
         rule = db.execute("SELECT key_type, pattern FROM category_rules WHERE source = 'import_override' ORDER BY id DESC LIMIT 1").fetchone()
     assert rule["key_type"] == "vendor"
 
-    second_import = client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-09-05", "amount": -8.0, "description": "TIM HORTONS #55", "vendor": "Tim Hortons", "normalized_description": "tim hortons 55", "category": ""}
-            ]),
-        },
-        follow_redirects=True,
+    second_import = confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-09-05", "amount": -8.0, "description": "TIM HORTONS #55", "vendor": "Tim Hortons", "normalized_description": "tim hortons 55", "category": ""}],
     )
     assert b"Imported 1 transaction(s)." in second_import.data
 
@@ -869,27 +827,15 @@ def test_learned_vendor_sets_confidence_and_source(client):
     register(client)
     login(client)
 
-    client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-10-01", "amount": -8.0, "description": "TIM HORTONS #1", "vendor": "Tim Hortons", "normalized_description": "tim hortons 1", "category": ""}
-            ]),
-            "override_category_0": "Bakery & Coffee",
-        },
-        follow_redirects=True,
+    confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-10-01", "amount": -8.0, "description": "TIM HORTONS #1", "vendor": "Tim Hortons", "normalized_description": "tim hortons 1", "category": ""}],
+        override_category_0="Bakery & Coffee",
     )
 
-    client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-10-02", "amount": -9.0, "description": "TIM HORTONS #2", "vendor": "Tim Hortons", "normalized_description": "tim hortons 2", "category": ""}
-            ]),
-        },
-        follow_redirects=True,
+    confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-10-02", "amount": -9.0, "description": "TIM HORTONS #2", "vendor": "Tim Hortons", "normalized_description": "tim hortons 2", "category": ""}],
     )
 
     with client.application.app_context():
@@ -904,16 +850,12 @@ def test_keyword_vendor_and_description_confidence_scores(client):
     register(client)
     login(client)
 
-    client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-                "parsed_rows": json.dumps([
-                    {"user_id": 1, "date": "2026-10-03", "amount": -20.0, "description": "Unknown lunch", "vendor": "metro", "normalized_description": "unknown lunch", "category": ""},
-                    {"user_id": 1, "date": "2026-10-04", "amount": -30.0, "description": "metro", "vendor": "random vendor", "normalized_description": "metro", "category": ""},
-                ]),
-            },
-        follow_redirects=True,
+    confirm_import(
+        client,
+        [
+            {"user_id": 1, "date": "2026-10-03", "amount": -20.0, "description": "Unknown lunch", "vendor": "metro", "normalized_description": "unknown lunch", "category": ""},
+            {"user_id": 1, "date": "2026-10-04", "amount": -30.0, "description": "metro", "vendor": "random vendor", "normalized_description": "metro", "category": ""},
+        ],
     )
 
     with client.application.app_context():
@@ -931,15 +873,9 @@ def test_transfer_sets_source_transfer_and_confidence_100(client):
     register(client)
     login(client)
 
-    client.post(
-        "/import/csv",
-        data={
-            "action": "confirm",
-            "parsed_rows": json.dumps([
-                {"user_id": 1, "date": "2026-10-05", "amount": -125.0, "description": "Payment thank you", "normalized_description": "payment thank you", "category": ""}
-            ]),
-        },
-        follow_redirects=True,
+    confirm_import(
+        client,
+        [{"user_id": 1, "date": "2026-10-05", "amount": -125.0, "description": "Payment thank you", "normalized_description": "payment thank you", "category": ""}],
     )
 
     dashboard = client.get("/dashboard?month=2026-10")
@@ -1181,11 +1117,7 @@ def test_import_confirm_uses_per_row_paid_by_override(client):
             "paid_by": "",
         }
     ]
-    client.post(
-        "/import/csv",
-        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows), "override_paid_by_0": "YZ"},
-        follow_redirects=True,
-    )
+    confirm_import(client, parsed_rows, override_paid_by_0="YZ")
 
     with client.application.app_context():
         db = client.application.get_db()
@@ -1238,14 +1170,145 @@ def test_import_confirm_blocks_missing_paid_by_for_spending_rows(client):
         }
     ]
 
-    response = client.post(
-        "/import/csv",
-        data={"action": "confirm", "parsed_rows": json.dumps(parsed_rows), "import_default_paid_by": ""},
-        follow_redirects=True,
-    )
+    response = confirm_import(client, parsed_rows, import_default_paid_by="")
     assert b"Cannot import spending rows with missing Paid by" in response.data
 
     with client.application.app_context():
         db = client.application.get_db()
         count = db.execute("SELECT COUNT(*) as c FROM expenses WHERE description = 'No payer'").fetchone()["c"]
     assert count == 0
+
+
+def test_edit_expense_accepts_negative_amount(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-11-01", "amount": "15", "category_id": "", "description": "To edit"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'To edit'").fetchone()["id"]
+
+    response = client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-11-02", "amount": "-15.25", "category_id": "", "description": "To edit"},
+        follow_redirects=True,
+    )
+    assert b"Expense updated" in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT amount FROM expenses WHERE id = ?", (expense_id,)).fetchone()
+    assert row["amount"] == -15.25
+
+
+def test_import_csv_handles_quotes_and_newlines_in_description(client):
+    register(client)
+    login(client)
+
+    csv_content = 'Date,Description,Amount\n2026-11-01,"Coffee ""Large""\nSecond line",-12.34\n'
+    preview = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "quotes.csv")},
+        content_type="multipart/form-data",
+    )
+    assert preview.status_code == 200
+
+    with client.session_transaction() as session_data:
+        preview_id = session_data["import_preview_by_user"]["1"]["preview_id"]
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "preview_id": preview_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in response.data
+
+
+def test_import_confirm_uses_default_paid_by(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-11-03",
+            "amount": -20.0,
+            "description": "Default paid by",
+            "normalized_description": "default paid by",
+            "vendor": "Store",
+            "category": "",
+            "paid_by": "",
+        }
+    ]
+
+    response = confirm_import(client, rows, import_default_paid_by="YZ")
+    assert b"Imported 1 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT paid_by FROM expenses WHERE description = 'Default paid by'").fetchone()
+    assert row["paid_by"] == "YZ"
+
+
+def test_import_preview_expiration_shows_friendly_message(client):
+    register(client)
+    login(client)
+
+    rows = [{"row_index": 0, "user_id": 1, "date": "2026-11-04", "amount": -3.0, "description": "Expired", "normalized_description": "expired", "category": ""}]
+    expired_at = (datetime.utcnow() - timedelta(minutes=31)).isoformat()
+    preview_id = stage_import_preview(client, rows, preview_id="expired-1", created_at=expired_at)
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "preview_id": preview_id},
+        follow_redirects=True,
+    )
+
+    assert b"Preview expired. Please re-upload the file." in response.data
+
+
+def test_import_confirm_applies_vendor_and_category_overrides(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-11-05",
+            "amount": -11.0,
+            "description": "Override row",
+            "normalized_description": "override row",
+            "vendor": "Original Vendor",
+            "category": "Groceries",
+            "auto_category": "Groceries",
+            "paid_by": "DK",
+        }
+    ]
+
+    response = confirm_import(
+        client,
+        rows,
+        override_vendor_0="Updated Vendor",
+        override_category_0="Restaurants",
+    )
+    assert b"Imported 1 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            """
+            SELECT e.vendor, c.name as category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description = 'Override row'
+            """
+        ).fetchone()
+    assert row["vendor"] == "Updated Vendor"
+    assert row["category"] == "Restaurants"

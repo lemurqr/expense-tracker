@@ -6,7 +6,8 @@ import sqlite3
 import json
 import re
 import unicodedata
-from datetime import date, datetime
+import uuid
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 from flask import (
@@ -556,11 +557,37 @@ def get_import_preview_state(user_id):
     return previews.get(str(user_id)) or {"rows": []}
 
 
-def save_import_preview_state(user_id, rows):
+def save_import_preview_state(user_id, rows, preview_id=None):
+    generated_preview_id = str(uuid.uuid4()) if preview_id is None else preview_id
     previews = session.get("import_preview_by_user") or {}
-    previews[str(user_id)] = {"rows": rows}
+    previews[str(user_id)] = {
+        "preview_id": generated_preview_id,
+        "rows": rows,
+        "created_at": datetime.utcnow().isoformat(),
+    }
     session["import_preview_by_user"] = previews
     session.modified = True
+    return generated_preview_id
+
+
+def get_valid_preview_rows(user_id, preview_id, max_age_minutes=30):
+    state = get_import_preview_state(user_id)
+    if not preview_id or state.get("preview_id") != preview_id:
+        return None
+
+    created_at = state.get("created_at")
+    if not created_at:
+        return None
+
+    try:
+        created_at_dt = datetime.fromisoformat(created_at)
+    except ValueError:
+        return None
+
+    if datetime.utcnow() - created_at_dt > timedelta(minutes=max_age_minutes):
+        return None
+
+    return state.get("rows") or []
 
 def placeholder_columns_from_mapping(mapping):
     indices = []
@@ -1256,10 +1283,8 @@ def create_app(test_config=None):
 
             try:
                 amount_value = float(amount)
-                if amount_value <= 0:
-                    raise ValueError
             except ValueError:
-                flash("Amount must be a positive number.")
+                flash("Amount must be a valid number.")
                 return render_template("expense_form.html", categories=categories, expense=None)
 
             if paid_by not in {"", "DK", "YZ"}:
@@ -1346,10 +1371,8 @@ def create_app(test_config=None):
 
             try:
                 amount_value = float(amount)
-                if amount_value <= 0:
-                    raise ValueError
             except ValueError:
-                flash("Amount must be a positive number.")
+                flash("Amount must be a valid number.")
                 return render_template("expense_form.html", categories=categories, expense=expense)
 
             if paid_by not in {"", "DK", "YZ"}:
@@ -1555,11 +1578,11 @@ def create_app(test_config=None):
             import_default_paid_by = normalize_paid_by(request.form.get("import_default_paid_by", ""))
 
             if action == "confirm":
-                preview_state = get_import_preview_state(g.user["id"])
-                state_rows = preview_state.get("rows") or []
-                parsed_rows = json.loads(request.form.get("parsed_rows", "[]"))
-                if state_rows:
-                    parsed_rows = state_rows
+                preview_id = request.form.get("preview_id", "")
+                parsed_rows = get_valid_preview_rows(g.user["id"], preview_id)
+                if parsed_rows is None:
+                    flash("Preview expired. Please re-upload the file.")
+                    return redirect(url_for("import_csv"))
                 db = get_db()
                 imported_count = 0
 
@@ -1670,26 +1693,26 @@ def create_app(test_config=None):
                 save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=request.form.get("file_signature", ""))
 
                 db.commit()
-                save_import_preview_state(g.user["id"], [])
+                save_import_preview_state(g.user["id"], [], preview_id="")
                 flash(f"Imported {imported_count} transaction(s).")
                 return redirect(url_for("dashboard"))
 
             file = request.files.get("csv_file")
             if file is None or not file.filename:
                 flash("Please choose a CSV file.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], parsed_rows_json="[]", detected_mode=None)
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None)
 
             file_bytes = file.read()
             content = decode_csv_bytes(file_bytes)
             if content is None:
                 flash("Could not read file encoding. Please re-save as CSV UTF-8.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], parsed_rows_json="[]", detected_mode=None)
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None)
 
             rows = list(csv.reader(io.StringIO(content)))
             rows = [row for row in rows if any(cell.strip() for cell in row)]
             if not rows:
                 flash("CSV is empty.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], parsed_rows_json="[]", detected_mode=None)
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None)
 
             has_header, inferred_mapping, header_row_index = detect_header_and_mapping(rows)
             detected_format = "header" if has_header else "headerless"
@@ -1759,7 +1782,7 @@ def create_app(test_config=None):
                 row["confidence"] = categorized["confidence"]
                 row["confidence_label"] = confidence_label(categorized["confidence"])
 
-            save_import_preview_state(g.user["id"], parsed_rows)
+            preview_id = save_import_preview_state(g.user["id"], parsed_rows)
             preview_rows = parsed_rows[:20]
             def mapped_column_name(field):
                 value = mapping.get(field, "")
@@ -1789,7 +1812,7 @@ def create_app(test_config=None):
                 mapping=mapping,
                 columns=columns,
                 categories=category_rows,
-                parsed_rows_json=json.dumps(parsed_rows),
+                preview_id=preview_id,
                 detected_mode="headered" if has_header else "headerless",
                 has_header=has_header,
                 detected_format=detected_format,
@@ -1807,7 +1830,7 @@ def create_app(test_config=None):
             mapping=saved_mapping or default_mapping,
             columns=placeholder_columns_from_mapping(saved_mapping),
             categories=[],
-            parsed_rows_json="[]",
+            preview_id="",
             detected_mode=None,
             has_header=saved_payload.get("has_header", False),
             detected_format=saved_payload.get("detected_format", ""),
