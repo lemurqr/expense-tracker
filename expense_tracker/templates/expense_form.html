@@ -3,6 +3,10 @@
 <section class="card">
   <h2>{{ 'Edit Expense' if expense else 'Add Expense' }}</h2>
   <form method="post" class="form-grid">
+    <input type="hidden" name="month" value="{{ filter_params.month if filter_params else "" }}">
+    <input type="hidden" name="start" value="{{ filter_params.start if filter_params else "" }}">
+    <input type="hidden" name="end" value="{{ filter_params.end if filter_params else "" }}">
+    {% if expense and expense.updated_at %}<input type="hidden" name="updated_at" value="{{ expense.updated_at }}">{% endif %}
     <label>Date
       <input type="date" name="date" value="{{ expense.date if expense else '' }}" required>
     </label>

@@ -771,6 +771,93 @@ def create_app(test_config=None):
 
         return wrapped_view
 
+    def resolve_dashboard_filters(args, default_to_current_month=True):
+        selected_month = (args.get("month") or "").strip()
+        start_date = (args.get("start") or "").strip()
+        end_date = (args.get("end") or "").strip()
+        quick = (args.get("preset") or "").strip()
+
+        def parse_date(value):
+            if not value:
+                return None
+            try:
+                return datetime.strptime(value, "%Y-%m-%d").date()
+            except ValueError:
+                return None
+
+        today = date.today()
+        if quick == "this_month":
+            first = today.replace(day=1)
+            start_date, end_date = first.isoformat(), today.isoformat()
+            selected_month = ""
+        elif quick == "last_month":
+            first_of_this_month = today.replace(day=1)
+            end = first_of_this_month - timedelta(days=1)
+            start = end.replace(day=1)
+            start_date, end_date = start.isoformat(), end.isoformat()
+            selected_month = ""
+        elif quick == "last_3_months":
+            first_of_this_month = today.replace(day=1)
+            start = (first_of_this_month - timedelta(days=1)).replace(day=1)
+            start = (start - timedelta(days=1)).replace(day=1)
+            start_date, end_date = start.isoformat(), today.isoformat()
+            selected_month = ""
+        elif quick == "ytd":
+            start = today.replace(month=1, day=1)
+            start_date, end_date = start.isoformat(), today.isoformat()
+            selected_month = ""
+
+        parsed_start = parse_date(start_date)
+        parsed_end = parse_date(end_date)
+
+        if start_date and end_date and parsed_start and parsed_end and parsed_start > parsed_end:
+            parsed_start, parsed_end = parsed_end, parsed_start
+            start_date, end_date = parsed_start.isoformat(), parsed_end.isoformat()
+
+        if selected_month and (parsed_start or parsed_end):
+            selected_month = ""
+
+        filter_sql = "e.user_id = ?"
+        params = [g.user["id"]]
+        period_label = "All time"
+
+        if parsed_start and parsed_end:
+            filter_sql += " AND e.date BETWEEN ? AND ?"
+            params.extend([start_date, end_date])
+            period_label = f"{start_date} → {end_date}"
+        elif selected_month:
+            filter_sql += " AND e.date LIKE ?"
+            params.append(f"{selected_month}%")
+            period_label = selected_month
+        else:
+            if default_to_current_month:
+                selected_month = today.strftime("%Y-%m")
+                filter_sql += " AND e.date LIKE ?"
+                params.append(f"{selected_month}%")
+                period_label = selected_month
+
+        return {
+            "filter_sql": filter_sql,
+            "params": params,
+            "selected_month": selected_month,
+            "start_date": start_date,
+            "end_date": end_date,
+            "period_label": period_label,
+        }
+
+    def current_filter_redirect_params(values_source):
+        month = (values_source.get("month") or "").strip()
+        start_date = (values_source.get("start") or "").strip()
+        end_date = (values_source.get("end") or "").strip()
+
+        params = {}
+        if start_date and end_date:
+            params["start"] = start_date
+            params["end"] = end_date
+        elif month:
+            params["month"] = month
+        return params
+
     @app.before_request
     def load_logged_in_user():
         user_id = session.get("user_id")
@@ -796,6 +883,9 @@ def create_app(test_config=None):
             db.execute("ALTER TABLE expenses ADD COLUMN category_confidence INTEGER")
         if "category_source" not in columns:
             db.execute("ALTER TABLE expenses ADD COLUMN category_source TEXT")
+        if "updated_at" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN updated_at TEXT")
+            db.execute("UPDATE expenses SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
 
         db.execute(
             """
@@ -1090,20 +1180,19 @@ def create_app(test_config=None):
     @app.route("/dashboard")
     @login_required
     def dashboard():
-        selected_month = request.args.get("month") or date.today().strftime("%Y-%m")
-        month_like = f"{selected_month}%"
+        filters = resolve_dashboard_filters(request.args)
         db = get_db()
 
         expenses = db.execute(
             """
-            SELECT e.id, e.date, e.amount, e.description, c.name as category,
+            SELECT e.id, e.date, e.amount, e.description, c.name as category, e.updated_at,
                    e.category_confidence, e.category_source, e.paid_by
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.user_id = ? AND e.date LIKE ?
+            WHERE {filter_sql}
             ORDER BY e.date DESC, e.id DESC
-            """,
-            (g.user["id"], month_like),
+            """.format(filter_sql=filters["filter_sql"]),
+            tuple(filters["params"]),
         ).fetchall()
 
         summary = db.execute(
@@ -1111,29 +1200,29 @@ def create_app(test_config=None):
             SELECT COALESCE(c.name, 'Uncategorized') as category, ROUND(SUM(e.amount), 2) as total
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.user_id = ? AND e.date LIKE ? AND e.is_transfer = 0 AND e.is_personal = 0
+            WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
             ORDER BY total DESC
-            """,
-            (g.user["id"], month_like),
+            """.format(filter_sql=filters["filter_sql"]),
+            tuple(filters["params"]),
         ).fetchall()
 
         total = db.execute(
             """
             SELECT ROUND(COALESCE(SUM(amount), 0), 2) as total
-            FROM expenses
-            WHERE user_id = ? AND date LIKE ? AND is_transfer = 0
-            """,
-            (g.user["id"], month_like),
+            FROM expenses e
+            WHERE {filter_sql} AND e.is_transfer = 0
+            """.format(filter_sql=filters["filter_sql"]),
+            tuple(filters["params"]),
         ).fetchone()["total"]
 
         shared_total = db.execute(
             """
             SELECT ROUND(COALESCE(SUM(amount), 0), 2) as total
-            FROM expenses
-            WHERE user_id = ? AND date LIKE ? AND is_transfer = 0 AND is_personal = 0
-            """,
-            (g.user["id"], month_like),
+            FROM expenses e
+            WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
+            """.format(filter_sql=filters["filter_sql"]),
+            tuple(filters["params"]),
         ).fetchone()["total"]
 
         pet_placeholders = ", ".join(["?"] * len(PET_CATEGORIES))
@@ -1178,10 +1267,39 @@ def create_app(test_config=None):
                     THEN 1 ELSE 0 END) as missing_paid_by_count
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.user_id = ? AND e.date LIKE ?
+            WHERE {filters['filter_sql']}
             """,
-            PET_CATEGORIES * 5 + [g.user["id"], month_like],
+            tuple(PET_CATEGORIES * 5 + filters["params"]),
         ).fetchone()
+
+        monthly_settlement = db.execute(
+            f"""
+            SELECT
+                SUBSTR(e.date, 1, 7) as month,
+                ROUND(COALESCE(SUM(CASE
+                    WHEN e.amount < 0
+                         AND e.paid_by = 'DK'
+                         AND e.is_transfer = 0
+                         AND COALESCE(c.name, '') <> 'Personal'
+                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
+                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
+                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as dk_paid,
+                ROUND(COALESCE(SUM(CASE
+                    WHEN e.amount < 0
+                         AND e.paid_by = 'YZ'
+                         AND e.is_transfer = 0
+                         AND COALESCE(c.name, '') <> 'Personal'
+                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
+                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
+                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as yz_paid
+            FROM expenses e
+            LEFT JOIN categories c ON e.category_id = c.id
+            WHERE {filters['filter_sql']}
+            GROUP BY SUBSTR(e.date, 1, 7)
+            ORDER BY month ASC
+            """,
+            tuple(PET_CATEGORIES * 2 + filters["params"]),
+        ).fetchall()
 
         dk_shared = settlement_row["dk_shared"] or 0
         yz_shared = settlement_row["yz_shared"] or 0
@@ -1234,6 +1352,15 @@ def create_app(test_config=None):
             "missing_paid_by_count": missing_paid_by_count,
             "result_direction": final_direction,
             "result_amount": round(final_amount, 2),
+            "monthly_breakdown": [
+                {
+                    "month": row["month"],
+                    "dk_paid": row["dk_paid"] or 0,
+                    "yz_paid": row["yz_paid"] or 0,
+                    "result": round((row["yz_paid"] or 0) - (row["dk_paid"] or 0), 2),
+                }
+                for row in monthly_settlement
+            ],
         }
 
         all_categories = db.execute(
@@ -1248,7 +1375,10 @@ def create_app(test_config=None):
             total=total,
             shared_total=shared_total,
             settlement=settlement,
-            selected_month=selected_month,
+            selected_month=filters["selected_month"],
+            start_date=filters["start_date"],
+            end_date=filters["end_date"],
+            period_label=filters["period_label"],
             all_categories=all_categories,
         )
 
@@ -1353,6 +1483,9 @@ def create_app(test_config=None):
             paid_by = normalize_paid_by(request.form.get("paid_by", ""))
             category_id = request.form.get("category_id") or None
             description = request.form.get("description", "").strip()
+            submitted_updated_at = (request.form.get("updated_at") or "").strip()
+            effective_updated_at = submitted_updated_at or (expense["updated_at"] or "")
+            redirect_params = current_filter_redirect_params(request.form)
             category_name = db.execute(
                 "SELECT name FROM categories WHERE id = ? AND user_id = ?",
                 (category_id, g.user["id"]),
@@ -1381,18 +1514,18 @@ def create_app(test_config=None):
                 amount_value = float(amount)
             except ValueError:
                 flash("Amount must be a valid number.")
-                return render_template("expense_form.html", categories=categories, expense=expense)
+                return render_template("expense_form.html", categories=categories, expense=expense, filter_params=redirect_params)
 
             if paid_by not in {"", "DK", "YZ"}:
                 flash("Paid by must be DK or YZ.")
-                return render_template("expense_form.html", categories=categories, expense=expense)
+                return render_template("expense_form.html", categories=categories, expense=expense, filter_params=redirect_params)
 
-            db.execute(
+            result = db.execute(
                 """
                 UPDATE expenses
                 SET date = ?, amount = ?, category_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?,
-                    category_confidence = ?, category_source = ?, tags = ?, paid_by = ?
-                WHERE id = ? AND user_id = ?
+                    category_confidence = ?, category_source = ?, tags = ?, paid_by = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ? AND COALESCE(updated_at, '') = ?
                 """,
                 (
                     expense_date,
@@ -1408,39 +1541,40 @@ def create_app(test_config=None):
                     paid_by,
                     expense_id,
                     g.user["id"],
+                    effective_updated_at,
                 ),
             )
+            if result.rowcount == 0:
+                flash("This transaction was edited in another session. Please reload.")
+                db.rollback()
+                return redirect(url_for("edit_expense", expense_id=expense_id, **redirect_params))
             db.commit()
             if category_id and str(previous_category_id or "") != str(category_id):
                 learn_rule(g.user["id"], description, expense["vendor"] or derive_vendor(description), category_id, "manual_edit")
             flash("Expense updated.")
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("dashboard", **redirect_params))
 
-        return render_template("expense_form.html", categories=categories, expense=expense)
+        return render_template("expense_form.html", categories=categories, expense=expense, filter_params=current_filter_redirect_params(request.args))
 
     @app.post("/expenses/<int:expense_id>/delete")
     @login_required
     def delete_expense(expense_id):
         db = get_db()
-        month = (request.form.get("month") or "").strip()
+        redirect_params = current_filter_redirect_params(request.form)
         db.execute("DELETE FROM expenses WHERE id = ? AND user_id = ?", (expense_id, g.user["id"]))
         db.commit()
         flash("Expense deleted.")
-        if month:
-            return redirect(url_for("dashboard", month=month))
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("dashboard", **redirect_params))
 
     @app.post("/expenses/bulk")
     @login_required
     def bulk_expense_action():
         db = get_db()
         action = request.form["action"].strip() if "action" in request.form else ""
-        month = (request.form.get("month") or "").strip()
+        redirect_params = current_filter_redirect_params(request.form)
 
         def redirect_dashboard():
-            if month:
-                return redirect(url_for("dashboard", month=month))
-            return redirect(url_for("dashboard"))
+            return redirect(url_for("dashboard", **redirect_params))
 
         raw_ids = request.form.getlist("selected_ids")
         ids = []
@@ -1587,20 +1721,17 @@ def create_app(test_config=None):
     @app.route("/export/csv")
     @login_required
     def export_csv():
-        selected_month = request.args.get("month")
+        filters = resolve_dashboard_filters(request.args, default_to_current_month=False)
         db = get_db()
 
         query = """
             SELECT e.date, e.amount, COALESCE(c.name, 'Uncategorized') as category, e.description
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.user_id = ?
+            WHERE {filter_sql}
         """
-        params = [g.user["id"]]
-
-        if selected_month:
-            query += " AND e.date LIKE ?"
-            params.append(f"{selected_month}%")
+        query = query.format(filter_sql=filters["filter_sql"])
+        params = list(filters["params"])
 
         query += " ORDER BY e.date ASC"
         rows = db.execute(query, tuple(params)).fetchall()
@@ -1615,7 +1746,11 @@ def create_app(test_config=None):
             output.getvalue(),
             mimetype="text/csv",
             headers={
-                "Content-Disposition": f"attachment; filename=expenses-{selected_month or 'all'}.csv"
+                "Content-Disposition": (
+                    f"attachment; filename=expenses-{filters['selected_month']}.csv"
+                    if filters["selected_month"]
+                    else f"attachment; filename=expenses-{filters['start_date'] or 'all'}-{filters['end_date'] or 'all'}.csv"
+                )
             },
         )
 

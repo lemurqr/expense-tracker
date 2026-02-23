@@ -133,6 +133,79 @@ def test_dashboard_month_filter(client):
     assert b"$30.00" not in response.data
 
 
+def test_dashboard_date_range_filter_and_totals(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-01-31", "amount": "-10", "category_id": "", "description": "Outside"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-10", "amount": "-20", "category_id": "", "description": "Inside A"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-03-05", "amount": "-30", "category_id": "", "description": "Inside B"},
+        follow_redirects=True,
+    )
+
+    response = client.get("/dashboard?start=2026-02-01&end=2026-03-31")
+    assert b"Inside A" in response.data
+    assert b"Inside B" in response.data
+    assert b"Outside" not in response.data
+    assert b"$-50.00" in response.data
+
+
+def test_export_csv_respects_date_range(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-01", "amount": "-10", "category_id": "", "description": "In CSV"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-01", "amount": "-11", "category_id": "", "description": "Out CSV"},
+        follow_redirects=True,
+    )
+
+    csv_response = client.get("/export/csv?start=2026-02-01&end=2026-03-01")
+    assert csv_response.status_code == 200
+    assert b"In CSV" in csv_response.data
+    assert b"Out CSV" not in csv_response.data
+
+
+def test_settlement_respects_date_range(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-10", "amount": "-40", "paid_by": "DK", "category_id": "", "description": "Shared DK"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-12", "amount": "-10", "paid_by": "YZ", "category_id": "", "description": "Shared YZ"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-12", "amount": "-100", "paid_by": "YZ", "category_id": "", "description": "Outside"},
+        follow_redirects=True,
+    )
+
+    response = client.get("/dashboard?start=2026-02-01&end=2026-02-28")
+    assert b"DK shared paid: $40.00" in response.data
+    assert b"YZ shared paid: $10.00" in response.data
+
+
 def test_import_cibc_headerless_csv(client):
     register(client)
     login(client)
