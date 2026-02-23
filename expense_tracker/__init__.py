@@ -696,7 +696,9 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 "description": row_description,
                 "vendor": row_vendor,
                 "vendor_key": normalize_text(row_vendor),
+                "vendor_rule_key": extract_pattern(row_vendor, max_words=4),
                 "normalized_description": normalized_description,
+                "description_rule_key": extract_pattern(row_description),
                 "category": infer_category(row_description, row_category),
                 "tags": derive_tags(row_description),
                 "paid_by": row_paid_by,
@@ -1420,16 +1422,19 @@ def create_app(test_config=None):
     @login_required
     def delete_expense(expense_id):
         db = get_db()
+        month = (request.form.get("month") or "").strip()
         db.execute("DELETE FROM expenses WHERE id = ? AND user_id = ?", (expense_id, g.user["id"]))
         db.commit()
         flash("Expense deleted.")
+        if month:
+            return redirect(url_for("dashboard", month=month))
         return redirect(url_for("dashboard"))
 
     @app.post("/expenses/bulk")
     @login_required
     def bulk_expense_action():
         db = get_db()
-        action = (request.form.get("action") or "").strip()
+        action = request.form["action"].strip() if "action" in request.form else ""
         month = (request.form.get("month") or "").strip()
 
         def redirect_dashboard():
@@ -1437,7 +1442,7 @@ def create_app(test_config=None):
                 return redirect(url_for("dashboard", month=month))
             return redirect(url_for("dashboard"))
 
-        raw_ids = request.form.getlist("expense_ids")
+        raw_ids = request.form.getlist("selected_ids")
         ids = []
         for raw_id in raw_ids:
             try:
@@ -1614,13 +1619,14 @@ def create_app(test_config=None):
             },
         )
 
-    @app.post("/import/csv/apply_vendor")
+    @app.post("/import/csv/apply_override")
     @login_required
-    def apply_vendor_category_override():
+    def apply_preview_category_override():
         payload = request.get_json(silent=True) or {}
-        vendor_key = normalize_text(payload.get("vendor_key", ""))
+        match_type = (payload.get("match_type") or "vendor").strip()
+        match_key = normalize_text(payload.get("match_key", ""))
         category_name = (payload.get("category_name") or "").strip()
-        if not vendor_key or not category_name:
+        if match_type not in {"vendor", "description"} or not match_key or not category_name:
             return jsonify({"updated_count": 0, "updated_rows": []}), 400
 
         db = get_db()
@@ -1632,7 +1638,12 @@ def create_app(test_config=None):
         updated_rows = []
 
         for row in rows:
-            if normalize_text(row.get("vendor_key") or row.get("vendor", "")) != vendor_key:
+            row_match_key = ""
+            if match_type == "vendor":
+                row_match_key = row.get("vendor_rule_key") or normalize_text(row.get("vendor_key") or row.get("vendor", ""))
+            else:
+                row_match_key = row.get("description_rule_key") or extract_pattern(row.get("description", ""))
+            if row_match_key != match_key:
                 continue
 
             categorized = categorize_transaction(
@@ -1686,7 +1697,7 @@ def create_app(test_config=None):
                 ).fetchall()
                 category_lookup = {normalize_description(row["name"]): row["id"] for row in category_rows}
                 available_category_names = [row["name"] for row in category_rows]
-                learned_vendor_rules = set()
+                learned_rule_keys = set()
 
                 raw_default_paid_by = request.form.get("import_default_paid_by")
                 default_paid_by = normalize_paid_by(raw_default_paid_by or "")
@@ -1767,10 +1778,11 @@ def create_app(test_config=None):
                         row.get("auto_category", "")
                     ):
                         vendor_pattern = extract_pattern(row.get("vendor", ""), max_words=4)
-                        vendor_rule_key = (vendor_pattern, category_id)
-                        if vendor_pattern and vendor_rule_key not in learned_vendor_rules:
+                        description_pattern = extract_pattern(row.get("description", ""))
+                        rule_identity = (vendor_pattern, description_pattern, category_id)
+                        if rule_identity not in learned_rule_keys:
                             learn_rule(g.user["id"], row.get("description", ""), row.get("vendor", ""), category_id, "import_override")
-                            learned_vendor_rules.add(vendor_rule_key)
+                            learned_rule_keys.add(rule_identity)
                     imported_count += 1
 
                 mapping = {

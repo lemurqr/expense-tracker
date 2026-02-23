@@ -920,7 +920,7 @@ def test_apply_same_vendor_endpoint_updates_preview_state(client):
             }
         }
 
-    response = client.post('/import/csv/apply_vendor', json={"vendor_key": "coffee shop", "category_name": "Restaurants"})
+    response = client.post('/import/csv/apply_override', json={"match_type": "vendor", "match_key": "coffee shop", "category_name": "Restaurants"})
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["updated_count"] == 2
@@ -1313,6 +1313,41 @@ def test_import_confirm_applies_vendor_and_category_overrides(client):
     assert row["vendor"] == "Updated Vendor"
     assert row["category"] == "Restaurants"
 
+
+
+def test_import_confirm_override_can_learn_description_rule(client):
+    register(client)
+    login(client)
+
+    parsed_rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-10-11",
+            "amount": -12.50,
+            "description": "Unique Alpha Vendorless Charge",
+            "normalized_description": "unique alpha vendorless charge",
+            "vendor": " ",
+            "vendor_key": "",
+            "vendor_rule_key": "",
+            "description_rule_key": "unique alpha vendorless",
+            "category": "",
+            "auto_category": "",
+            "paid_by": "DK",
+        }
+    ]
+
+    response = confirm_import(client, parsed_rows, override_category_0="Restaurants")
+    assert b"Imported 1 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rule = db.execute(
+            "SELECT key_type, pattern FROM category_rules WHERE source = 'import_override' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert rule["key_type"] == "description"
+    assert rule["pattern"] == "unique alpha vendorless"
+
 def test_bulk_delete_removes_multiple_rows_for_same_user(client):
     register(client)
     login(client)
@@ -1334,7 +1369,7 @@ def test_bulk_delete_removes_multiple_rows_for_same_user(client):
 
     response = client.post(
         "/expenses/bulk",
-        data={"action": "delete", "month": "2026-02", "expense_ids": [str(v) for v in ids]},
+        data={"action": "delete", "month": "2026-02", "selected_ids": [str(v) for v in ids]},
         follow_redirects=True,
     )
 
@@ -1368,7 +1403,7 @@ def test_bulk_update_category_sets_multiple_rows(client):
 
     response = client.post(
         "/expenses/bulk",
-        data={"action": "set_category", "category_id": str(category_id), "expense_ids": [str(v) for v in ids]},
+        data={"action": "set_category", "category_id": str(category_id), "selected_ids": [str(v) for v in ids]},
         follow_redirects=True,
     )
 
@@ -1381,6 +1416,39 @@ def test_bulk_update_category_sets_multiple_rows(client):
         ).fetchall()
     assert all(row["category_id"] == category_id for row in rows)
 
+
+
+
+def test_bulk_update_paid_by_sets_multiple_rows(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-03", "amount": "30", "category_id": "", "description": "Paid A", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-04", "amount": "40", "category_id": "", "description": "Paid B", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        ids = [row["id"] for row in db.execute("SELECT id FROM expenses WHERE description IN ('Paid A', 'Paid B')").fetchall()]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "set_paid_by", "paid_by": "YZ", "selected_ids": [str(v) for v in ids]},
+        follow_redirects=True,
+    )
+
+    assert b"Updated 2 transactions" in response.data
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute("SELECT paid_by FROM expenses WHERE id IN (?, ?) ORDER BY id", (ids[0], ids[1])).fetchall()
+    assert all(row["paid_by"] == "YZ" for row in rows)
 
 def test_bulk_actions_prevent_cross_user_modification(client):
     register(client, username="user1", password="password")
@@ -1412,7 +1480,7 @@ def test_bulk_actions_prevent_cross_user_modification(client):
 
     response = client.post(
         "/expenses/bulk",
-        data={"action": "delete", "expense_ids": [str(user1_expense_id), str(user2_expense_id)]},
+        data={"action": "delete", "selected_ids": [str(user1_expense_id), str(user2_expense_id)]},
         follow_redirects=True,
     )
 
