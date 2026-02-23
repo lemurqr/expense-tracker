@@ -114,7 +114,7 @@
       </thead>
       <tbody>
         {% for row in preview_rows %}
-        <tr class="preview-row" data-row-index="{{ row.row_index }}" data-vendor-key="{{ row.vendor_key }}" data-confidence="{{ row.confidence }}">
+        <tr class="preview-row" data-row-index="{{ row.row_index }}" data-vendor-key="{{ row.vendor_key }}" data-vendor-rule-key="{{ row.vendor_rule_key }}" data-description-rule-key="{{ row.description_rule_key }}" data-confidence="{{ row.confidence }}">
           <td><input type="checkbox" class="row-check" checked></td>
           <td>{{ row.date }}</td>
           <td>{{ '%.2f'|format(row.amount) }}</td>
@@ -128,15 +128,22 @@
             </select>
           </td>
           <td>
-            <select name="override_category_{{ row.row_index }}" class="category-select">
-              <option value="">Use suggested ({{ row.category or 'Uncategorized' }})</option>
+            <select name="override_category_{{ row.row_index }}" class="category-select" data-original-category="{{ row.category or "" }}">
+              <option value="" {% if not row.override_category %}selected{% endif %}>Use suggested ({{ row.category or 'Uncategorized' }})</option>
               {% for category in categories %}
-              <option value="{{ category.name }}">{{ category.name }}</option>
+              <option value="{{ category.name }}" {% if row.override_category == category.name %}selected{% endif %}>{{ category.name }}</option>
               {% endfor %}
             </select>
-            <label class="inline-form apply-all-vendor-option" hidden>
-              <input type="checkbox" class="apply-category-to-vendor" data-index="{{ row.row_index }}">
-              Apply this category to all rows with same normalized vendor in this preview.
+            <label class="inline-form apply-all-option" hidden>
+              <input type="checkbox" class="apply-category-to-matching" data-index="{{ row.row_index }}">
+              Apply to all matching rows in this preview
+            </label>
+            <label class="inline-form apply-all-match-type" hidden>
+              Match by
+              <select class="apply-match-type">
+                <option value="vendor">vendor</option>
+                <option value="description">description pattern</option>
+              </select>
             </label>
           </td>
           <td>
@@ -170,6 +177,7 @@
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
     <p id="applyVendorMessage" class="legend-text"></p>
+    <p class="legend-text">Rows with manual/bulk override are highlighted.</p>
     <button type="submit">Confirm Import</button>
   </form>
   {% else %}
@@ -191,14 +199,22 @@
     return ['confidence-low', 'badge-low'];
   };
 
+  const markRowOverridden = (row, isOverridden = true) => {
+    if (!row) return;
+    row.classList.toggle('overridden-row', isOverridden);
+  };
+
   const toggleApplyAllOption = (categorySelect) => {
     const row = categorySelect.closest('.preview-row');
     if (!row) return;
-    const option = row.querySelector('.apply-all-vendor-option');
-    const checkbox = row.querySelector('.apply-category-to-vendor');
-    if (!option || !checkbox) return;
-    option.hidden = !categorySelect.value;
-    if (!categorySelect.value) checkbox.checked = false;
+    const option = row.querySelector('.apply-all-option');
+    const matchTypeWrap = row.querySelector('.apply-all-match-type');
+    const checkbox = row.querySelector('.apply-category-to-matching');
+    if (!option || !checkbox || !matchTypeWrap) return;
+    const hasValue = !!categorySelect.value;
+    option.hidden = !hasValue;
+    matchTypeWrap.hidden = !hasValue;
+    if (!hasValue) checkbox.checked = false;
   };
 
   const showAppliedMessage = (count) => {
@@ -208,10 +224,14 @@
 
   document.querySelectorAll('.category-select').forEach((select) => {
     toggleApplyAllOption(select);
-    select.addEventListener('change', () => toggleApplyAllOption(select));
+    select.addEventListener('change', () => {
+      toggleApplyAllOption(select);
+      const row = select.closest('.preview-row');
+      markRowOverridden(row, !!select.value);
+    });
   });
 
-  document.querySelectorAll('.apply-category-to-vendor').forEach((checkbox) => {
+  document.querySelectorAll('.apply-category-to-matching').forEach((checkbox) => {
     checkbox.addEventListener('change', async (event) => {
       if (!event.target.checked) return;
       const row = event.target.closest('.preview-row');
@@ -221,8 +241,11 @@
         return;
       }
 
-      const payload = { vendor_key: row.dataset.vendorKey || '', category_name: select.value };
-      const response = await fetch('/import/csv/apply_vendor', {
+      const matchTypeSelect = row.querySelector('.apply-match-type');
+      const matchType = matchTypeSelect ? matchTypeSelect.value : 'vendor';
+      const matchKey = matchType === 'description' ? (row.dataset.descriptionRuleKey || '') : (row.dataset.vendorRuleKey || row.dataset.vendorKey || '');
+      const payload = { match_type: matchType, match_key: matchKey, category_name: select.value };
+      const response = await fetch('/import/csv/apply_override', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -256,8 +279,7 @@
         if (sourceCell) sourceCell.innerHTML = `<small>${updated.source}</small>`;
 
         target.dataset.confidence = updated.confidence;
-        target.classList.add('updated-row');
-        setTimeout(() => target.classList.remove('updated-row'), 1200);
+        markRowOverridden(target, true);
       });
 
       showAppliedMessage(result.updated_count || 0);
