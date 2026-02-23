@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     category_confidence INTEGER,
     category_source TEXT,
     tags TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users (id),
     FOREIGN KEY (category_id) REFERENCES categories (id)
 );

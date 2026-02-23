@@ -4,9 +4,16 @@
   <h2>Dashboard</h2>
   <form method="get" class="inline-form">
     <label>Month <input type="month" name="month" value="{{ selected_month }}"></label>
+    <label>Start date <input type="date" name="start" value="{{ start_date or '' }}"></label>
+    <label>End date <input type="date" name="end" value="{{ end_date or '' }}"></label>
     <button type="submit">Apply</button>
-    <a class="button" href="{{ url_for('export_csv', month=selected_month) }}">Export CSV</a>
+    <button type="submit" name="preset" value="this_month">This month</button>
+    <button type="submit" name="preset" value="last_month">Last month</button>
+    <button type="submit" name="preset" value="last_3_months">Last 3 months</button>
+    <button type="submit" name="preset" value="ytd">YTD</button>
+    <a class="button" href="{{ url_for('export_csv', month=selected_month, start=start_date, end=end_date) }}">Export CSV</a>
   </form>
+  <p><small>Period: {{ period_label }}</small></p>
   <p><strong>Total spending (includes Personal, excludes Transfers):</strong> ${{ '%.2f'|format(total) }}</p>
   <p><strong>Shared spending (excludes Personal + Transfers):</strong> ${{ '%.2f'|format(shared_total) }}</p>
 </section>
@@ -31,6 +38,31 @@
   {% endif %}
   <p><small>Pet category is 100% YZ responsibility.</small></p>
   <p><small>Excludes Personal and Transfers/Credit Card Payments.</small></p>
+
+  <h4>Monthly breakdown</h4>
+  <table>
+    <thead><tr><th>Month</th><th>DK paid</th><th>YZ paid</th><th>Result</th></tr></thead>
+    <tbody>
+      {% for row in settlement.monthly_breakdown %}
+      <tr>
+        <td>{{ row.month }}</td>
+        <td>${{ '%.2f'|format(row.dk_paid) }}</td>
+        <td>${{ '%.2f'|format(row.yz_paid) }}</td>
+        <td>
+          {% if row.result > 0 %}
+            YZ paid more by ${{ '%.2f'|format(row.result) }}
+          {% elif row.result < 0 %}
+            DK paid more by ${{ '%.2f'|format(row.result|abs) }}
+          {% else %}
+            Even
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No data in selected period.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>
 
 <section class="grid-two">
@@ -40,7 +72,7 @@
       {% for row in summary %}
       <li>{{ row.category }}: ${{ '%.2f'|format(row.total) }}</li>
       {% else %}
-      <li>No expenses for this month.</li>
+      <li>No expenses for this period.</li>
       {% endfor %}
     </ul>
   </div>
@@ -49,6 +81,8 @@
     <h3>Transactions</h3>
     <form method="post" action="{{ url_for('bulk_expense_action') }}" id="bulk-actions-form">
       <input type="hidden" name="month" value="{{ selected_month }}">
+      <input type="hidden" name="start" value="{{ start_date or '' }}">
+      <input type="hidden" name="end" value="{{ end_date or '' }}">
       <div id="bulk-actions-bar" class="bulk-actions-bar" hidden>
         <strong>Selected: <span id="selected-count">0</span></strong>
         <button type="submit" name="action" value="delete" id="bulk-delete-button">Delete selected</button>
@@ -106,9 +140,11 @@
           </td>
           <td><small>{{ expense.category_source or 'unknown' }}</small></td>
           <td>
-            <a href="{{ url_for('edit_expense', expense_id=expense.id) }}">Edit</a>
+            <a href="{{ url_for('edit_expense', expense_id=expense.id, month=selected_month, start=start_date, end=end_date) }}">Edit</a>
             <form method="post" action="{{ url_for('delete_expense', expense_id=expense.id) }}" class="inline-form">
               <input type="hidden" name="month" value="{{ selected_month }}">
+              <input type="hidden" name="start" value="{{ start_date or '' }}">
+              <input type="hidden" name="end" value="{{ end_date or '' }}">
               <button type="submit">Delete</button>
             </form>
           </td>
