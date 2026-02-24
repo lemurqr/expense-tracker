@@ -1,6 +1,7 @@
 from pathlib import Path
 import io
 import json
+import sqlite3
 from datetime import datetime, timedelta
 
 import pytest
@@ -60,11 +61,26 @@ def test_register_login_logout(client):
     response = register(client)
     assert b"Registration successful" in response.data
 
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT password_hash FROM users WHERE username = ?", ("user1",)).fetchone()
+    assert user is not None
+    assert user["password_hash"] != "password"
+    assert user["password_hash"].startswith("scrypt:")
+
     response = login(client)
     assert b"Dashboard" in response.data
 
     response = client.get("/logout", follow_redirects=True)
     assert b"Login" in response.data
+
+
+def test_login_rejects_incorrect_password(client):
+    register(client)
+
+    response = login(client, password="wrong-password")
+
+    assert b"Incorrect username or password." in response.data
 
 
 def test_category_expense_crud_and_export(client):
@@ -1661,6 +1677,36 @@ def test_audit_log_tracks_create_edit_delete_and_import(client):
     assert "edit" in actions
     assert "delete" in actions
     assert "import" in actions
+
+def test_user_password_column_migrates_to_password_hash(tmp_path: Path):
+    db_path = tmp_path / "legacy.sqlite"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", ("legacy-user", "legacy-secret"))
+        conn.commit()
+
+    app = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": str(db_path)})
+    with app.app_context():
+        app.init_db()
+        db = app.get_db()
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+        migrated = db.execute(
+            "SELECT password, password_hash FROM users WHERE username = ?",
+            ("legacy-user",),
+        ).fetchone()
+
+    assert "password_hash" in columns
+    assert migrated["password_hash"] == "legacy-secret"
+
 
 def test_app_auto_initializes_database_on_first_request(tmp_path: Path):
     db_path = tmp_path / "fresh" / "expense_tracker.sqlite"

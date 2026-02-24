@@ -958,6 +958,20 @@ def create_app(test_config=None):
 
     def ensure_schema_updates():
         db = get_db()
+        user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+        if "password_hash" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+            user_columns.add("password_hash")
+
+        if "password" in user_columns:
+            db.execute(
+                """
+                UPDATE users
+                SET password_hash = COALESCE(password_hash, password)
+                WHERE password_hash IS NULL OR password_hash = ''
+                """
+            )
+
         columns = {row["name"] for row in db.execute("PRAGMA table_info(expenses)").fetchall()}
         if "is_transfer" not in columns:
             db.execute("ALTER TABLE expenses ADD COLUMN is_transfer INTEGER NOT NULL DEFAULT 0")
@@ -1284,7 +1298,7 @@ def create_app(test_config=None):
                 try:
                     db = get_db()
                     db.execute(
-                        "INSERT INTO users (username, password) VALUES (?, ?)",
+                        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
                         (username, generate_password_hash(password)),
                     )
                     db.commit()
@@ -1312,7 +1326,7 @@ def create_app(test_config=None):
             user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             error = None
 
-            if user is None or not check_password_hash(user["password"], password):
+            if user is None or not check_password_hash(user["password_hash"], password):
                 error = "Incorrect username or password."
 
             if error is None:
