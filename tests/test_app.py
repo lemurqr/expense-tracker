@@ -1678,6 +1678,61 @@ def test_audit_log_tracks_create_edit_delete_and_import(client):
     assert "delete" in actions
     assert "import" in actions
 
+
+
+def test_rules_route_migrates_legacy_category_rules_columns(tmp_path: Path):
+    db_path = tmp_path / "legacy_rules.sqlite"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE category_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                pattern TEXT NOT NULL,
+                category_id INTEGER NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 100
+            )
+            """
+        )
+        conn.execute("INSERT INTO users (id, username, password_hash) VALUES (1, 'legacy-user', 'hash')")
+        conn.execute("INSERT INTO categories (id, user_id, name) VALUES (1, 1, 'Food')")
+        conn.execute("INSERT INTO category_rules (user_id, pattern, category_id, priority) VALUES (1, 'coffee', 1, 100)")
+        conn.commit()
+
+    app = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": str(db_path)})
+    client = app.test_client()
+
+    with client.session_transaction() as session_data:
+        session_data["user_id"] = 1
+
+    response = client.get("/rules")
+
+    assert response.status_code == 200
+
+    with app.app_context():
+        db = app.get_db()
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
+
+    assert {"last_used_at", "hits", "created_at", "key_type", "source", "enabled", "is_enabled"}.issubset(columns)
 def test_user_password_column_migrates_to_password_hash(tmp_path: Path):
     db_path = tmp_path / "legacy.sqlite"
 
