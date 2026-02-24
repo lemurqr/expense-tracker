@@ -817,8 +817,8 @@ def create_app(test_config=None):
         if selected_month and (parsed_start or parsed_end):
             selected_month = ""
 
-        filter_sql = "e.user_id = ?"
-        params = [g.user["id"]]
+        filter_sql = "e.household_id = ?"
+        params = [g.household_id]
         period_label = "All time"
 
         if parsed_start and parsed_end:
@@ -858,13 +858,67 @@ def create_app(test_config=None):
             params["month"] = month
         return params
 
+    def ensure_user_household(user_id, db=None):
+        db = db or get_db()
+        membership = db.execute(
+            """
+            SELECT hm.household_id, hm.role
+            FROM household_members hm
+            WHERE hm.user_id = ?
+            ORDER BY hm.id ASC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if membership is not None:
+            db.execute("UPDATE expenses SET household_id = ? WHERE user_id = ? AND household_id IS NULL", (membership["household_id"], user_id))
+            return membership["household_id"], membership["role"]
+
+        household_name = f"{user_id}-household"
+        db.execute("INSERT INTO households (name) VALUES (?)", (household_name,))
+        household_id = db.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+        db.execute(
+            "INSERT INTO household_members (household_id, user_id, role) VALUES (?, ?, 'owner')",
+            (household_id, user_id),
+        )
+        db.execute("UPDATE expenses SET household_id = ? WHERE user_id = ?", (household_id, user_id))
+        return household_id, "owner"
+
+    def get_user_household(user_id, db=None):
+        db = db or get_db()
+        household_id, role = ensure_user_household(user_id, db)
+        return {"household_id": household_id, "role": role}
+
+    def log_audit(action, expense_id=None, details=None, user_id=None, db=None):
+        actor_id = user_id or (g.user["id"] if getattr(g, "user", None) else None)
+        if actor_id is None:
+            return
+        db = db or get_db()
+        payload = json.dumps(details or {})
+        db.execute(
+            "INSERT INTO audit_logs (user_id, action, expense_id, details) VALUES (?, ?, ?, ?)",
+            (actor_id, action, expense_id, payload),
+        )
+
+    def get_household_expense(expense_id):
+        return get_db().execute(
+            "SELECT * FROM expenses WHERE id = ? AND household_id = ?",
+            (expense_id, g.household_id),
+        ).fetchone()
+
     @app.before_request
     def load_logged_in_user():
         user_id = session.get("user_id")
+        g.household_id = None
+        g.household_role = None
         if user_id is None:
             g.user = None
         else:
             g.user = get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if g.user is not None:
+                household = get_user_household(g.user["id"])
+                g.household_id = household["household_id"]
+                g.household_role = household["role"]
 
     def ensure_schema_updates():
         db = get_db()
@@ -886,6 +940,63 @@ def create_app(test_config=None):
         if "updated_at" not in columns:
             db.execute("ALTER TABLE expenses ADD COLUMN updated_at TEXT")
             db.execute("UPDATE expenses SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
+        if "household_id" not in columns:
+            db.execute("ALTER TABLE expenses ADD COLUMN household_id INTEGER")
+
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS households (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS household_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                household_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                role TEXT NOT NULL DEFAULT 'member',
+                UNIQUE(household_id, user_id),
+                FOREIGN KEY (household_id) REFERENCES households (id),
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS household_invites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                household_id INTEGER NOT NULL,
+                created_by_user_id INTEGER NOT NULL,
+                email TEXT,
+                code TEXT UNIQUE NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (household_id) REFERENCES households (id),
+                FOREIGN KEY (created_by_user_id) REFERENCES users (id)
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                expense_id INTEGER,
+                details TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                FOREIGN KEY (expense_id) REFERENCES expenses (id)
+            )
+            """
+        )
+
+        user_ids = [row["id"] for row in db.execute("SELECT id FROM users").fetchall()]
+        for user_id in user_ids:
+            ensure_user_household(user_id, db)
 
         db.execute(
             """
@@ -1177,6 +1288,71 @@ def create_app(test_config=None):
         session.clear()
         return redirect(url_for("login"))
 
+    @app.route("/household", methods=("GET", "POST"))
+    @login_required
+    def household_settings():
+        db = get_db()
+        if request.method == "POST":
+            if g.household_role != "owner":
+                flash("Only household owner can invite members.")
+                return redirect(url_for("household_settings"))
+            invite_email = (request.form.get("invite_email") or "").strip()
+            invite_code = uuid.uuid4().hex[:8].upper()
+            db.execute(
+                "INSERT INTO household_invites (household_id, created_by_user_id, email, code) VALUES (?, ?, ?, ?)",
+                (g.household_id, g.user["id"], invite_email or None, invite_code),
+            )
+            db.commit()
+            flash(f"Invite created. Share this code: {invite_code}")
+            return redirect(url_for("household_settings"))
+
+        members = db.execute(
+            """
+            SELECT u.username, hm.role
+            FROM household_members hm
+            JOIN users u ON u.id = hm.user_id
+            WHERE hm.household_id = ?
+            ORDER BY hm.id ASC
+            """,
+            (g.household_id,),
+        ).fetchall()
+        invites = db.execute(
+            "SELECT code, email, created_at FROM household_invites WHERE household_id = ? ORDER BY id DESC LIMIT 10",
+            (g.household_id,),
+        ).fetchall()
+        return render_template("household.html", members=members, invites=invites, role=g.household_role)
+
+    @app.route("/household/join", methods=("GET", "POST"))
+    @login_required
+    def join_household():
+        if request.method == "POST":
+            code = (request.form.get("code") or "").strip().upper()
+            if not code:
+                flash("Invite code is required.")
+                return redirect(url_for("join_household"))
+            db = get_db()
+            invite = db.execute("SELECT * FROM household_invites WHERE code = ?", (code,)).fetchone()
+            if invite is None:
+                flash("Invalid invite code.")
+                return redirect(url_for("join_household"))
+
+            existing = db.execute("SELECT id FROM household_members WHERE user_id = ?", (g.user["id"],)).fetchone()
+            if existing is not None:
+                db.execute("DELETE FROM household_members WHERE user_id = ?", (g.user["id"],))
+            db.execute(
+                "INSERT OR IGNORE INTO household_members (household_id, user_id, role) VALUES (?, ?, 'member')",
+                (invite["household_id"], g.user["id"]),
+            )
+            db.execute(
+                "UPDATE expenses SET household_id = ? WHERE user_id = ?",
+                (invite["household_id"], g.user["id"]),
+            )
+            db.commit()
+            flash("Joined household successfully.")
+            return redirect(url_for("dashboard"))
+
+        return render_template("join_household.html")
+
     @app.route("/dashboard")
     @login_required
     def dashboard():
@@ -1380,6 +1556,7 @@ def create_app(test_config=None):
             end_date=filters["end_date"],
             period_label=filters["period_label"],
             all_categories=all_categories,
+            household_role=g.household_role,
         )
 
     @app.route("/expenses/new", methods=("GET", "POST"))
@@ -1432,13 +1609,14 @@ def create_app(test_config=None):
             db.execute(
                 """
                 INSERT INTO expenses (
-                    user_id, date, amount, category_id, description, vendor, paid_by,
+                    user_id, household_id, date, amount, category_id, description, vendor, paid_by,
                     is_transfer, is_personal, category_confidence, category_source, tags
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     g.user["id"],
+                    g.household_id,
                     expense_date,
                     amount_value,
                     category_id,
@@ -1452,6 +1630,8 @@ def create_app(test_config=None):
                     json.dumps(derive_tags(description)),
                 ),
             )
+            expense_id = db.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+            log_audit("create", expense_id=expense_id, details={"description": description, "amount": amount_value}, db=db)
             db.commit()
             flash("Expense added.")
             return redirect(url_for("dashboard"))
@@ -1459,10 +1639,46 @@ def create_app(test_config=None):
         return render_template("expense_form.html", categories=categories, expense=None)
 
     def get_user_expense(expense_id):
-        expense = get_db().execute(
-            "SELECT * FROM expenses WHERE id = ? AND user_id = ?", (expense_id, g.user["id"])
-        ).fetchone()
+        expense = get_household_expense(expense_id)
         return expense
+
+    @app.get("/expenses/<int:expense_id>")
+    @login_required
+    def expense_detail(expense_id):
+        db = get_db()
+        expense = db.execute(
+            """
+            SELECT e.*, COALESCE(c.name, 'Uncategorized') AS category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.id = ? AND e.household_id = ?
+            """,
+            (expense_id, g.household_id),
+        ).fetchone()
+        if expense is None:
+            flash("Expense not found.")
+            return redirect(url_for("dashboard"))
+
+        logs = db.execute(
+            """
+            SELECT al.*, u.username
+            FROM audit_logs al
+            LEFT JOIN users u ON u.id = al.user_id
+            WHERE al.expense_id = ?
+            ORDER BY al.created_at DESC, al.id DESC
+            """,
+            (expense_id,),
+        ).fetchall()
+        parsed_logs = []
+        for row in logs:
+            details = row["details"] or ""
+            try:
+                details = json.loads(details) if details else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                details = {"raw": row["details"]}
+            parsed_logs.append({"action": row["action"], "username": row["username"], "created_at": row["created_at"], "details": details})
+
+        return render_template("expense_detail.html", expense=expense, audit_logs=parsed_logs)
 
     @app.route("/expenses/<int:expense_id>/edit", methods=("GET", "POST"))
     @login_required
@@ -1525,7 +1741,7 @@ def create_app(test_config=None):
                 UPDATE expenses
                 SET date = ?, amount = ?, category_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?,
                     category_confidence = ?, category_source = ?, tags = ?, paid_by = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND user_id = ? AND COALESCE(updated_at, '') = ?
+                WHERE id = ? AND household_id = ? AND COALESCE(updated_at, '') = ?
                 """,
                 (
                     expense_date,
@@ -1540,7 +1756,7 @@ def create_app(test_config=None):
                     json.dumps(derive_tags(description)),
                     paid_by,
                     expense_id,
-                    g.user["id"],
+                    g.household_id,
                     effective_updated_at,
                 ),
             )
@@ -1548,6 +1764,7 @@ def create_app(test_config=None):
                 flash("This transaction was edited in another session. Please reload.")
                 db.rollback()
                 return redirect(url_for("edit_expense", expense_id=expense_id, **redirect_params))
+            log_audit("edit", expense_id=expense_id, details={"description": description, "amount": amount_value}, db=db)
             db.commit()
             if category_id and str(previous_category_id or "") != str(category_id):
                 learn_rule(g.user["id"], description, expense["vendor"] or derive_vendor(description), category_id, "manual_edit")
@@ -1561,7 +1778,12 @@ def create_app(test_config=None):
     def delete_expense(expense_id):
         db = get_db()
         redirect_params = current_filter_redirect_params(request.form)
-        db.execute("DELETE FROM expenses WHERE id = ? AND user_id = ?", (expense_id, g.user["id"]))
+        expense = get_household_expense(expense_id)
+        if expense is None:
+            flash("Expense not found.")
+            return redirect(url_for("dashboard", **redirect_params))
+        db.execute("DELETE FROM expenses WHERE id = ? AND household_id = ?", (expense_id, g.household_id))
+        log_audit("delete", expense_id=expense_id, details={"description": expense["description"], "amount": expense["amount"]}, db=db)
         db.commit()
         flash("Expense deleted.")
         return redirect(url_for("dashboard", **redirect_params))
@@ -1591,8 +1813,8 @@ def create_app(test_config=None):
 
         placeholders = ", ".join(["?"] * len(ids))
         owner_count = db.execute(
-            f"SELECT COUNT(*) as count FROM expenses WHERE user_id = ? AND id IN ({placeholders})",
-            [g.user["id"], *ids],
+            f"SELECT COUNT(*) as count FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
+            [g.household_id, *ids],
         ).fetchone()["count"]
         if owner_count != len(ids):
             flash("One or more selected transactions are invalid.")
@@ -1600,8 +1822,8 @@ def create_app(test_config=None):
 
         if action == "delete":
             result = db.execute(
-                f"DELETE FROM expenses WHERE user_id = ? AND id IN ({placeholders})",
-                [g.user["id"], *ids],
+                f"DELETE FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
+                [g.household_id, *ids],
             )
             db.commit()
             flash(f"Deleted {result.rowcount} transactions")
@@ -1620,8 +1842,8 @@ def create_app(test_config=None):
                 flash("Invalid category.")
                 return redirect_dashboard()
             result = db.execute(
-                f"UPDATE expenses SET category_id = ? WHERE user_id = ? AND id IN ({placeholders})",
-                [category_id, g.user["id"], *ids],
+                f"UPDATE expenses SET category_id = ? WHERE household_id = ? AND id IN ({placeholders})",
+                [category_id, g.household_id, *ids],
             )
             db.commit()
             flash(f"Updated {result.rowcount} transactions")
@@ -1633,8 +1855,8 @@ def create_app(test_config=None):
                 flash("Invalid Paid by value.")
                 return redirect_dashboard()
             result = db.execute(
-                f"UPDATE expenses SET paid_by = ? WHERE user_id = ? AND id IN ({placeholders})",
-                [paid_by, g.user["id"], *ids],
+                f"UPDATE expenses SET paid_by = ? WHERE household_id = ? AND id IN ({placeholders})",
+                [paid_by, g.household_id, *ids],
             )
             db.commit()
             flash(f"Updated {result.rowcount} transactions")
@@ -1643,8 +1865,8 @@ def create_app(test_config=None):
         if action == "set_transfer":
             is_transfer = 1 if request.form.get("is_transfer") in {"1", "true", "on", "yes"} else 0
             result = db.execute(
-                f"UPDATE expenses SET is_transfer = ? WHERE user_id = ? AND id IN ({placeholders})",
-                [is_transfer, g.user["id"], *ids],
+                f"UPDATE expenses SET is_transfer = ? WHERE household_id = ? AND id IN ({placeholders})",
+                [is_transfer, g.household_id, *ids],
             )
             db.commit()
             flash(f"Updated {result.rowcount} transactions")
@@ -1861,9 +2083,9 @@ def create_app(test_config=None):
                     candidates = db.execute(
                         """
                         SELECT description FROM expenses
-                        WHERE user_id = ? AND date = ? AND amount = ?
+                        WHERE household_id = ? AND date = ? AND amount = ?
                         """,
-                        (g.user["id"], row["date"], row["amount"]),
+                        (g.household_id, row["date"], row["amount"]),
                     ).fetchall()
                     if any(
                         normalize_description(item["description"]) == row["normalized_description"]
@@ -1889,13 +2111,14 @@ def create_app(test_config=None):
                     db.execute(
                         """
                         INSERT INTO expenses (
-                            user_id, date, amount, category_id, description, vendor, paid_by,
+                            user_id, household_id, date, amount, category_id, description, vendor, paid_by,
                             is_transfer, is_personal, category_confidence, category_source, tags
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             g.user["id"],
+                            g.household_id,
                             row["date"],
                             row["amount"],
                             category_id,
@@ -1934,6 +2157,7 @@ def create_app(test_config=None):
                 has_header = request.form.get("has_header", "0") == "1"
                 save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=request.form.get("file_signature", ""))
 
+                log_audit("import", details={"imported_count": imported_count}, db=db)
                 db.commit()
                 save_import_preview_state(g.user["id"], [], preview_id="")
                 flash(f"Imported {imported_count} transaction(s).")
