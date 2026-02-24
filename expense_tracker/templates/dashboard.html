@@ -140,6 +140,7 @@
           </td>
           <td><small>{{ expense.category_source or 'unknown' }}</small></td>
           <td>
+            <a href="{{ url_for('expense_detail', expense_id=expense.id) }}">Details</a>
             <a href="{{ url_for('edit_expense', expense_id=expense.id, month=selected_month, start=start_date, end=end_date) }}">Edit</a>
             <form method="post" action="{{ url_for('delete_expense', expense_id=expense.id) }}" class="inline-form">
               <input type="hidden" name="month" value="{{ selected_month }}">

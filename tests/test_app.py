@@ -1564,3 +1564,100 @@ def test_bulk_actions_prevent_cross_user_modification(client):
         other_row_exists = db.execute("SELECT 1 FROM expenses WHERE id = ?", (user2_expense_id,)).fetchone()
     assert owner_row_exists is not None
     assert other_row_exists is not None
+
+
+def test_two_users_in_same_household_see_same_expenses(client):
+    register(client, "dk", "password")
+    login(client, "dk", "password")
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-10", "amount": "-25", "paid_by": "DK", "category_id": "", "description": "Shared Pizza"},
+        follow_redirects=True,
+    )
+
+    owner_household = client.get("/household")
+    assert owner_household.status_code == 200
+    create_invite = client.post("/household", data={"invite_email": "yz@example.com"}, follow_redirects=True)
+    assert b"Invite created" in create_invite.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        code = db.execute("SELECT code FROM household_invites ORDER BY id DESC LIMIT 1").fetchone()["code"]
+
+    client.get("/logout", follow_redirects=True)
+    register(client, "yz", "password")
+    login(client, "yz", "password")
+    join_response = client.post("/household/join", data={"code": code}, follow_redirects=True)
+    assert b"Joined household successfully" in join_response.data
+
+    dashboard = client.get("/dashboard?start=2026-02-01&end=2026-02-28")
+    assert b"Shared Pizza" in dashboard.data
+
+
+def test_user_outside_household_cannot_access_expense_detail(client):
+    register(client, "dk2", "password")
+    login(client, "dk2", "password")
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-10", "amount": "-25", "paid_by": "DK", "category_id": "", "description": "Secret Expense"},
+        follow_redirects=True,
+    )
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Secret Expense'").fetchone()["id"]
+
+    client.get("/logout", follow_redirects=True)
+    register(client, "outsider", "password")
+    login(client, "outsider", "password")
+
+    detail = client.get(f"/expenses/{expense_id}", follow_redirects=True)
+    assert b"Expense not found" in detail.data
+
+
+def test_audit_log_tracks_create_edit_delete_and_import(client):
+    register(client, "auditor", "password")
+    login(client, "auditor", "password")
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-01-10", "amount": "-12.0", "paid_by": "DK", "category_id": "", "description": "Audit Item"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Audit Item'").fetchone()["id"]
+
+    client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-01-11", "amount": "-13.0", "paid_by": "YZ", "category_id": "", "description": "Audit Item Updated"},
+        follow_redirects=True,
+    )
+
+    parsed_rows = [
+        {
+            "user_id": 1,
+            "date": "2026-01-12",
+            "amount": -5.5,
+            "description": "Imported audit",
+            "normalized_description": "imported audit",
+            "category": "",
+            "vendor": "",
+            "paid_by": "DK",
+        }
+    ]
+    confirm_import(client, parsed_rows, import_default_paid_by="DK")
+
+    client.post(f"/expenses/{expense_id}/delete", follow_redirects=True)
+
+    detail = client.get(f"/expenses/{expense_id}", follow_redirects=True)
+    assert b"Expense not found" in detail.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        actions = [row["action"] for row in db.execute("SELECT action FROM audit_logs ORDER BY id ASC").fetchall()]
+    assert "create" in actions
+    assert "edit" in actions
+    assert "delete" in actions
+    assert "import" in actions

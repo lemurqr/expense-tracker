@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <h2>Expense Detail</h2>
+  <p><strong>Date:</strong> {{ expense.date }}</p>
+  <p><strong>Amount:</strong> ${{ '%.2f'|format(expense.amount) }}</p>
+  <p><strong>Category:</strong> {{ expense.category }}</p>
+  <p><strong>Paid by:</strong> {{ expense.paid_by or '—' }}</p>
+  <p><strong>Description:</strong> {{ expense.description }}</p>
+  <p><a href="{{ url_for('edit_expense', expense_id=expense.id) }}">Edit</a></p>
+</section>
+
+<section class="card">
+  <h3>Audit history</h3>
+  <ul>
+    {% for log in audit_logs %}
+      <li>
+        <strong>{{ log.action }}</strong> by {{ log.username or 'unknown' }} at {{ log.created_at }}
+        {% if log.details %}
+          <pre>{{ log.details }}</pre>
+        {% endif %}
+      </li>
+    {% else %}
+      <li>No audit history yet.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

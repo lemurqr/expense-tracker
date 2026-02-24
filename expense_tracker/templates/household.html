@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <h2>Household</h2>
+  <p>Your role: <strong>{{ role }}</strong></p>
+  <h3>Members</h3>
+  <ul>
+    {% for member in members %}
+      <li>{{ member.username }} ({{ member.role }})</li>
+    {% endfor %}
+  </ul>
+
+  {% if role == 'owner' %}
+  <h3>Create invite</h3>
+  <form method="post" class="inline-form">
+    <label>Email (optional) <input type="email" name="invite_email" placeholder="friend@example.com"></label>
+    <button type="submit">Create invite code</button>
+  </form>
+  {% endif %}
+
+  <h3>Recent invites</h3>
+  <ul>
+    {% for invite in invites %}
+      <li><code>{{ invite.code }}</code>{% if invite.email %} for {{ invite.email }}{% endif %} ({{ invite.created_at }})</li>
+    {% else %}
+      <li>No invites yet.</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}
