@@ -97,20 +97,49 @@ Configuration:
 - `ENABLE_LEARNING_RULES` Flask setting (default `True`).
 
 ## Quickstart
+### macOS / Linux
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
 ```
+
+### Windows PowerShell
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python app.py
+```
+
 Open http://127.0.0.1:5000
 
 ## Database setup
-The app automatically uses SQLite at `instance/expense_tracker.sqlite`.
+- SQLite DB path: `instance/expense_tracker.sqlite`
+- The app now auto-initializes schema on startup (`python app.py`) and before auth routes are used.
+- On a fresh clone (no `instance/` folder, no DB file), first request will create the DB and all required tables.
 
-To reset/init manually:
+Manual init command:
 ```bash
 flask --app app init-db
+```
+
+Windows PowerShell:
+```powershell
+flask --app app init-db
+```
+
+### DEV ONLY reset
+When running in debug mode, you can reset the DB safely with:
+- Browser: `http://127.0.0.1:5000/dev/reset-db`
+- Optional env flag (even if debug is off): `ENABLE_DEV_DB_RESET=1`
+
+PowerShell example:
+```powershell
+$env:FLASK_DEBUG="1"
+python app.py
+# then open /dev/reset-db
 ```
 
 ## CSV import
@@ -156,3 +185,7 @@ pytest
 ## Deployment
 - Uses `Procfile` with `gunicorn app:app`
 - Works with Render or Railway Python services.
+
+## Smoke test
+- Delete `instance/` if it exists, run `python app.py`, open `/register`, and create a user.
+- Expected: no `sqlite3.OperationalError` for missing tables.

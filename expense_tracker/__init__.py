@@ -25,6 +25,10 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 
 
+class DatabaseInitError(RuntimeError):
+    """Raised when the SQLite database cannot be initialized."""
+
+
 DEFAULT_CATEGORIES = [
     "Groceries",
     "Restaurants",
@@ -733,6 +737,7 @@ def create_app(test_config=None):
         app.config.update(test_config)
 
     os.makedirs(app.instance_path, exist_ok=True)
+    app.config.setdefault("DB_INIT_ERROR", None)
 
     @app.teardown_appcontext
     def close_db(_=None):
@@ -742,15 +747,30 @@ def create_app(test_config=None):
 
     def get_db():
         if "db" not in g:
-            g.db = sqlite3.connect(app.config["DATABASE"])
-            g.db.row_factory = sqlite3.Row
+            try:
+                os.makedirs(os.path.dirname(app.config["DATABASE"]), exist_ok=True)
+                g.db = sqlite3.connect(app.config["DATABASE"])
+                g.db.row_factory = sqlite3.Row
+            except sqlite3.Error as exc:
+                message = f"Unable to open SQLite database at {app.config['DATABASE']}: {exc}"
+                print(f"[DB ERROR] {message}")
+                app.config["DB_INIT_ERROR"] = message
+                raise DatabaseInitError(message) from exc
         return g.db
 
     def init_db():
-        db = get_db()
-        with app.open_resource("schema.sql") as f:
-            db.executescript(f.read().decode("utf8"))
-        db.commit()
+        try:
+            db = get_db()
+            with app.open_resource("schema.sql") as f:
+                db.executescript(f.read().decode("utf8"))
+            ensure_schema_updates()
+            db.commit()
+            app.config["DB_INIT_ERROR"] = None
+        except (sqlite3.Error, OSError, DatabaseInitError) as exc:
+            message = f"Failed to initialize SQLite database at {app.config['DATABASE']}: {exc}"
+            print(f"[DB INIT ERROR] {message}")
+            app.config["DB_INIT_ERROR"] = message
+            raise DatabaseInitError(message) from exc
 
     @app.cli.command("init-db")
     def init_db_command():
@@ -906,8 +926,24 @@ def create_app(test_config=None):
             (expense_id, g.household_id),
         ).fetchone()
 
+    def render_db_init_error_response():
+        message = app.config.get("DB_INIT_ERROR") or "Database initialization failed."
+        return f"<h1>Database initialization failed</h1><p>{message}</p>", 500
+
+    def ensure_database_ready():
+        if app.config.get("DB_INIT_ERROR"):
+            return False
+        try:
+            init_db()
+        except DatabaseInitError:
+            return False
+        return True
+
     @app.before_request
     def load_logged_in_user():
+        if not ensure_database_ready():
+            return render_db_init_error_response()
+
         user_id = session.get("user_id")
         g.household_id = None
         g.household_role = None
@@ -1232,6 +1268,9 @@ def create_app(test_config=None):
 
     @app.route("/register", methods=("GET", "POST"))
     def register():
+        if not ensure_database_ready():
+            return render_db_init_error_response()
+
         if request.method == "POST":
             username = request.form["username"].strip()
             password = request.form["password"]
@@ -1263,6 +1302,9 @@ def create_app(test_config=None):
 
     @app.route("/login", methods=("GET", "POST"))
     def login():
+        if not ensure_database_ready():
+            return render_db_init_error_response()
+
         if request.method == "POST":
             username = request.form["username"].strip()
             password = request.form["password"]
@@ -2353,6 +2395,31 @@ def create_app(test_config=None):
         db.commit()
         flash("Rule updated.")
         return redirect(url_for("rules"))
+
+
+    @app.route("/dev/reset-db")
+    def dev_reset_db():
+        dev_enabled = app.debug or os.environ.get("ENABLE_DEV_DB_RESET") == "1"
+        if not dev_enabled:
+            return "DEV ONLY: database reset is disabled.", 404
+
+        db = g.pop("db", None)
+        if db is not None:
+            db.close()
+
+        db_path = app.config["DATABASE"]
+        if os.path.exists(db_path):
+            os.remove(db_path)
+
+        init_db()
+        flash("DEV ONLY: database reset complete.")
+        return redirect(url_for("register"))
+
+    with app.app_context():
+        try:
+            init_db()
+        except DatabaseInitError:
+            pass
 
     app.get_db = get_db
     app.init_db = init_db
