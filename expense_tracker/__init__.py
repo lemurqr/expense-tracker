@@ -1070,41 +1070,30 @@ def create_app(test_config=None):
             """
         )
         rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
-        if "key_type" not in rule_columns:
-            db.execute("ALTER TABLE category_rules RENAME TO category_rules_old")
+        missing_rule_columns = [
+            ("key_type", "TEXT NOT NULL DEFAULT 'description'"),
+            ("hits", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_used_at", "TEXT"),
+            ("created_at", "TEXT"),
+            ("updated_at", "TEXT"),
+            ("source", "TEXT NOT NULL DEFAULT 'learned'"),
+            ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("is_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ]
+        for column_name, column_definition in missing_rule_columns:
+            if column_name not in rule_columns:
+                db.execute(f"ALTER TABLE category_rules ADD COLUMN {column_name} {column_definition}")
+                rule_columns.add(column_name)
+
+        if "enabled" in rule_columns and "is_enabled" in rule_columns:
             db.execute(
-                """
-                CREATE TABLE category_rules (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    key_type TEXT NOT NULL DEFAULT 'description',
-                    pattern TEXT NOT NULL,
-                    category_id INTEGER NOT NULL,
-                    priority INTEGER NOT NULL DEFAULT 100,
-                    hits INTEGER NOT NULL DEFAULT 0,
-                    source TEXT NOT NULL,
-                    is_enabled INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    last_used_at TEXT,
-                    UNIQUE(user_id, key_type, pattern),
-                    FOREIGN KEY (user_id) REFERENCES users (id),
-                    FOREIGN KEY (category_id) REFERENCES categories (id)
-                )
-                """
+                "UPDATE category_rules SET is_enabled = COALESCE(is_enabled, enabled, 1), enabled = COALESCE(enabled, is_enabled, 1)"
             )
-            db.execute(
-                """
-                INSERT INTO category_rules (
-                    id, user_id, key_type, pattern, category_id, priority, hits, source, is_enabled, created_at, updated_at, last_used_at
-                )
-                SELECT id, user_id, 'description', pattern, category_id, priority, hits, source, COALESCE(is_enabled, 1), created_at, updated_at, last_used_at
-                FROM category_rules_old
-                """
-            )
-            db.execute("DROP TABLE category_rules_old")
-        elif "is_enabled" not in rule_columns:
-            db.execute("ALTER TABLE category_rules ADD COLUMN is_enabled INTEGER NOT NULL DEFAULT 1")
+
+        if "created_at" in rule_columns:
+            db.execute("UPDATE category_rules SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
+        if "updated_at" in rule_columns:
+            db.execute("UPDATE category_rules SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)")
         db.commit()
 
     def resolve_learned_category(user_id, key_type, pattern, available_categories, db):
