@@ -1661,3 +1661,61 @@ def test_audit_log_tracks_create_edit_delete_and_import(client):
     assert "edit" in actions
     assert "delete" in actions
     assert "import" in actions
+
+def test_app_auto_initializes_database_on_first_request(tmp_path: Path):
+    db_path = tmp_path / "fresh" / "expense_tracker.sqlite"
+    app = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": str(db_path)})
+    client = app.test_client()
+
+    response = client.get("/register")
+
+    assert response.status_code == 200
+    assert db_path.exists()
+
+    with app.app_context():
+        db = app.get_db()
+        tables = {
+            row["name"]
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+    assert {"users", "categories", "expenses", "category_rules", "audit_logs"}.issubset(tables)
+
+
+def test_dev_reset_db_route_requires_debug_flag(client):
+    response = client.get("/dev/reset-db")
+    assert response.status_code == 404
+    assert b"DEV ONLY" in response.data
+
+
+def test_dev_reset_db_route_recreates_database(tmp_path: Path):
+    db_path = tmp_path / "dev" / "expense_tracker.sqlite"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DEBUG": True,
+            "SECRET_KEY": "test",
+            "DATABASE": str(db_path),
+        }
+    )
+    client = app.test_client()
+
+    register(client, "reset-user", "password")
+
+    with app.app_context():
+        db = app.get_db()
+        user_count_before = db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+    assert user_count_before == 1
+
+    response = client.get("/dev/reset-db", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert b"DEV ONLY: database reset complete" in response.data
+    assert b"Register" in response.data
+
+    with app.app_context():
+        db = app.get_db()
+        user_count_after = db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+    assert user_count_after == 0
