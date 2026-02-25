@@ -74,17 +74,12 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE TABLE IF NOT EXISTS category_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    key_type TEXT NOT NULL DEFAULT 'description',
+    key_type TEXT NOT NULL,
     pattern TEXT NOT NULL,
-    category_id INTEGER NOT NULL,
+    category TEXT NOT NULL,
     priority INTEGER NOT NULL DEFAULT 100,
     hits INTEGER NOT NULL DEFAULT 0,
-    source TEXT NOT NULL,
-    is_enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at TEXT,
-    UNIQUE(user_id, key_type, pattern),
-    FOREIGN KEY (user_id) REFERENCES users (id),
-    FOREIGN KEY (category_id) REFERENCES categories (id)
+    source TEXT DEFAULT 'manual',
+    enabled INTEGER NOT NULL DEFAULT 1
 );
