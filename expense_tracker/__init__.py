@@ -24,6 +24,8 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from .db_migrations import apply_migrations, get_db_health
+
 
 class DatabaseInitError(RuntimeError):
     """Raised when the SQLite database cannot be initialized."""
@@ -751,6 +753,8 @@ def create_app(test_config=None):
                 os.makedirs(os.path.dirname(app.config["DATABASE"]), exist_ok=True)
                 g.db = sqlite3.connect(app.config["DATABASE"])
                 g.db.row_factory = sqlite3.Row
+                g.db.execute("PRAGMA foreign_keys = ON")
+                g.db.execute("PRAGMA busy_timeout = 5000")
             except sqlite3.Error as exc:
                 message = f"Unable to open SQLite database at {app.config['DATABASE']}: {exc}"
                 print(f"[DB ERROR] {message}")
@@ -758,38 +762,11 @@ def create_app(test_config=None):
                 raise DatabaseInitError(message) from exc
         return g.db
 
-    def ensure_column(db, table, column, ddl):
-        cols = [r[1] for r in db.execute(f"PRAGMA table_info({table})")]
-        if column not in cols:
-            db.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-            print(f"Added column {table}.{column}")
-
-    def migrate_schema(db):
-        # category_rules safety
-        ensure_column(db, "category_rules", "key_type", "key_type TEXT")
-        ensure_column(db, "category_rules", "priority", "priority INTEGER NOT NULL DEFAULT 100")
-        ensure_column(db, "category_rules", "hits", "hits INTEGER NOT NULL DEFAULT 0")
-        ensure_column(db, "category_rules", "last_used_at", "last_used_at TEXT")
-        ensure_column(db, "category_rules", "created_at", "created_at TEXT")
-        ensure_column(db, "category_rules", "source", "source TEXT DEFAULT 'manual'")
-        ensure_column(db, "category_rules", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
-        ensure_column(db, "category_rules", "is_enabled", "is_enabled INTEGER NOT NULL DEFAULT 1")
-        ensure_column(db, "category_rules", "category", "category TEXT")
-        ensure_column(db, "category_rules", "category_id", "category_id INTEGER")
-
-        # expenses confidence columns
-        ensure_column(db, "expenses", "category_confidence", "category_confidence INTEGER")
-        ensure_column(db, "expenses", "category_source", "category_source TEXT")
-
     def init_db():
         try:
-            db = get_db()
-            with app.open_resource("schema.sql") as f:
-                db.executescript(f.read().decode("utf8"))
-            ensure_schema_updates()
-            db.commit()
+            apply_migrations(app.config["DATABASE"])
             app.config["DB_INIT_ERROR"] = None
-        except (sqlite3.Error, OSError, DatabaseInitError) as exc:
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
             message = f"Failed to initialize SQLite database at {app.config['DATABASE']}: {exc}"
             print(f"[DB INIT ERROR] {message}")
             app.config["DB_INIT_ERROR"] = message
@@ -804,6 +781,20 @@ def create_app(test_config=None):
     def init_db_route():
         init_db()
         return "Database initialized."
+
+    @app.get("/health/db")
+    def db_health():
+        try:
+            return jsonify(get_db_health(app.config["DATABASE"]))
+        except sqlite3.Error as exc:
+            return jsonify({
+                "ok": False,
+                "schema_version": 0,
+                "missing_tables": [],
+                "missing_columns": {},
+                "missing_indexes": [],
+                "error": str(exc),
+            }), 500
 
     def login_required(view):
         @wraps(view)
@@ -953,18 +944,9 @@ def create_app(test_config=None):
         message = app.config.get("DB_INIT_ERROR") or "Database initialization failed."
         return f"<h1>Database initialization failed</h1><p>{message}</p>", 500
 
-    def ensure_database_ready():
-        if app.config.get("DB_INIT_ERROR"):
-            return False
-        try:
-            init_db()
-        except DatabaseInitError:
-            return False
-        return True
-
     @app.before_request
     def load_logged_in_user():
-        if not ensure_database_ready():
+        if app.config.get("DB_INIT_ERROR"):
             return render_db_init_error_response()
 
         user_id = session.get("user_id")
@@ -978,134 +960,6 @@ def create_app(test_config=None):
                 household = get_user_household(g.user["id"])
                 g.household_id = household["household_id"]
                 g.household_role = household["role"]
-
-    def ensure_schema_updates():
-        db = get_db()
-        user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
-        if "password_hash" not in user_columns:
-            db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
-            user_columns.add("password_hash")
-
-        if "password" in user_columns:
-            db.execute(
-                """
-                UPDATE users
-                SET password_hash = COALESCE(password_hash, password)
-                WHERE password_hash IS NULL OR password_hash = ''
-                """
-            )
-
-        columns = {row["name"] for row in db.execute("PRAGMA table_info(expenses)").fetchall()}
-        if "is_transfer" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN is_transfer INTEGER NOT NULL DEFAULT 0")
-        if "is_personal" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN is_personal INTEGER NOT NULL DEFAULT 0")
-        if "tags" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN tags TEXT")
-        if "vendor" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN vendor TEXT")
-        if "paid_by" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN paid_by TEXT")
-        if "category_confidence" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN category_confidence INTEGER")
-        if "category_source" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN category_source TEXT")
-        if "updated_at" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN updated_at TEXT")
-            db.execute("UPDATE expenses SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL")
-        if "household_id" not in columns:
-            db.execute("ALTER TABLE expenses ADD COLUMN household_id INTEGER")
-
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS households (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS household_members (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                household_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                role TEXT NOT NULL DEFAULT 'member',
-                UNIQUE(household_id, user_id),
-                FOREIGN KEY (household_id) REFERENCES households (id),
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-            """
-        )
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS household_invites (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                household_id INTEGER NOT NULL,
-                created_by_user_id INTEGER NOT NULL,
-                email TEXT,
-                code TEXT UNIQUE NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (household_id) REFERENCES households (id),
-                FOREIGN KEY (created_by_user_id) REFERENCES users (id)
-            )
-            """
-        )
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                action TEXT NOT NULL,
-                expense_id INTEGER,
-                details TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (expense_id) REFERENCES expenses (id)
-            )
-            """
-        )
-
-        user_ids = [row["id"] for row in db.execute("SELECT id FROM users").fetchall()]
-        for user_id in user_ids:
-            ensure_user_household(user_id, db)
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS category_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                key_type TEXT NOT NULL,
-                pattern TEXT NOT NULL,
-                category TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                hits INTEGER NOT NULL DEFAULT 0,
-                last_used_at TEXT,
-                source TEXT DEFAULT 'manual',
-                enabled INTEGER NOT NULL DEFAULT 1
-            )
-            """
-        )
-
-        migrate_schema(db)
-
-        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
-        if "category" in rule_columns and "category_id" in rule_columns:
-            db.execute(
-                """
-                UPDATE category_rules
-                SET category = COALESCE(
-                    category,
-                    (SELECT c.name FROM categories c WHERE c.id = category_rules.category_id)
-                )
-                WHERE category IS NULL OR category = ''
-                """
-            )
-        if "enabled" in rule_columns and "is_enabled" in rule_columns:
-            db.execute(
-                "UPDATE category_rules SET enabled = COALESCE(enabled, is_enabled, 1), is_enabled = COALESCE(is_enabled, enabled, 1)"
-            )
-        db.commit()
 
     def resolve_learned_category(user_id, key_type, pattern, available_categories, db):
         if not app.config.get("ENABLE_LEARNING_RULES", True):
@@ -1239,7 +1093,6 @@ def create_app(test_config=None):
 
     def ensure_default_categories(user_id):
         db = get_db()
-        ensure_schema_updates()
 
         existing = db.execute(
             "SELECT id, name FROM categories WHERE user_id = ?",
@@ -1293,9 +1146,6 @@ def create_app(test_config=None):
 
     @app.route("/register", methods=("GET", "POST"))
     def register():
-        if not ensure_database_ready():
-            return render_db_init_error_response()
-
         if request.method == "POST":
             username = request.form["username"].strip()
             password = request.form["password"]
@@ -1327,9 +1177,6 @@ def create_app(test_config=None):
 
     @app.route("/login", methods=("GET", "POST"))
     def login():
-        if not ensure_database_ready():
-            return render_db_init_error_response()
-
         if request.method == "POST":
             username = request.form["username"].strip()
             password = request.form["password"]
