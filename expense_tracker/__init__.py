@@ -956,6 +956,67 @@ def create_app(test_config=None):
                 g.household_id = household["household_id"]
                 g.household_role = household["role"]
 
+    def ensure_category_rules_schema(db):
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS category_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                key_type TEXT NOT NULL DEFAULT 'description',
+                pattern TEXT NOT NULL,
+                category_id INTEGER,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                hits INTEGER NOT NULL DEFAULT 0,
+                last_used_at TEXT,
+                source TEXT DEFAULT 'manual',
+                priority INTEGER NOT NULL DEFAULT 100,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, key_type, pattern),
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                FOREIGN KEY (category_id) REFERENCES categories (id)
+            )
+            """
+        )
+
+        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
+        required_rule_columns = [
+            ("key_type", "TEXT NOT NULL DEFAULT 'description'"),
+            ("pattern", "TEXT NOT NULL DEFAULT ''"),
+            ("category_id", "INTEGER"),
+            ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("hits", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_used_at", "TEXT"),
+            ("source", "TEXT DEFAULT 'manual'"),
+            ("priority", "INTEGER NOT NULL DEFAULT 100"),
+            ("created_at", "TEXT"),
+            ("updated_at", "TEXT"),
+            ("is_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ]
+        for column_name, column_definition in required_rule_columns:
+            if column_name not in rule_columns:
+                db.execute(f"ALTER TABLE category_rules ADD COLUMN {column_name} {column_definition}")
+                rule_columns.add(column_name)
+
+        if "enabled" in rule_columns and "is_enabled" in rule_columns:
+            db.execute(
+                "UPDATE category_rules SET enabled = COALESCE(enabled, is_enabled, 1), is_enabled = COALESCE(is_enabled, enabled, 1)"
+            )
+
+        if "source" in rule_columns:
+            db.execute("UPDATE category_rules SET source = COALESCE(source, 'manual')")
+        if "priority" in rule_columns:
+            db.execute("UPDATE category_rules SET priority = COALESCE(priority, 100)")
+        if "hits" in rule_columns:
+            db.execute("UPDATE category_rules SET hits = COALESCE(hits, 0)")
+        if "key_type" in rule_columns:
+            db.execute("UPDATE category_rules SET key_type = COALESCE(key_type, 'description')")
+        if "created_at" in rule_columns:
+            db.execute("UPDATE category_rules SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
+        if "updated_at" in rule_columns:
+            db.execute("UPDATE category_rules SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)")
+
     def ensure_schema_updates():
         db = get_db()
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)").fetchall()}
@@ -1048,52 +1109,7 @@ def create_app(test_config=None):
         for user_id in user_ids:
             ensure_user_household(user_id, db)
 
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS category_rules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                key_type TEXT NOT NULL DEFAULT 'description',
-                pattern TEXT NOT NULL,
-                category_id INTEGER NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                hits INTEGER NOT NULL DEFAULT 0,
-                source TEXT NOT NULL,
-                is_enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_used_at TEXT,
-                UNIQUE(user_id, key_type, pattern),
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (category_id) REFERENCES categories (id)
-            )
-            """
-        )
-        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
-        missing_rule_columns = [
-            ("key_type", "TEXT NOT NULL DEFAULT 'description'"),
-            ("hits", "INTEGER NOT NULL DEFAULT 0"),
-            ("last_used_at", "TEXT"),
-            ("created_at", "TEXT"),
-            ("updated_at", "TEXT"),
-            ("source", "TEXT NOT NULL DEFAULT 'learned'"),
-            ("enabled", "INTEGER NOT NULL DEFAULT 1"),
-            ("is_enabled", "INTEGER NOT NULL DEFAULT 1"),
-        ]
-        for column_name, column_definition in missing_rule_columns:
-            if column_name not in rule_columns:
-                db.execute(f"ALTER TABLE category_rules ADD COLUMN {column_name} {column_definition}")
-                rule_columns.add(column_name)
-
-        if "enabled" in rule_columns and "is_enabled" in rule_columns:
-            db.execute(
-                "UPDATE category_rules SET is_enabled = COALESCE(is_enabled, enabled, 1), enabled = COALESCE(enabled, is_enabled, 1)"
-            )
-
-        if "created_at" in rule_columns:
-            db.execute("UPDATE category_rules SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
-        if "updated_at" in rule_columns:
-            db.execute("UPDATE category_rules SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)")
+        ensure_category_rules_schema(db)
         db.commit()
 
     def resolve_learned_category(user_id, key_type, pattern, available_categories, db):
@@ -1108,7 +1124,7 @@ def create_app(test_config=None):
             FROM category_rules cr
             JOIN categories c ON c.id = cr.category_id
             WHERE cr.user_id = ? AND cr.key_type = ? AND cr.pattern = ? AND cr.is_enabled = 1
-            ORDER BY cr.priority ASC, cr.hits DESC, cr.updated_at DESC
+            ORDER BY COALESCE(cr.priority, 100) ASC, cr.hits DESC, cr.updated_at DESC
             LIMIT 1
             """,
             (user_id, key_type, pattern),
@@ -1121,7 +1137,7 @@ def create_app(test_config=None):
                 FROM category_rules cr
                 JOIN categories c ON c.id = cr.category_id
                 WHERE cr.user_id = ? AND cr.key_type = ? AND ? LIKE cr.pattern || '%' AND cr.is_enabled = 1
-                ORDER BY LENGTH(cr.pattern) DESC, cr.priority ASC, cr.hits DESC
+                ORDER BY LENGTH(cr.pattern) DESC, COALESCE(cr.priority, 100) ASC, cr.hits DESC
                 LIMIT 1
                 """,
                 (user_id, key_type, pattern),
