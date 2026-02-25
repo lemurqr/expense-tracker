@@ -758,6 +758,29 @@ def create_app(test_config=None):
                 raise DatabaseInitError(message) from exc
         return g.db
 
+    def ensure_column(db, table, column, ddl):
+        cols = [r[1] for r in db.execute(f"PRAGMA table_info({table})")]
+        if column not in cols:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+            print(f"Added column {table}.{column}")
+
+    def migrate_schema(db):
+        # category_rules safety
+        ensure_column(db, "category_rules", "key_type", "key_type TEXT")
+        ensure_column(db, "category_rules", "priority", "priority INTEGER NOT NULL DEFAULT 100")
+        ensure_column(db, "category_rules", "hits", "hits INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "category_rules", "last_used_at", "last_used_at TEXT")
+        ensure_column(db, "category_rules", "created_at", "created_at TEXT")
+        ensure_column(db, "category_rules", "source", "source TEXT DEFAULT 'manual'")
+        ensure_column(db, "category_rules", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
+        ensure_column(db, "category_rules", "is_enabled", "is_enabled INTEGER NOT NULL DEFAULT 1")
+        ensure_column(db, "category_rules", "category", "category TEXT")
+        ensure_column(db, "category_rules", "category_id", "category_id INTEGER")
+
+        # expenses confidence columns
+        ensure_column(db, "expenses", "category_confidence", "category_confidence INTEGER")
+        ensure_column(db, "expenses", "category_source", "category_source TEXT")
+
     def init_db():
         try:
             db = get_db()
@@ -1047,53 +1070,41 @@ def create_app(test_config=None):
         user_ids = [row["id"] for row in db.execute("SELECT id FROM users").fetchall()]
         for user_id in user_ids:
             ensure_user_household(user_id, db)
-
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS category_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                key_type TEXT NOT NULL DEFAULT 'description',
+                key_type TEXT NOT NULL,
                 pattern TEXT NOT NULL,
-                category_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
                 priority INTEGER NOT NULL DEFAULT 100,
                 hits INTEGER NOT NULL DEFAULT 0,
-                source TEXT NOT NULL,
-                is_enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_used_at TEXT,
-                UNIQUE(user_id, key_type, pattern),
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (category_id) REFERENCES categories (id)
+                source TEXT DEFAULT 'manual',
+                enabled INTEGER NOT NULL DEFAULT 1
             )
             """
         )
-        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
-        missing_rule_columns = [
-            ("key_type", "TEXT NOT NULL DEFAULT 'description'"),
-            ("hits", "INTEGER NOT NULL DEFAULT 0"),
-            ("last_used_at", "TEXT"),
-            ("created_at", "TEXT"),
-            ("updated_at", "TEXT"),
-            ("source", "TEXT NOT NULL DEFAULT 'learned'"),
-            ("enabled", "INTEGER NOT NULL DEFAULT 1"),
-            ("is_enabled", "INTEGER NOT NULL DEFAULT 1"),
-        ]
-        for column_name, column_definition in missing_rule_columns:
-            if column_name not in rule_columns:
-                db.execute(f"ALTER TABLE category_rules ADD COLUMN {column_name} {column_definition}")
-                rule_columns.add(column_name)
 
+        migrate_schema(db)
+
+        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
+        if "category" in rule_columns and "category_id" in rule_columns:
+            db.execute(
+                """
+                UPDATE category_rules
+                SET category = COALESCE(
+                    category,
+                    (SELECT c.name FROM categories c WHERE c.id = category_rules.category_id)
+                )
+                WHERE category IS NULL OR category = ''
+                """
+            )
         if "enabled" in rule_columns and "is_enabled" in rule_columns:
             db.execute(
-                "UPDATE category_rules SET is_enabled = COALESCE(is_enabled, enabled, 1), enabled = COALESCE(enabled, is_enabled, 1)"
+                "UPDATE category_rules SET enabled = COALESCE(enabled, is_enabled, 1), is_enabled = COALESCE(is_enabled, enabled, 1)"
             )
-
-        if "created_at" in rule_columns:
-            db.execute("UPDATE category_rules SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
-        if "updated_at" in rule_columns:
-            db.execute("UPDATE category_rules SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)")
         db.commit()
 
     def resolve_learned_category(user_id, key_type, pattern, available_categories, db):
@@ -1104,11 +1115,11 @@ def create_app(test_config=None):
 
         rule = db.execute(
             """
-            SELECT cr.id, c.name as category_name
+            SELECT cr.id, COALESCE(cr.category, c.name) as category_name
             FROM category_rules cr
-            JOIN categories c ON c.id = cr.category_id
-            WHERE cr.user_id = ? AND cr.key_type = ? AND cr.pattern = ? AND cr.is_enabled = 1
-            ORDER BY cr.priority ASC, cr.hits DESC, cr.updated_at DESC
+            LEFT JOIN categories c ON c.id = cr.category_id
+            WHERE cr.user_id = ? AND cr.key_type = ? AND cr.pattern = ? AND COALESCE(cr.enabled, cr.is_enabled, 1) = 1
+            ORDER BY cr.priority ASC, cr.hits DESC, cr.id DESC
             LIMIT 1
             """,
             (user_id, key_type, pattern),
@@ -1117,10 +1128,10 @@ def create_app(test_config=None):
         if rule is None:
             rule = db.execute(
                 """
-                SELECT cr.id, c.name as category_name
+                SELECT cr.id, COALESCE(cr.category, c.name) as category_name
                 FROM category_rules cr
-                JOIN categories c ON c.id = cr.category_id
-                WHERE cr.user_id = ? AND cr.key_type = ? AND ? LIKE cr.pattern || '%' AND cr.is_enabled = 1
+                LEFT JOIN categories c ON c.id = cr.category_id
+                WHERE cr.user_id = ? AND cr.key_type = ? AND ? LIKE cr.pattern || '%' AND COALESCE(cr.enabled, cr.is_enabled, 1) = 1
                 ORDER BY LENGTH(cr.pattern) DESC, cr.priority ASC, cr.hits DESC
                 LIMIT 1
                 """,
@@ -1192,26 +1203,37 @@ def create_app(test_config=None):
         if not pattern or pattern in LEARNING_STOPLIST or len(pattern) < 3:
             return
 
+        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
+        has_category_id = "category_id" in rule_columns
+        has_is_enabled = "is_enabled" in rule_columns
+
         existing = db.execute(
             "SELECT id FROM category_rules WHERE user_id = ? AND key_type = ? AND pattern = ?",
             (user_id, key_type, pattern),
         ).fetchone()
         if existing:
-            db.execute(
-                """
-                UPDATE category_rules
-                SET category_id = ?, source = ?, updated_at = CURRENT_TIMESTAMP, is_enabled = 1
-                WHERE id = ?
-                """,
-                (category_id, source, existing["id"]),
-            )
+            set_parts = ["category = ?", "source = ?", "enabled = 1"]
+            params = [category["name"], source]
+            if has_category_id:
+                set_parts.append("category_id = ?")
+                params.append(category_id)
+            if has_is_enabled:
+                set_parts.append("is_enabled = 1")
+            params.append(existing["id"])
+            db.execute(f"UPDATE category_rules SET {', '.join(set_parts)} WHERE id = ?", params)
         else:
+            columns = ["user_id", "key_type", "pattern", "category", "source", "enabled"]
+            values = [user_id, key_type, pattern, category["name"], source, 1]
+            if has_category_id:
+                columns.append("category_id")
+                values.append(category_id)
+            if has_is_enabled:
+                columns.append("is_enabled")
+                values.append(1)
+            placeholders = ", ".join(["?"] * len(values))
             db.execute(
-                """
-                INSERT INTO category_rules (user_id, key_type, pattern, category_id, source)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (user_id, key_type, pattern, category_id, source),
+                f"INSERT INTO category_rules ({', '.join(columns)}) VALUES ({placeholders})",
+                values,
             )
         db.commit()
 
@@ -2359,11 +2381,13 @@ def create_app(test_config=None):
         db = get_db()
         rules = db.execute(
             """
-            SELECT cr.id, cr.key_type, cr.pattern, cr.hits, cr.last_used_at, cr.source, cr.is_enabled, c.name as category
+            SELECT cr.id, cr.key_type, cr.pattern, cr.hits, cr.last_used_at, cr.source,
+                   COALESCE(cr.enabled, cr.is_enabled, 1) as is_enabled,
+                   COALESCE(cr.category, c.name) as category
             FROM category_rules cr
-            JOIN categories c ON c.id = cr.category_id
+            LEFT JOIN categories c ON c.id = cr.category_id
             WHERE cr.user_id = ?
-            ORDER BY cr.hits DESC, cr.updated_at DESC
+            ORDER BY cr.priority ASC, cr.hits DESC, cr.id DESC
             """,
             (g.user["id"],),
         ).fetchall()
@@ -2387,13 +2411,28 @@ def create_app(test_config=None):
         db = get_db()
         category_id = request.form.get("category_id")
         is_enabled = 1 if request.form.get("is_enabled") == "1" else 0
+        category = db.execute(
+            "SELECT id, name FROM categories WHERE id = ? AND user_id = ?",
+            (category_id, g.user["id"]),
+        ).fetchone()
+        if category is None:
+            flash("Invalid category.")
+            return redirect(url_for("rules"))
+
+        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
+        set_parts = ["category = ?", "enabled = ?"]
+        params = [category["name"], is_enabled]
+        if "category_id" in rule_columns:
+            set_parts.append("category_id = ?")
+            params.append(category["id"])
+        if "is_enabled" in rule_columns:
+            set_parts.append("is_enabled = ?")
+            params.append(is_enabled)
+
+        params.extend([rule_id, g.user["id"]])
         db.execute(
-            """
-            UPDATE category_rules
-            SET category_id = ?, is_enabled = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND user_id = ?
-            """,
-            (category_id, is_enabled, rule_id, g.user["id"]),
+            f"UPDATE category_rules SET {', '.join(set_parts)} WHERE id = ? AND user_id = ?",
+            params,
         )
         db.commit()
         flash("Rule updated.")
