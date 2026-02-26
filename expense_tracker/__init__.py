@@ -1711,18 +1711,66 @@ def create_app(test_config=None):
 
         return render_template("expense_form.html", categories=categories, expense=expense, filter_params=current_filter_redirect_params(request.args))
 
+    def delete_household_expenses(db, expense_ids):
+        ids = []
+        for raw_id in expense_ids:
+            try:
+                ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                continue
+
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            return {"ok": False, "error": "Please select at least one transaction.", "deleted": 0}
+
+        placeholders = ", ".join(["?"] * len(ids))
+        expenses = db.execute(
+            f"SELECT id, description, amount FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
+            [g.household_id, *ids],
+        ).fetchall()
+        if len(expenses) != len(ids):
+            return {"ok": False, "error": "One or more selected transactions are invalid.", "deleted": 0}
+
+        try:
+            with db:
+                audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
+                if "expense_id" in audit_columns:
+                    db.execute(
+                        f"DELETE FROM audit_logs WHERE expense_id IN ({placeholders})",
+                        ids,
+                    )
+                result = db.execute(
+                    f"DELETE FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
+                    [g.household_id, *ids],
+                )
+                for expense in expenses:
+                    log_audit(
+                        "delete",
+                        expense_id=expense["id"],
+                        details={"description": expense["description"], "amount": expense["amount"]},
+                        db=db,
+                    )
+        except sqlite3.IntegrityError:
+            return {
+                "ok": False,
+                "error": "Unable to delete one or more transactions due to related records. Please try again after refreshing.",
+                "deleted": 0,
+            }
+
+        return {"ok": True, "deleted": result.rowcount}
+
     @app.post("/expenses/<int:expense_id>/delete")
     @login_required
     def delete_expense(expense_id):
         db = get_db()
         redirect_params = current_filter_redirect_params(request.form)
-        expense = get_household_expense(expense_id)
-        if expense is None:
-            flash("Expense not found.")
+        result = delete_household_expenses(db, [expense_id])
+        if not result["ok"]:
+            app.logger.warning("Single delete failed for expense_id=%s household_id=%s: %s", expense_id, g.household_id, result["error"])
+            flash(result["error"])
             return redirect(url_for("dashboard", **redirect_params))
-        db.execute("DELETE FROM expenses WHERE id = ? AND household_id = ?", (expense_id, g.household_id))
-        log_audit("delete", expense_id=expense_id, details={"description": expense["description"], "amount": expense["amount"]}, db=db)
-        db.commit()
+
+        app.logger.info("Single delete succeeded for expense_id=%s household_id=%s", expense_id, g.household_id)
         flash("Expense deleted.")
         return redirect(url_for("dashboard", **redirect_params))
 
@@ -1750,31 +1798,24 @@ def create_app(test_config=None):
             return redirect_dashboard()
 
         placeholders = ", ".join(["?"] * len(ids))
+
+        if action == "delete":
+            result = delete_household_expenses(db, ids)
+            if not result["ok"]:
+                app.logger.warning("Bulk delete failed for household_id=%s ids=%s: %s", g.household_id, ids, result["error"])
+                flash(result["error"])
+                return redirect_dashboard()
+
+            app.logger.info("Bulk delete succeeded for household_id=%s ids=%s deleted=%s", g.household_id, ids, result["deleted"])
+            flash(f"Deleted {result['deleted']} transactions")
+            return redirect_dashboard()
+
         owner_count = db.execute(
             f"SELECT COUNT(*) as count FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
             [g.household_id, *ids],
         ).fetchone()["count"]
         if owner_count != len(ids):
             flash("One or more selected transactions are invalid.")
-            return redirect_dashboard()
-
-        if action == "delete":
-            try:
-                with db:
-                    audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
-                    if "expense_id" in audit_columns:
-                        db.execute(
-                            f"DELETE FROM audit_logs WHERE expense_id IN ({placeholders})",
-                            ids,
-                        )
-                    result = db.execute(
-                        f"DELETE FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
-                        [g.household_id, *ids],
-                    )
-            except sqlite3.IntegrityError:
-                return jsonify({"ok": False, "error": "Unable to delete one or more transactions due to related records. Please try again after refreshing."}), 409
-
-            flash(f"Deleted {result.rowcount} transactions")
             return redirect_dashboard()
 
         if action == "set_category":

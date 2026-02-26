@@ -1437,6 +1437,34 @@ def test_import_confirm_override_can_learn_description_rule(client):
     assert rule["key_type"] == "description"
     assert rule["pattern"] == "unique alpha vendorless"
 
+
+
+def test_single_row_delete_removes_expense_via_row_action(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-03", "amount": "42", "category_id": "", "description": "Single Delete Item"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Single Delete Item'").fetchone()["id"]
+
+    response = client.post(f"/expenses/{expense_id}/delete", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert b"Expense deleted" in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        remaining = db.execute("SELECT id FROM expenses WHERE id = ?", (expense_id,)).fetchone()
+
+    assert remaining is None
+
+
 def test_bulk_delete_removes_multiple_rows_for_same_user(client):
     register(client)
     login(client)
