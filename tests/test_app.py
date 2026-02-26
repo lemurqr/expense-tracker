@@ -1465,6 +1465,41 @@ def test_single_row_delete_removes_expense_via_row_action(client):
     assert remaining is None
 
 
+
+
+def test_single_row_delete_via_bulk_endpoint_removes_expense_without_unknown_action(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-08", "amount": "12", "category_id": "", "description": "Single Row Bulk Delete", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute(
+            "SELECT id FROM expenses WHERE description = 'Single Row Bulk Delete'"
+        ).fetchone()["id"]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "delete_expense", "expense_id": str(expense_id)},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Deleted 1 transactions" in response.data
+    assert b"Unknown bulk action" not in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        remaining = db.execute("SELECT id FROM expenses WHERE id = ?", (expense_id,)).fetchone()
+
+    assert remaining is None
+
+
 def test_bulk_delete_removes_multiple_rows_for_same_user(client):
     register(client)
     login(client)

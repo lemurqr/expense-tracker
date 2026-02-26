@@ -1778,19 +1778,38 @@ def create_app(test_config=None):
     @login_required
     def bulk_expense_action():
         db = get_db()
-        action = request.form["action"].strip() if "action" in request.form else ""
+        action = request.form["action"].strip().lower() if "action" in request.form else ""
+        if action in {"delete", "delete_selected", "delete_expense"}:
+            action = "delete"
         redirect_params = current_filter_redirect_params(request.form)
 
         def redirect_dashboard():
             return redirect(url_for("dashboard", **redirect_params))
 
-        raw_ids = request.form.getlist("selected_ids")
+        raw_ids = []
+        for key in ("selected_ids", "expense_ids", "ids"):
+            raw_ids.extend(request.form.getlist(key))
+        for key in ("single_selected_id", "selected_id", "expense_id", "id"):
+            value = request.form.get(key)
+            if value:
+                raw_ids.append(value)
+
         ids = []
         for raw_id in raw_ids:
-            try:
-                ids.append(int(raw_id))
-            except (TypeError, ValueError):
+            if raw_id is None:
                 continue
+            if isinstance(raw_id, str):
+                id_chunks = [chunk.strip() for chunk in raw_id.split(",")]
+            else:
+                id_chunks = [raw_id]
+
+            for chunk in id_chunks:
+                if not chunk:
+                    continue
+                try:
+                    ids.append(int(chunk))
+                except (TypeError, ValueError):
+                    continue
 
         ids = list(dict.fromkeys(ids))
         if not ids:
