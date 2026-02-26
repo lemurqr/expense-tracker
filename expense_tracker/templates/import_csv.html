@@ -164,7 +164,7 @@
     </table>
 
     <input type="hidden" name="action" value="confirm">
-    <input type="hidden" name="preview_id" value="{{ preview_id }}">
+    <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="map_date" value="{{ mapping.date }}">
     <input type="hidden" name="map_description" value="{{ mapping.description }}">
     <input type="hidden" name="map_amount" value="{{ mapping.amount }}">
@@ -244,7 +244,8 @@
       const matchTypeSelect = row.querySelector('.apply-match-type');
       const matchType = matchTypeSelect ? matchTypeSelect.value : 'vendor';
       const matchKey = matchType === 'description' ? (row.dataset.descriptionRuleKey || '') : (row.dataset.vendorRuleKey || row.dataset.vendorKey || '');
-      const payload = { match_type: matchType, match_key: matchKey, category_name: select.value };
+      const importIdInput = document.querySelector('input[name="import_id"]');
+      const payload = { match_type: matchType, match_key: matchKey, category_name: select.value, import_id: importIdInput ? importIdInput.value : '' };
       const response = await fetch('/import/csv/apply_override', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -558,17 +558,18 @@ def save_csv_mapping_for_user(user_id, mapping, has_header, detected_format, fil
 
 
 
-def get_import_preview_state(user_id):
-    previews = session.get("import_preview_by_user") or {}
-    return previews.get(str(user_id)) or {"rows": []}
+def cleanup_expired_import_staging(db, max_age_hours=24):
+    cutoff = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
+    db.execute("DELETE FROM import_staging WHERE created_at < ?", (cutoff,))
 
 
 def save_import_preview_state(user_id, rows, preview_id=None):
+    # Kept for compatibility with tests/session consumers that only need preview ID.
     generated_preview_id = str(uuid.uuid4()) if preview_id is None else preview_id
     previews = session.get("import_preview_by_user") or {}
     previews[str(user_id)] = {
         "preview_id": generated_preview_id,
-        "rows": rows,
+        "rows": [],
         "created_at": datetime.utcnow().isoformat(),
     }
     session["import_preview_by_user"] = previews
@@ -576,24 +577,46 @@ def save_import_preview_state(user_id, rows, preview_id=None):
     return generated_preview_id
 
 
-def get_valid_preview_rows(user_id, preview_id, max_age_minutes=30):
-    state = get_import_preview_state(user_id)
-    if not preview_id or state.get("preview_id") != preview_id:
-        return None
+def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=None):
+    created_at = datetime.utcnow().isoformat()
+    for row in rows:
+        db.execute(
+            """
+            INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status)
+            VALUES (?, ?, ?, ?, ?, 'preview')
+            """,
+            (import_id, household_id, user_id, created_at, json.dumps(row)),
+        )
 
-    created_at = state.get("created_at")
-    if not created_at:
-        return None
 
-    try:
-        created_at_dt = datetime.fromisoformat(created_at)
-    except ValueError:
-        return None
+def get_staged_preview_rows(db, import_id, household_id=None, user_id=None):
+    filters = ["import_id = ?"]
+    params = [import_id]
+    if household_id is not None:
+        filters.append("household_id = ?")
+        params.append(household_id)
+    if user_id is not None:
+        filters.append("user_id = ?")
+        params.append(user_id)
 
-    if datetime.utcnow() - created_at_dt > timedelta(minutes=max_age_minutes):
-        return None
+    staged_rows = db.execute(
+        f"""
+        SELECT row_json FROM import_staging
+        WHERE {' AND '.join(filters)}
+        ORDER BY id ASC
+        """,
+        tuple(params),
+    ).fetchall()
+    if not staged_rows:
+        return []
 
-    return state.get("rows") or []
+    parsed_rows = []
+    for row in staged_rows:
+        try:
+            parsed_rows.append(json.loads(row["row_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return parsed_rows
 
 def placeholder_columns_from_mapping(mapping):
     indices = []
@@ -1998,8 +2021,11 @@ def create_app(test_config=None):
         category_rows = db.execute("SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)).fetchall()
         available_category_names = [row["name"] for row in category_rows]
 
-        preview_state = get_import_preview_state(g.user["id"])
-        rows = preview_state.get("rows") or []
+        import_id = (payload.get("import_id") or "").strip()
+        if not import_id:
+            return jsonify({"updated_count": 0, "updated_rows": []}), 400
+
+        rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
         updated_rows = []
 
         for row in rows:
@@ -2034,7 +2060,10 @@ def create_app(test_config=None):
                 }
             )
 
-        save_import_preview_state(g.user["id"], rows)
+        if updated_rows:
+            db.execute("DELETE FROM import_staging WHERE import_id = ?", (import_id,))
+            stage_import_preview_rows(db, import_id, rows, household_id=g.household_id, user_id=g.user["id"])
+            db.commit()
         return jsonify({"updated_count": len(updated_rows), "updated_rows": updated_rows})
 
     @app.route("/import/csv", methods=("GET", "POST"))
@@ -2049,13 +2078,14 @@ def create_app(test_config=None):
             import_default_paid_by = normalize_paid_by(request.form.get("import_default_paid_by", ""))
 
             if action == "confirm":
-                preview_id = request.form.get("preview_id", "")
-                parsed_rows = get_valid_preview_rows(g.user["id"], preview_id)
-                if parsed_rows is None:
+                import_id = request.form.get("import_id", "") or request.form.get("preview_id", "")
+                db = get_db()
+                parsed_rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
+                if not parsed_rows:
                     flash("Preview expired. Please re-upload the file.")
                     return redirect(url_for("import_csv"))
-                db = get_db()
                 imported_count = 0
+                preview_count = len(parsed_rows)
 
                 category_rows = db.execute(
                     "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
@@ -2069,6 +2099,7 @@ def create_app(test_config=None):
                 has_paid_by_overrides = any(key.startswith("override_paid_by_") for key in request.form.keys())
                 if raw_default_paid_by is None and not has_paid_by_overrides:
                     default_paid_by = "DK"
+                skipped_count = 0
                 for index, row in enumerate(parsed_rows):
                     row_index = row.get("row_index", index)
                     override = request.form.get(f"override_category_{row_index}", "") or row.get("override_category", "")
@@ -2099,6 +2130,7 @@ def create_app(test_config=None):
                         normalize_description(item["description"]) == row["normalized_description"]
                         for item in candidates
                     ):
+                        skipped_count += 1
                         continue
 
                     category_id = None
@@ -2165,10 +2197,12 @@ def create_app(test_config=None):
                 has_header = request.form.get("has_header", "0") == "1"
                 save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=request.form.get("file_signature", ""))
 
-                log_audit("import", details={"imported_count": imported_count}, db=db)
+                log_audit("import", details={"imported_count": imported_count, "preview_count": preview_count, "skipped_count": skipped_count}, db=db)
+                db.execute("DELETE FROM import_staging WHERE import_id = ?", (import_id,))
                 db.commit()
                 save_import_preview_state(g.user["id"], [], preview_id="")
                 flash(f"Imported {imported_count} transaction(s).")
+                flash(f"Preview rows: {preview_count} · inserted: {imported_count} · skipped: {skipped_count}.")
                 return redirect(url_for("dashboard"))
 
             file = request.files.get("csv_file")
@@ -2242,6 +2276,7 @@ def create_app(test_config=None):
                 if not row.get("paid_by"):
                     row["paid_by"] = import_default_paid_by
             db = get_db()
+            cleanup_expired_import_staging(db)
             category_rows = db.execute(
                 "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
             ).fetchall()
@@ -2256,7 +2291,10 @@ def create_app(test_config=None):
                 row["confidence"] = categorized["confidence"]
                 row["confidence_label"] = confidence_label(categorized["confidence"])
 
-            preview_id = save_import_preview_state(g.user["id"], parsed_rows)
+            import_id = str(uuid.uuid4())
+            stage_import_preview_rows(db, import_id, parsed_rows, household_id=g.household_id, user_id=g.user["id"])
+            db.commit()
+            save_import_preview_state(g.user["id"], [], preview_id=import_id)
             preview_rows = parsed_rows[:20]
             def mapped_column_name(field):
                 value = mapping.get(field, "")
@@ -2286,7 +2324,7 @@ def create_app(test_config=None):
                 mapping=mapping,
                 columns=columns,
                 categories=category_rows,
-                preview_id=preview_id,
+                preview_id=import_id,
                 detected_mode="headered" if has_header else "headerless",
                 has_header=has_header,
                 detected_format=detected_format,

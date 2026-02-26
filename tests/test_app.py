@@ -43,16 +43,24 @@ def login(client, username="user1", password="password"):
 
 def stage_import_preview(client, rows, preview_id="preview-1", created_at=None):
     timestamp = created_at or datetime.utcnow().isoformat()
-    with client.session_transaction() as session_data:
-        previews = session_data.get("import_preview_by_user") or {}
-        previews["1"] = {"preview_id": preview_id, "rows": rows, "created_at": timestamp}
-        session_data["import_preview_by_user"] = previews
+    with client.application.app_context():
+        db = client.application.get_db()
+        db.execute("DELETE FROM import_staging WHERE import_id = ?", (preview_id,))
+        for row in rows:
+            db.execute(
+                """
+                INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status)
+                VALUES (?, ?, ?, ?, ?, 'preview')
+                """,
+                (preview_id, 1, 1, timestamp, json.dumps(row)),
+            )
+        db.commit()
     return preview_id
 
 
 def confirm_import(client, rows, **form_data):
-    preview_id = stage_import_preview(client, rows)
-    payload = {"action": "confirm", "preview_id": preview_id}
+    import_id = stage_import_preview(client, rows)
+    payload = {"action": "confirm", "import_id": import_id}
     payload.update(form_data)
     return client.post("/import/csv", data=payload, follow_redirects=True)
 
@@ -998,25 +1006,24 @@ def test_apply_same_vendor_endpoint_updates_preview_state(client):
     register(client)
     login(client)
 
-    with client.session_transaction() as sess:
-        sess["import_preview_by_user"] = {
-            "1": {
-                "rows": [
-                    {"row_index": 0, "description": "Coffee 1", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "suggested_source": "unknown"},
-                    {"row_index": 1, "description": "Coffee 2", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "suggested_source": "unknown"},
-                    {"row_index": 2, "description": "Other", "vendor": "Book Store", "vendor_key": "book store", "category": "", "confidence": 25, "suggested_source": "unknown"},
-                ]
-            }
-        }
+    import_id = stage_import_preview(
+        client,
+        [
+            {"row_index": 0, "description": "Coffee 1", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "suggested_source": "unknown"},
+            {"row_index": 1, "description": "Coffee 2", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "suggested_source": "unknown"},
+            {"row_index": 2, "description": "Other", "vendor": "Book Store", "vendor_key": "book store", "category": "", "confidence": 25, "suggested_source": "unknown"},
+        ],
+    )
 
-    response = client.post('/import/csv/apply_override', json={"match_type": "vendor", "match_key": "coffee shop", "category_name": "Restaurants"})
+    response = client.post('/import/csv/apply_override', json={"match_type": "vendor", "match_key": "coffee shop", "category_name": "Restaurants", "import_id": import_id})
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["updated_count"] == 2
     assert {item["row_index"] for item in payload["updated_rows"]} == {0, 1}
 
-    with client.session_transaction() as sess:
-        rows = sess["import_preview_by_user"]["1"]["rows"]
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = [json.loads(item["row_json"]) for item in db.execute("SELECT row_json FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
     assert rows[0]["override_category"] == "Restaurants"
     assert rows[1]["override_category"] == "Restaurants"
     assert rows[2].get("override_category", "") == ""
@@ -1184,9 +1191,12 @@ def test_import_preview_applies_default_paid_by_when_column_missing(client):
 
     assert response.status_code == 200
     assert 'name="override_paid_by_0"' in response.get_data(as_text=True)
-    with client.session_transaction() as session_data:
-        rows = session_data["import_preview_by_user"]["1"]["rows"]
-    assert rows[0]["paid_by"] == "YZ"
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            "SELECT row_json FROM import_staging ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert json.loads(row["row_json"])["paid_by"] == "YZ"
 
 
 def test_import_confirm_uses_per_row_paid_by_override(client):
@@ -1307,12 +1317,11 @@ def test_import_csv_handles_quotes_and_newlines_in_description(client):
     )
     assert preview.status_code == 200
 
-    with client.session_transaction() as session_data:
-        preview_id = session_data["import_preview_by_user"]["1"]["preview_id"]
+    import_id = preview.get_data(as_text=True).split('name="import_id" value="')[1].split('"', 1)[0]
 
     response = client.post(
         "/import/csv",
-        data={"action": "confirm", "preview_id": preview_id, "import_default_paid_by": "DK"},
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
         follow_redirects=True,
     )
     assert b"Imported 1 transaction(s)." in response.data
@@ -1350,12 +1359,15 @@ def test_import_preview_expiration_shows_friendly_message(client):
     login(client)
 
     rows = [{"row_index": 0, "user_id": 1, "date": "2026-11-04", "amount": -3.0, "description": "Expired", "normalized_description": "expired", "category": ""}]
-    expired_at = (datetime.utcnow() - timedelta(minutes=31)).isoformat()
-    preview_id = stage_import_preview(client, rows, preview_id="expired-1", created_at=expired_at)
+    preview_id = stage_import_preview(client, rows, preview_id="expired-1")
+    with client.application.app_context():
+        db = client.application.get_db()
+        db.execute("DELETE FROM import_staging WHERE import_id = ?", (preview_id,))
+        db.commit()
 
     response = client.post(
         "/import/csv",
-        data={"action": "confirm", "preview_id": preview_id},
+        data={"action": "confirm", "import_id": preview_id},
         follow_redirects=True,
     )
 
@@ -1929,3 +1941,93 @@ def test_dev_reset_db_route_recreates_database(tmp_path: Path):
         db = app.get_db()
         user_count_after = db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
     assert user_count_after == 0
+
+
+def test_import_preview_creates_staging_rows_and_returns_import_id(client):
+    register(client)
+    login(client)
+
+    csv_content = "Date,Description,Debit,Credit\n2026-01-10,Coffee,12.00,\n"
+    response = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "preview.csv")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'name="import_id" value="' in html
+    import_id = html.split('name="import_id" value="')[1].split('"', 1)[0]
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) AS c FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["c"]
+    assert count == 1
+
+
+def test_import_confirm_works_when_session_cleared(client):
+    register(client)
+    login(client)
+
+    csv_content = "Date,Description,Debit,Credit\n2026-01-10,Coffee,12.00,\n"
+    preview = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "session-clear.csv")},
+        content_type="multipart/form-data",
+    )
+    import_id = preview.get_data(as_text=True).split('name="import_id" value="')[1].split('"', 1)[0]
+
+    with client.session_transaction() as sess:
+        sess.clear()
+        sess["user_id"] = 1
+
+    confirm = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in confirm.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = 'Coffee'").fetchone()["c"]
+    assert count == 1
+
+
+def test_import_confirm_deletes_staging_rows_after_import(client):
+    register(client)
+    login(client)
+
+    rows = [{"row_index": 0, "user_id": 1, "date": "2026-11-20", "amount": -9.0, "description": "Cleanup", "normalized_description": "cleanup", "category": "", "paid_by": "DK"}]
+    import_id = stage_import_preview(client, rows, preview_id="cleanup-import")
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) AS c FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["c"]
+    assert count == 0
+
+
+def test_import_confirm_preview_expired_when_import_id_missing_or_empty(client):
+    register(client)
+    login(client)
+
+    missing_id_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": "does-not-exist"},
+        follow_redirects=True,
+    )
+    assert b"Preview expired. Please re-upload the file." in missing_id_response.data
+
+    empty_id_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": ""},
+        follow_redirects=True,
+    )
+    assert b"Preview expired. Please re-upload the file." in empty_id_response.data
