@@ -62,13 +62,15 @@ CREATE TABLE IF NOT EXISTS expenses (
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    household_id INTEGER,
     user_id INTEGER NOT NULL,
     action TEXT NOT NULL,
-    expense_id INTEGER,
-    details TEXT,
+    entity TEXT,
+    entity_id INTEGER,
+    meta_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users (id),
-    FOREIGN KEY (expense_id) REFERENCES expenses (id)
+    FOREIGN KEY (household_id) REFERENCES households (id),
+    FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
 CREATE TABLE IF NOT EXISTS category_rules (

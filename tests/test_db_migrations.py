@@ -1,6 +1,6 @@
 import sqlite3
 
-from expense_tracker.db_migrations import apply_migrations, get_db_health
+from expense_tracker.db_migrations import apply_migrations, get_db_health, migration_004
 
 
 def test_apply_migrations_on_empty_db(tmp_path):
@@ -10,7 +10,7 @@ def test_apply_migrations_on_empty_db(tmp_path):
     health = get_db_health(str(db_path))
 
     assert health["ok"] is True
-    assert health["schema_version"] >= 3
+    assert health["schema_version"] >= 4
     assert health["missing_tables"] == []
     assert health["missing_indexes"] == []
 
@@ -75,4 +75,61 @@ def test_apply_migrations_on_legacy_db(tmp_path):
     assert rule[0] == "CAFE"
     assert rule[1] == 1
     assert rule[2] == 0
+    conn.close()
+
+
+def test_migration_004_converts_audit_logs_to_entity_rows(tmp_path):
+    db_path = tmp_path / "legacy_audit.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        );
+        INSERT INTO users(username, password_hash) VALUES ('alice', 'hash');
+
+        CREATE TABLE expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            description TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        );
+        INSERT INTO expenses(user_id, date, amount, description) VALUES (1, '2026-01-01', 10.0, 'Coffee');
+
+        CREATE TABLE audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            household_id INTEGER,
+            user_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            entity TEXT,
+            entity_id INTEGER,
+            expense_id INTEGER,
+            details TEXT,
+            meta_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (expense_id) REFERENCES expenses (id)
+        );
+        INSERT INTO audit_logs(user_id, action, expense_id, details)
+        VALUES (1, 'create', 1, '{"note":"legacy"}');
+
+            """
+    )
+    conn.commit()
+
+    migration_004(conn)
+    conn.commit()
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(audit_logs)").fetchall()]
+    assert "expense_id" not in columns
+    row = conn.execute(
+        "SELECT action, entity, entity_id, meta_json FROM audit_logs WHERE id = 1"
+    ).fetchone()
+    assert row[0] == "create"
+    assert row[1] == "expense"
+    assert row[2] == 1
+    assert row[3] == '{"note":"legacy"}'
     conn.close()
