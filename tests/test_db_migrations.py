@@ -10,7 +10,7 @@ def test_apply_migrations_on_empty_db(tmp_path):
     health = get_db_health(str(db_path))
 
     assert health["ok"] is True
-    assert health["schema_version"] >= 4
+    assert health["schema_version"] >= 5
     assert health["missing_tables"] == []
     assert health["missing_indexes"] == []
 
@@ -132,4 +132,18 @@ def test_migration_004_converts_audit_logs_to_entity_rows(tmp_path):
     assert row[1] == "expense"
     assert row[2] == 1
     assert row[3] == '{"note":"legacy"}'
+    conn.close()
+
+
+def test_migration_005_creates_import_staging(tmp_path):
+    db_path = tmp_path / "staging.sqlite"
+    apply_migrations(str(db_path))
+
+    conn = sqlite3.connect(db_path)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "import_staging" in tables
+
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+    assert "idx_import_staging_import_id" in indexes
+    assert "idx_import_staging_created_at" in indexes
     conn.close()

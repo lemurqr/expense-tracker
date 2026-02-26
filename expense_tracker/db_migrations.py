@@ -73,6 +73,10 @@ REQUIRED_TABLES = {
         "columns": {"id", "household_id", "user_id", "action", "entity", "entity_id", "meta_json", "created_at"},
         "indexes": set(),
     },
+    "import_staging": {
+        "columns": {"id", "import_id", "household_id", "user_id", "created_at", "row_json", "status"},
+        "indexes": {"idx_import_staging_import_id", "idx_import_staging_created_at"},
+    },
 }
 
 
@@ -478,11 +482,39 @@ def migration_004(conn):
     conn.execute("ALTER TABLE audit_logs_new RENAME TO audit_logs")
 
 
+def migration_005(conn):
+    ensure_table(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS import_staging (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_id TEXT NOT NULL,
+            household_id INTEGER,
+            user_id INTEGER,
+            created_at TEXT NOT NULL,
+            row_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'preview'
+        )
+        """,
+    )
+    create_index_if_missing(
+        conn,
+        "idx_import_staging_import_id",
+        "CREATE INDEX idx_import_staging_import_id ON import_staging(import_id)",
+    )
+    create_index_if_missing(
+        conn,
+        "idx_import_staging_created_at",
+        "CREATE INDEX idx_import_staging_created_at ON import_staging(created_at)",
+    )
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
     (3, migration_003),
     (4, migration_004),
+    (5, migration_005),
 ]
 
 
