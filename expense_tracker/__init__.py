@@ -929,9 +929,19 @@ def create_app(test_config=None):
             return
         db = db or get_db()
         payload = json.dumps(details or {})
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
+        if "expense_id" in columns:
+            db.execute(
+                "INSERT INTO audit_logs (user_id, action, expense_id, details) VALUES (?, ?, ?, ?)",
+                (actor_id, action, expense_id, payload),
+            )
+            return
         db.execute(
-            "INSERT INTO audit_logs (user_id, action, expense_id, details) VALUES (?, ?, ?, ?)",
-            (actor_id, action, expense_id, payload),
+            """
+            INSERT INTO audit_logs (household_id, user_id, action, entity, entity_id, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (g.household_id, actor_id, action, "expense" if expense_id is not None else None, expense_id, payload),
         )
 
     def get_household_expense(expense_id):
@@ -1573,23 +1583,37 @@ def create_app(test_config=None):
             flash("Expense not found.")
             return redirect(url_for("dashboard"))
 
-        logs = db.execute(
-            """
-            SELECT al.*, u.username
-            FROM audit_logs al
-            LEFT JOIN users u ON u.id = al.user_id
-            WHERE al.expense_id = ?
-            ORDER BY al.created_at DESC, al.id DESC
-            """,
-            (expense_id,),
-        ).fetchall()
+        audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
+        if "expense_id" in audit_columns:
+            logs = db.execute(
+                """
+                SELECT al.*, u.username
+                FROM audit_logs al
+                LEFT JOIN users u ON u.id = al.user_id
+                WHERE al.expense_id = ?
+                ORDER BY al.created_at DESC, al.id DESC
+                """,
+                (expense_id,),
+            ).fetchall()
+        else:
+            logs = db.execute(
+                """
+                SELECT al.*, u.username
+                FROM audit_logs al
+                LEFT JOIN users u ON u.id = al.user_id
+                WHERE al.entity = 'expense' AND al.entity_id = ?
+                ORDER BY al.created_at DESC, al.id DESC
+                """,
+                (expense_id,),
+            ).fetchall()
         parsed_logs = []
         for row in logs:
-            details = row["details"] or ""
+            raw_payload = row["meta_json"] if "meta_json" in row.keys() else row["details"]
+            details = raw_payload or ""
             try:
                 details = json.loads(details) if details else {}
             except (TypeError, ValueError, json.JSONDecodeError):
-                details = {"raw": row["details"]}
+                details = {"raw": raw_payload}
             parsed_logs.append({"action": row["action"], "username": row["username"], "created_at": row["created_at"], "details": details})
 
         return render_template("expense_detail.html", expense=expense, audit_logs=parsed_logs)
@@ -1735,11 +1759,21 @@ def create_app(test_config=None):
             return redirect_dashboard()
 
         if action == "delete":
-            result = db.execute(
-                f"DELETE FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
-                [g.household_id, *ids],
-            )
-            db.commit()
+            try:
+                with db:
+                    audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
+                    if "expense_id" in audit_columns:
+                        db.execute(
+                            f"DELETE FROM audit_logs WHERE expense_id IN ({placeholders})",
+                            ids,
+                        )
+                    result = db.execute(
+                        f"DELETE FROM expenses WHERE household_id = ? AND id IN ({placeholders})",
+                        [g.household_id, *ids],
+                    )
+            except sqlite3.IntegrityError:
+                return jsonify({"ok": False, "error": "Unable to delete one or more transactions due to related records. Please try again after refreshing."}), 409
+
             flash(f"Deleted {result.rowcount} transactions")
             return redirect_dashboard()
 

@@ -434,10 +434,55 @@ def migration_003(conn):
         )
 
 
+def migration_004(conn):
+    if not table_exists(conn, "audit_logs"):
+        return
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)").fetchall()}
+    if "expense_id" not in columns:
+        return
+
+    conn.execute(
+        """
+        CREATE TABLE audit_logs_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            household_id INTEGER,
+            user_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            entity TEXT,
+            entity_id INTEGER,
+            meta_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO audit_logs_new (id, household_id, user_id, action, entity, entity_id, meta_json, created_at)
+        SELECT
+            id,
+            household_id,
+            user_id,
+            action,
+            COALESCE(NULLIF(entity, ''), CASE WHEN expense_id IS NOT NULL THEN 'expense' END),
+            COALESCE(entity_id, expense_id),
+            COALESCE(meta_json, details),
+            COALESCE(created_at, CURRENT_TIMESTAMP)
+        FROM audit_logs
+        """
+    )
+
+    conn.execute("DROP TABLE audit_logs")
+    conn.execute("ALTER TABLE audit_logs_new RENAME TO audit_logs")
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
     (3, migration_003),
+    (4, migration_004),
 ]
 
 

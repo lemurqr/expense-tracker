@@ -1469,6 +1469,52 @@ def test_bulk_delete_removes_multiple_rows_for_same_user(client):
     assert count == 0
 
 
+
+
+def test_bulk_delete_with_audit_log_reference_does_not_fail(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-07", "amount": "55", "category_id": "", "description": "Delete With Audit"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Delete With Audit'").fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO audit_logs (household_id, user_id, action, entity, entity_id, meta_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (1, 1, "create", "expense", expense_id, '{"source":"test"}'),
+        )
+        db.commit()
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "delete", "selected_ids": [str(expense_id)]},
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Deleted 1 transactions" in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        remaining_expense = db.execute("SELECT id FROM expenses WHERE id = ?", (expense_id,)).fetchone()
+        audit_row = db.execute(
+            "SELECT entity, entity_id FROM audit_logs WHERE entity = 'expense' AND entity_id = ?",
+            (expense_id,),
+        ).fetchone()
+
+    assert remaining_expense is None
+    assert audit_row is not None
+    assert audit_row["entity"] == "expense"
+    assert audit_row["entity_id"] == expense_id
+
 def test_bulk_update_category_sets_multiple_rows(client):
     register(client)
     login(client)
