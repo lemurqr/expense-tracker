@@ -60,19 +60,21 @@
     </table>
   </details>
 
-  <h4>Balance & Repayments</h4>
-  <table>
-    <thead><tr><th>Line</th><th>Description</th><th>Amount</th></tr></thead>
-    <tbody>
-      <tr><td>1</td><td>Opening balance (before period)</td><td>{{ '%+.2f'|format(settlement.opening_balance) }}</td></tr>
-      <tr><td>2</td><td>Net settlement delta from expenses (this period)</td><td>{{ '%+.2f'|format(settlement.period_net_delta) }}</td></tr>
-      <tr><td>3</td><td>Repayments DK→YZ (this period)</td><td>${{ '%.2f'|format(settlement.repayments_dk_to_yz) }}</td></tr>
-      <tr><td>4</td><td>Repayments YZ→DK (this period)</td><td>${{ '%.2f'|format(settlement.repayments_yz_to_dk) }}</td></tr>
-      <tr><td>5</td><td>Closing balance (life-to-date)</td><td>{{ '%+.2f'|format(settlement.closing_balance) }}</td></tr>
-      <tr><td>6</td><td>Current outstanding: DK owes</td><td>${{ '%.2f'|format(settlement.dk_owes_now) }}</td></tr>
-      <tr><td>7</td><td>Current outstanding: YZ owes</td><td>${{ '%.2f'|format(settlement.yz_owes_now) }}</td></tr>
-    </tbody>
-  </table>
+  <details id="balance-repayments-section" open>
+    <summary><strong>Balance & Repayments</strong></summary>
+    <table>
+      <thead><tr><th>Line</th><th>Description</th><th>Amount</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Opening balance (before period)</td><td>{{ '%+.2f'|format(settlement.opening_balance) }}</td></tr>
+        <tr><td>2</td><td>Net settlement delta from expenses (this period)</td><td>{{ '%+.2f'|format(settlement.period_net_delta) }}</td></tr>
+        <tr><td>3</td><td>Repayments DK→YZ (this period)</td><td>${{ '%.2f'|format(settlement.repayments_dk_to_yz) }}</td></tr>
+        <tr><td>4</td><td>Repayments YZ→DK (this period)</td><td>${{ '%.2f'|format(settlement.repayments_yz_to_dk) }}</td></tr>
+        <tr><td>5</td><td>Closing balance (life-to-date)</td><td>{{ '%+.2f'|format(settlement.closing_balance) }}</td></tr>
+        <tr><td>6</td><td>Current outstanding: DK owes</td><td>${{ '%.2f'|format(settlement.dk_owes_now) }}</td></tr>
+        <tr><td>7</td><td>Current outstanding: YZ owes</td><td>${{ '%.2f'|format(settlement.yz_owes_now) }}</td></tr>
+      </tbody>
+    </table>
+  </details>
 
   <h4>Record repayment</h4>
   <form method="post" action="{{ url_for('create_settlement_payment') }}" class="inline-form">
@@ -307,7 +309,7 @@
       }
       syncSelection();
 
-      ['shared-expenses-section', 'monthly-breakdown-section'].forEach((id) => {
+      ['shared-expenses-section', 'balance-repayments-section', 'monthly-breakdown-section'].forEach((id) => {
         const el = document.getElementById(id);
         if (!el) return;
         const key = `collapse:${id}`;
