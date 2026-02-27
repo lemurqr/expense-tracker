@@ -77,6 +77,14 @@ REQUIRED_TABLES = {
         "columns": {"id", "import_id", "household_id", "user_id", "created_at", "row_json", "status"},
         "indexes": {"idx_import_staging_import_id", "idx_import_staging_created_at"},
     },
+    "settlement_payments": {
+        "columns": {"id", "household_id", "date", "from_person", "to_person", "amount", "note", "created_at"},
+        "indexes": {
+            "idx_settlement_payments_household_date",
+            "idx_settlement_payments_household_from",
+            "idx_settlement_payments_household_to",
+        },
+    },
 }
 
 
@@ -509,12 +517,47 @@ def migration_005(conn):
     )
 
 
+def migration_006(conn):
+    ensure_table(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS settlement_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            household_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            from_person TEXT NOT NULL CHECK(from_person IN ('DK','YZ')),
+            to_person TEXT NOT NULL CHECK(to_person IN ('DK','YZ')),
+            amount REAL NOT NULL CHECK(amount > 0),
+            note TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (household_id) REFERENCES households (id)
+        )
+        """,
+    )
+    create_index_if_missing(
+        conn,
+        "idx_settlement_payments_household_date",
+        "CREATE INDEX idx_settlement_payments_household_date ON settlement_payments(household_id, date)",
+    )
+    create_index_if_missing(
+        conn,
+        "idx_settlement_payments_household_from",
+        "CREATE INDEX idx_settlement_payments_household_from ON settlement_payments(household_id, from_person)",
+    )
+    create_index_if_missing(
+        conn,
+        "idx_settlement_payments_household_to",
+        "CREATE INDEX idx_settlement_payments_household_to ON settlement_payments(household_id, to_person)",
+    )
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
     (3, migration_003),
     (4, migration_004),
     (5, migration_005),
+    (6, migration_006),
 ]
 
 

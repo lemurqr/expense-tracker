@@ -226,8 +226,8 @@ def test_settlement_respects_date_range(client):
     )
 
     response = client.get("/dashboard?start=2026-02-01&end=2026-02-28")
-    assert b"DK shared paid: $40.00" in response.data
-    assert b"YZ shared paid: $10.00" in response.data
+    assert b"DK paid (shared)</td><td>$40.00" in response.data
+    assert b"YZ paid (shared)</td><td>$10.00" in response.data
 
 
 def test_import_cibc_headerless_csv(client):
@@ -1113,7 +1113,23 @@ def _insert_expense(client, *, date, amount, category, paid_by=None, is_transfer
         db.commit()
 
 
-def test_household_settlement_pet_rule(client):
+def test_household_settlement_shared_math_sign_and_direction(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-02-02", amount=-100, category="Groceries", paid_by="DK")
+    _insert_expense(client, date="2026-02-03", amount=-20, category="Groceries", paid_by="YZ")
+
+    response = client.get("/dashboard?month=2026-02")
+    text = response.get_data(as_text=True)
+
+    assert "Total shared expenses (DK+YZ)</td><td>$120.00" in text
+    assert "Shared settlement" in text
+    assert "YZ→DK $40.00" in text
+    assert "Net settlement (this period)" in text
+
+
+def test_household_settlement_pet_rule_increases_period_delta(client):
     register(client)
     login(client)
 
@@ -1123,55 +1139,61 @@ def test_household_settlement_pet_rule(client):
     response = client.get("/dashboard?month=2026-01")
     text = response.get_data(as_text=True)
 
-    assert "Pet paid by DK (reimbursed by YZ): $100.00" in text
-    assert "Pet paid by YZ (not shared): $60.00" in text
-    assert "Result:</strong> YZ owes DK $100.00" in text
+    assert "Pet reimbursement (YZ→DK)</td><td>YZ→DK $100.00" in text
+    assert "Net settlement (this period)" in text
+    assert "YZ→DK $100.00" in text
 
 
-def test_household_settlement_combined_netting(client):
+def test_repayments_affect_closing_balance_with_signs(client):
     register(client)
     login(client)
 
-    _insert_expense(client, date="2026-02-02", amount=-70, category="Groceries", paid_by="DK")
-    _insert_expense(client, date="2026-02-03", amount=-130, category="Groceries", paid_by="YZ")
-    _insert_expense(client, date="2026-02-04", amount=-100, category="Pet Food & Care", paid_by="DK")
+    _insert_expense(client, date="2026-03-02", amount=-200, category="Groceries", paid_by="DK")
+
+    response = client.post(
+        "/settlement-payments",
+        data={"month": "2026-03", "date": "2026-03-10", "from_person": "DK", "to_person": "YZ", "amount": "30", "note": "payback"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    response = client.post(
+        "/settlement-payments",
+        data={"month": "2026-03", "date": "2026-03-11", "from_person": "YZ", "to_person": "DK", "amount": "10", "note": "partial"},
+        follow_redirects=True,
+    )
+    text = response.get_data(as_text=True)
+
+    assert "Repayments DK→YZ (this period)</td><td>$30.00" in text
+    assert "Repayments YZ→DK (this period)</td><td>$10.00" in text
+    assert "Closing balance (life-to-date)</td><td>+120.00" in text
+
+
+def test_monthly_breakdown_totals_row_and_owes_columns(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-01-03", amount=-100, category="Groceries", paid_by="DK")
+    _insert_expense(client, date="2026-01-08", amount=-40, category="Pet Food & Care", paid_by="DK")
+    _insert_expense(client, date="2026-02-02", amount=-90, category="Groceries", paid_by="YZ")
+
+    response = client.get("/dashboard?start=2026-01-01&end=2026-02-28")
+    text = response.get_data(as_text=True)
+
+    assert "2026-01" in text and "$140.00" in text
+    assert "2026-02" in text and "$90.00" in text
+    assert "<td><strong>Total</strong></td>" in text
+    assert "$230.00" in text
+
+
+def test_settlement_template_has_collapsible_details_ids(client):
+    register(client)
+    login(client)
 
     response = client.get("/dashboard?month=2026-02")
     text = response.get_data(as_text=True)
 
-    assert "DK shared paid: $70.00" in text
-    assert "YZ shared paid: $130.00" in text
-    assert "Result:</strong> YZ owes DK $70.00" in text
-
-
-def test_household_settlement_excludes_personal_transfer_and_credit_card_payments(client):
-    register(client)
-    login(client)
-
-    _insert_expense(client, date="2026-03-02", amount=-40, category="Personal", paid_by="DK")
-    _insert_expense(client, date="2026-03-03", amount=-70, category="Credit Card Payments", paid_by="DK")
-    _insert_expense(client, date="2026-03-04", amount=-60, category="Groceries", paid_by="DK", is_transfer=1)
-    _insert_expense(client, date="2026-03-05", amount=-20, category="Groceries", paid_by="DK")
-
-    response = client.get("/dashboard?month=2026-03")
-    text = response.get_data(as_text=True)
-
-    assert "DK shared paid: $20.00" in text
-    assert "Shared total: $20.00" in text
-
-
-def test_household_settlement_missing_paid_by_warning(client):
-    register(client)
-    login(client)
-
-    _insert_expense(client, date="2026-04-02", amount=-10, category="Groceries", paid_by=None)
-    _insert_expense(client, date="2026-04-03", amount=-15, category="Pet Food & Care", paid_by="")
-    _insert_expense(client, date="2026-04-04", amount=-20, category="Personal", paid_by=None)
-
-    response = client.get("/dashboard?month=2026-04")
-    text = response.get_data(as_text=True)
-
-    assert "⚠ 2 transactions missing Paid by — settlement may be incomplete." in text
+    assert '<details id="shared-expenses-section" open>' in text
+    assert '<details id="monthly-breakdown-section">' in text
 
 
 def test_import_preview_applies_default_paid_by_when_column_missing(client):
