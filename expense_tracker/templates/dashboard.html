@@ -20,49 +20,158 @@
 
 <section class="card">
   <h3>Household Settlement</h3>
-  <ul>
-    <li>DK shared paid: ${{ '%.2f'|format(settlement.dk_shared) }}</li>
-    <li>YZ shared paid: ${{ '%.2f'|format(settlement.yz_shared) }}</li>
-    <li>Shared total: ${{ '%.2f'|format(settlement.shared_total) }}</li>
-    <li>Each share: ${{ '%.2f'|format(settlement.each_share) }}</li>
-    <li>Pet paid by DK (reimbursed by YZ): ${{ '%.2f'|format(settlement.pet_paid_by_dk) }}</li>
-    <li>Pet paid by YZ (not shared): ${{ '%.2f'|format(settlement.pet_paid_by_yz) }}</li>
-  </ul>
-  {% if settlement.result_direction == 'Settled' %}
-  <p><strong>Result:</strong> Settled</p>
-  {% else %}
-  <p><strong>Result:</strong> {{ settlement.result_direction }} ${{ '%.2f'|format(settlement.result_amount) }}</p>
-  {% endif %}
-  {% if settlement.missing_paid_by_count > 0 %}
-  <p>⚠ {{ settlement.missing_paid_by_count }} transactions missing Paid by — settlement may be incomplete.</p>
-  {% endif %}
-  <p><small>Pet category is 100% YZ responsibility.</small></p>
-  <p><small>Excludes Personal and Transfers/Credit Card Payments.</small></p>
 
-  <h4>Monthly breakdown</h4>
+  <details id="shared-expenses-section" open>
+    <summary><strong>Shared Expenses</strong></summary>
+    <table>
+      <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Period</td><td>{{ start_date or selected_month or 'All time' }}{% if end_date %} → {{ end_date }}{% endif %}</td></tr>
+        <tr><td>Total shared expenses (DK+YZ)</td><td>${{ '%.2f'|format(settlement.total_shared) }}</td></tr>
+        <tr><td>DK paid (shared)</td><td>${{ '%.2f'|format(settlement.dk_paid_shared) }}</td></tr>
+        <tr><td>YZ paid (shared)</td><td>${{ '%.2f'|format(settlement.yz_paid_shared) }}</td></tr>
+        <tr><td>Each share (50/50)</td><td>${{ '%.2f'|format(settlement.each_share) }}</td></tr>
+        <tr>
+          <td>Shared settlement</td>
+          <td>
+            {% if settlement.shared_delta < 0 %}
+              DK→YZ ${{ '%.2f'|format(settlement.shared_delta|abs) }}
+            {% elif settlement.shared_delta > 0 %}
+              YZ→DK ${{ '%.2f'|format(settlement.shared_delta) }}
+            {% else %}
+              $0.00
+            {% endif %}
+          </td>
+        </tr>
+        <tr><td>Pet reimbursement (YZ→DK)</td><td>YZ→DK ${{ '%.2f'|format(settlement.pet_paid_by_dk) }}</td></tr>
+        <tr>
+          <td>Net settlement (this period)</td>
+          <td>
+            {% if settlement.period_net_delta < 0 %}
+              DK→YZ ${{ '%.2f'|format(settlement.period_net_delta|abs) }}
+            {% elif settlement.period_net_delta > 0 %}
+              YZ→DK ${{ '%.2f'|format(settlement.period_net_delta) }}
+            {% else %}
+              $0.00
+            {% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </details>
+
+  <h4>Balance & Repayments</h4>
   <table>
-    <thead><tr><th>Month</th><th>DK paid</th><th>YZ paid</th><th>Result</th></tr></thead>
+    <thead><tr><th>Line</th><th>Description</th><th>Amount</th></tr></thead>
     <tbody>
-      {% for row in settlement.monthly_breakdown %}
+      <tr><td>1</td><td>Opening balance (before period)</td><td>{{ '%+.2f'|format(settlement.opening_balance) }}</td></tr>
+      <tr><td>2</td><td>Net settlement delta from expenses (this period)</td><td>{{ '%+.2f'|format(settlement.period_net_delta) }}</td></tr>
+      <tr><td>3</td><td>Repayments DK→YZ (this period)</td><td>${{ '%.2f'|format(settlement.repayments_dk_to_yz) }}</td></tr>
+      <tr><td>4</td><td>Repayments YZ→DK (this period)</td><td>${{ '%.2f'|format(settlement.repayments_yz_to_dk) }}</td></tr>
+      <tr><td>5</td><td>Closing balance (life-to-date)</td><td>{{ '%+.2f'|format(settlement.closing_balance) }}</td></tr>
+      <tr><td>6</td><td>Current outstanding: DK owes</td><td>${{ '%.2f'|format(settlement.dk_owes_now) }}</td></tr>
+      <tr><td>7</td><td>Current outstanding: YZ owes</td><td>${{ '%.2f'|format(settlement.yz_owes_now) }}</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Record repayment</h4>
+  <form method="post" action="{{ url_for('create_settlement_payment') }}" class="inline-form">
+    <input type="hidden" name="month" value="{{ selected_month }}">
+    <input type="hidden" name="start" value="{{ start_date or '' }}">
+    <input type="hidden" name="end" value="{{ end_date or '' }}">
+    <label>Date <input type="date" name="date" required></label>
+    <label>From
+      <select name="from_person" required>
+        <option value="DK">DK</option>
+        <option value="YZ">YZ</option>
+      </select>
+    </label>
+    <label>To
+      <select name="to_person" required>
+        <option value="YZ">YZ</option>
+        <option value="DK">DK</option>
+      </select>
+    </label>
+    <label>Amount <input type="number" step="0.01" min="0.01" name="amount" required></label>
+    <label>Note <input type="text" name="note"></label>
+    <button type="submit">Record repayment</button>
+  </form>
+
+  <table>
+    <thead><tr><th>Date</th><th>From</th><th>To</th><th>Amount</th><th>Note</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for repayment in repayments %}
       <tr>
-        <td>{{ row.month }}</td>
-        <td>${{ '%.2f'|format(row.dk_paid) }}</td>
-        <td>${{ '%.2f'|format(row.yz_paid) }}</td>
+        <td>{{ repayment.date }}</td>
+        <td>{{ repayment.from_person }}</td>
+        <td>{{ repayment.to_person }}</td>
+        <td>${{ '%.2f'|format(repayment.amount) }}</td>
+        <td>{{ repayment.note or '' }}</td>
         <td>
-          {% if row.result > 0 %}
-            YZ paid more by ${{ '%.2f'|format(row.result) }}
-          {% elif row.result < 0 %}
-            DK paid more by ${{ '%.2f'|format(row.result|abs) }}
-          {% else %}
-            Even
-          {% endif %}
+          <form method="post" action="{{ url_for('delete_settlement_payment', payment_id=repayment.id) }}" class="inline-form">
+            <input type="hidden" name="month" value="{{ selected_month }}">
+            <input type="hidden" name="start" value="{{ start_date or '' }}">
+            <input type="hidden" name="end" value="{{ end_date or '' }}">
+            <button type="submit">Delete</button>
+          </form>
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="4">No data in selected period.</td></tr>
+      <tr><td colspan="6">No repayments in selected period.</td></tr>
       {% endfor %}
     </tbody>
   </table>
+
+  <details id="monthly-breakdown-section">
+    <summary><strong>Monthly Breakdown</strong></summary>
+    <table>
+      <thead>
+        <tr>
+          <th>Month (YYYY-MM)</th>
+          <th>Total Expenses (DK+YZ)</th>
+          <th>DK owes</th>
+          <th>YZ owes</th>
+          <th>DK paid (shared)</th>
+          <th>YZ paid (shared)</th>
+          <th>Each share</th>
+          <th>Repayments DK→YZ</th>
+          <th>Repayments YZ→DK</th>
+          <th>Net delta</th>
+          <th>Running balance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in settlement.monthly_breakdown %}
+        <tr>
+          <td>{{ row.month }}</td>
+          <td>${{ '%.2f'|format(row.total_expenses) }}</td>
+          <td>${{ '%.2f'|format(row.dk_owes) }}</td>
+          <td>${{ '%.2f'|format(row.yz_owes) }}</td>
+          <td>${{ '%.2f'|format(row.dk_paid_shared) }}</td>
+          <td>${{ '%.2f'|format(row.yz_paid_shared) }}</td>
+          <td>${{ '%.2f'|format(row.each_share) }}</td>
+          <td>${{ '%.2f'|format(row.repayments_dk_to_yz) }}</td>
+          <td>${{ '%.2f'|format(row.repayments_yz_to_dk) }}</td>
+          <td>{{ '%+.2f'|format(row.net_delta) }}</td>
+          <td>{{ '%+.2f'|format(row.running_balance) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="11">No data in selected period.</td></tr>
+        {% endfor %}
+        <tr>
+          <td><strong>Total</strong></td>
+          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.total_expenses) }}</strong></td>
+          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.dk_owes) }}</strong></td>
+          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.yz_owes) }}</strong></td>
+          <td></td><td></td><td></td>
+          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.repayments_dk_to_yz) }}</strong></td>
+          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.repayments_yz_to_dk) }}</strong></td>
+          <td><strong>{{ '%+.2f'|format(settlement.monthly_totals.net_delta) }}</strong></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </details>
 </section>
 
 <section class="grid-two">
@@ -162,14 +271,14 @@
   <script>
     (function () {
       const form = document.getElementById('bulk-actions-form');
-      if (!form) return;
       const selectAll = document.getElementById('select-all-expenses');
-      const checkboxes = Array.from(form.querySelectorAll('.expense-checkbox'));
+      const checkboxes = form ? Array.from(form.querySelectorAll('.expense-checkbox')) : [];
       const bar = document.getElementById('bulk-actions-bar');
       const countEl = document.getElementById('selected-count');
       const deleteButton = document.getElementById('bulk-delete-button');
 
       function syncSelection() {
+        if (!form) return;
         const selected = checkboxes.filter((box) => box.checked).length;
         countEl.textContent = String(selected);
         bar.hidden = selected === 0;
@@ -197,6 +306,18 @@
         });
       }
       syncSelection();
+
+      ['shared-expenses-section', 'monthly-breakdown-section'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const key = `collapse:${id}`;
+        const stored = localStorage.getItem(key);
+        if (stored === 'open') el.open = true;
+        if (stored === 'closed') el.open = false;
+        el.addEventListener('toggle', function () {
+          localStorage.setItem(key, el.open ? 'open' : 'closed');
+        });
+      });
     })();
   </script>
 </section>

@@ -147,3 +147,18 @@ def test_migration_005_creates_import_staging(tmp_path):
     assert "idx_import_staging_import_id" in indexes
     assert "idx_import_staging_created_at" in indexes
     conn.close()
+
+
+def test_migration_006_creates_settlement_payments(tmp_path):
+    db_path = tmp_path / "settlement.sqlite"
+    apply_migrations(str(db_path))
+
+    conn = sqlite3.connect(db_path)
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert "settlement_payments" in tables
+
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+    assert "idx_settlement_payments_household_date" in indexes
+    assert "idx_settlement_payments_household_from" in indexes
+    assert "idx_settlement_payments_household_to" in indexes
+    conn.close()

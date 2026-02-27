@@ -915,6 +915,257 @@ def create_app(test_config=None):
             params["month"] = month
         return params
 
+
+    def get_period_start_for_opening(filters):
+        if filters["start_date"]:
+            return filters["start_date"]
+        if filters["selected_month"]:
+            return f"{filters['selected_month']}-01"
+        return None
+
+    def _fetch_settlement_expense_totals(db, household_id, start_date=None, end_date=None, before_date=None):
+        pet_placeholders = ", ".join(["?"] * len(PET_CATEGORIES))
+        where_parts = ["e.household_id = ?", "e.is_transfer = 0", "e.is_personal = 0", "e.amount < 0"]
+        params = [household_id]
+        if before_date:
+            where_parts.append("e.date < ?")
+            params.append(before_date)
+        else:
+            if start_date:
+                where_parts.append("e.date >= ?")
+                params.append(start_date)
+            if end_date:
+                where_parts.append("e.date <= ?")
+                params.append(end_date)
+
+        where_sql = " AND ".join(where_parts)
+        row = db.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE
+                    WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by = 'DK'
+                    THEN ABS(e.amount) ELSE 0 END), 0) AS dk_paid_shared,
+                COALESCE(SUM(CASE
+                    WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by = 'YZ'
+                    THEN ABS(e.amount) ELSE 0 END), 0) AS yz_paid_shared,
+                COALESCE(SUM(CASE
+                    WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by = 'DK'
+                    THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_dk,
+                COALESCE(SUM(CASE
+                    WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by = 'YZ'
+                    THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_yz,
+                COALESCE(SUM(CASE
+                    WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders})
+                    THEN ABS(e.amount) ELSE 0 END), 0) AS total_shared,
+                COALESCE(SUM(ABS(e.amount)), 0) AS total_settlement_expenses
+            FROM expenses e
+            LEFT JOIN categories c ON e.category_id = c.id
+            WHERE {where_sql}
+            """,
+            tuple(PET_CATEGORIES * 5 + params),
+        ).fetchone()
+
+        dk_paid_shared = float(row["dk_paid_shared"] or 0)
+        yz_paid_shared = float(row["yz_paid_shared"] or 0)
+        total_shared = float(row["total_shared"] or 0)
+        each_share = round(total_shared / 2, 2)
+        shared_delta = round(dk_paid_shared - each_share, 2)
+        pet_paid_by_dk = float(row["pet_paid_by_dk"] or 0)
+        pet_paid_by_yz = float(row["pet_paid_by_yz"] or 0)
+        pet_delta = round(pet_paid_by_dk, 2)
+
+        return {
+            "dk_paid_shared": round(dk_paid_shared, 2),
+            "yz_paid_shared": round(yz_paid_shared, 2),
+            "total_shared": round(total_shared, 2),
+            "each_share": each_share,
+            "shared_delta": shared_delta,
+            "pet_paid_by_dk": round(pet_paid_by_dk, 2),
+            "pet_paid_by_yz": round(pet_paid_by_yz, 2),
+            "pet_delta": pet_delta,
+            "period_net_delta": round(shared_delta + pet_delta, 2),
+            "total_settlement_expenses": round(float(row["total_settlement_expenses"] or 0), 2),
+        }
+
+    def _fetch_repayment_totals(db, household_id, start_date=None, end_date=None, before_date=None):
+        where_parts = ["household_id = ?"]
+        params = [household_id]
+        if before_date:
+            where_parts.append("date < ?")
+            params.append(before_date)
+        else:
+            if start_date:
+                where_parts.append("date >= ?")
+                params.append(start_date)
+            if end_date:
+                where_parts.append("date <= ?")
+                params.append(end_date)
+        where_sql = " AND ".join(where_parts)
+        row = db.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN from_person = 'DK' AND to_person = 'YZ' THEN amount ELSE 0 END), 0) AS repayments_dk_to_yz,
+                COALESCE(SUM(CASE WHEN from_person = 'YZ' AND to_person = 'DK' THEN amount ELSE 0 END), 0) AS repayments_yz_to_dk
+            FROM settlement_payments
+            WHERE {where_sql}
+            """,
+            tuple(params),
+        ).fetchone()
+        dk_to_yz = round(float(row["repayments_dk_to_yz"] or 0), 2)
+        yz_to_dk = round(float(row["repayments_yz_to_dk"] or 0), 2)
+        return {
+            "repayments_dk_to_yz": dk_to_yz,
+            "repayments_yz_to_dk": yz_to_dk,
+            "repayment_effect": round(dk_to_yz - yz_to_dk, 2),
+        }
+
+    def calculate_settlement_ledger(db, household_id, filters):
+        period = _fetch_settlement_expense_totals(
+            db, household_id, start_date=filters["start_date"], end_date=filters["end_date"]
+        ) if (filters["start_date"] or filters["end_date"]) else _fetch_settlement_expense_totals(
+            db, household_id, start_date=None, end_date=None
+        )
+
+        if filters["selected_month"] and not filters["start_date"] and not filters["end_date"]:
+            month_prefix = f"{filters['selected_month']}%"
+            period = _fetch_settlement_expense_totals_for_month(db, household_id, month_prefix)
+            repayments_period = _fetch_repayments_for_month(db, household_id, month_prefix)
+        else:
+            repayments_period = _fetch_repayment_totals(db, household_id, start_date=filters["start_date"], end_date=filters["end_date"])
+
+        opening_cutoff = get_period_start_for_opening(filters)
+        if opening_cutoff:
+            opening_expenses = _fetch_settlement_expense_totals(db, household_id, before_date=opening_cutoff)
+            opening_repayments = _fetch_repayment_totals(db, household_id, before_date=opening_cutoff)
+            opening_balance = round(opening_expenses["period_net_delta"] + opening_repayments["repayment_effect"], 2)
+        else:
+            opening_balance = 0.0
+
+        closing_balance = round(opening_balance + period["period_net_delta"] + repayments_period["repayment_effect"], 2)
+        period.update(repayments_period)
+        period.update({
+            "opening_balance": opening_balance,
+            "closing_balance": closing_balance,
+            "dk_owes_now": round(max(0, -closing_balance), 2),
+            "yz_owes_now": round(max(0, closing_balance), 2),
+        })
+        return period
+
+    def _fetch_settlement_expense_totals_for_month(db, household_id, month_prefix):
+        return _fetch_settlement_expense_totals_like_month(db, household_id, month_prefix)
+
+    def _fetch_settlement_expense_totals_like_month(db, household_id, month_prefix):
+        pet_placeholders = ", ".join(["?"] * len(PET_CATEGORIES))
+        row = db.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by='DK' THEN ABS(e.amount) ELSE 0 END), 0) AS dk_paid_shared,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by='YZ' THEN ABS(e.amount) ELSE 0 END), 0) AS yz_paid_shared,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by='DK' THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_dk,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by='YZ' THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_yz,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) THEN ABS(e.amount) ELSE 0 END), 0) AS total_shared,
+                COALESCE(SUM(ABS(e.amount)), 0) AS total_settlement_expenses
+            FROM expenses e
+            LEFT JOIN categories c ON e.category_id = c.id
+            WHERE e.household_id = ? AND e.is_transfer = 0 AND e.is_personal = 0 AND e.amount < 0 AND e.date LIKE ?
+            """,
+            tuple(PET_CATEGORIES * 5 + [household_id, month_prefix]),
+        ).fetchone()
+        dk_paid_shared = float(row["dk_paid_shared"] or 0)
+        yz_paid_shared = float(row["yz_paid_shared"] or 0)
+        total_shared = float(row["total_shared"] or 0)
+        each_share = round(total_shared / 2, 2)
+        shared_delta = round(dk_paid_shared - each_share, 2)
+        pet_delta = round(float(row["pet_paid_by_dk"] or 0), 2)
+        return {
+            "dk_paid_shared": round(dk_paid_shared, 2),
+            "yz_paid_shared": round(yz_paid_shared, 2),
+            "total_shared": round(total_shared, 2),
+            "each_share": each_share,
+            "shared_delta": shared_delta,
+            "pet_paid_by_dk": round(float(row["pet_paid_by_dk"] or 0), 2),
+            "pet_paid_by_yz": round(float(row["pet_paid_by_yz"] or 0), 2),
+            "pet_delta": pet_delta,
+            "period_net_delta": round(shared_delta + pet_delta, 2),
+            "total_settlement_expenses": round(float(row["total_settlement_expenses"] or 0), 2),
+        }
+
+    def _fetch_repayments_for_month(db, household_id, month_prefix):
+        row = db.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN from_person='DK' AND to_person='YZ' THEN amount ELSE 0 END), 0) AS repayments_dk_to_yz,
+                COALESCE(SUM(CASE WHEN from_person='YZ' AND to_person='DK' THEN amount ELSE 0 END), 0) AS repayments_yz_to_dk
+            FROM settlement_payments
+            WHERE household_id = ? AND date LIKE ?
+            """,
+            (household_id, month_prefix),
+        ).fetchone()
+        dk_to_yz = round(float(row["repayments_dk_to_yz"] or 0), 2)
+        yz_to_dk = round(float(row["repayments_yz_to_dk"] or 0), 2)
+        return {"repayments_dk_to_yz": dk_to_yz, "repayments_yz_to_dk": yz_to_dk, "repayment_effect": round(dk_to_yz - yz_to_dk, 2)}
+
+    def build_monthly_breakdown(db, household_id, filters, opening_balance):
+        month_rows = db.execute(
+            """
+            SELECT DISTINCT SUBSTR(date, 1, 7) AS month
+            FROM expenses
+            WHERE household_id = ?
+              AND is_transfer = 0
+              AND is_personal = 0
+              AND amount < 0
+              AND date >= ? AND date <= ?
+            ORDER BY month ASC
+            """,
+            (household_id, filters["start_date"], filters["end_date"]),
+        ).fetchall() if (filters["start_date"] and filters["end_date"]) else db.execute(
+            """
+            SELECT DISTINCT SUBSTR(date, 1, 7) AS month
+            FROM expenses
+            WHERE household_id = ?
+              AND is_transfer = 0
+              AND is_personal = 0
+              AND amount < 0
+              AND date LIKE ?
+            ORDER BY month ASC
+            """,
+            (household_id, f"{filters['selected_month']}%"),
+        ).fetchall() if filters["selected_month"] else []
+
+        running = opening_balance
+        rows = []
+        totals = {"total_expenses": 0.0, "dk_owes": 0.0, "yz_owes": 0.0, "repayments_dk_to_yz": 0.0, "repayments_yz_to_dk": 0.0, "net_delta": 0.0}
+        for m in month_rows:
+            month = m["month"]
+            expense = _fetch_settlement_expense_totals_like_month(db, household_id, f"{month}%")
+            repayments = _fetch_repayments_for_month(db, household_id, f"{month}%")
+            month_net_delta = expense["period_net_delta"]
+            running = round(running + month_net_delta + repayments["repayment_effect"], 2)
+            dk_owes = round(abs(month_net_delta) if month_net_delta < 0 else 0, 2)
+            yz_owes = round(month_net_delta if month_net_delta > 0 else 0, 2)
+            row = {
+                "month": month,
+                "total_expenses": expense["total_settlement_expenses"],
+                "dk_owes": dk_owes,
+                "yz_owes": yz_owes,
+                "dk_paid_shared": expense["dk_paid_shared"],
+                "yz_paid_shared": expense["yz_paid_shared"],
+                "each_share": expense["each_share"],
+                "repayments_dk_to_yz": repayments["repayments_dk_to_yz"],
+                "repayments_yz_to_dk": repayments["repayments_yz_to_dk"],
+                "net_delta": month_net_delta,
+                "running_balance": running,
+            }
+            rows.append(row)
+            totals["total_expenses"] += row["total_expenses"]
+            totals["dk_owes"] += row["dk_owes"]
+            totals["yz_owes"] += row["yz_owes"]
+            totals["repayments_dk_to_yz"] += row["repayments_dk_to_yz"]
+            totals["repayments_yz_to_dk"] += row["repayments_yz_to_dk"]
+            totals["net_delta"] += row["net_delta"]
+
+        return rows, {k: round(v, 2) for k, v in totals.items()}
+
     def ensure_user_household(user_id, db=None):
         db = db or get_db()
         membership = db.execute(
@@ -1348,143 +1599,24 @@ def create_app(test_config=None):
             tuple(filters["params"]),
         ).fetchone()["total"]
 
-        pet_placeholders = ", ".join(["?"] * len(PET_CATEGORIES))
-        settlement_row = db.execute(
-            f"""
-            SELECT
-                ROUND(COALESCE(SUM(CASE
-                    WHEN e.amount < 0
-                         AND e.paid_by = 'DK'
-                         AND COALESCE(c.name, '') IN ({pet_placeholders})
-                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as pet_paid_by_dk,
-                ROUND(COALESCE(SUM(CASE
-                    WHEN e.amount < 0
-                         AND e.paid_by = 'YZ'
-                         AND COALESCE(c.name, '') IN ({pet_placeholders})
-                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as pet_paid_by_yz,
-                ROUND(COALESCE(SUM(CASE
-                    WHEN e.amount < 0
-                         AND e.paid_by = 'DK'
-                         AND e.is_transfer = 0
-                         AND COALESCE(c.name, '') <> 'Personal'
-                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
-                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
-                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as dk_shared,
-                ROUND(COALESCE(SUM(CASE
-                    WHEN e.amount < 0
-                         AND e.paid_by = 'YZ'
-                         AND e.is_transfer = 0
-                         AND COALESCE(c.name, '') <> 'Personal'
-                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
-                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
-                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as yz_shared,
-                SUM(CASE
-                    WHEN e.amount < 0
-                         AND (
-                            (e.is_transfer = 0
-                             AND COALESCE(c.name, '') <> 'Personal'
-                             AND COALESCE(c.name, '') <> 'Credit Card Payments')
-                            OR COALESCE(c.name, '') IN ({pet_placeholders})
-                         )
-                         AND (e.paid_by IS NULL OR TRIM(e.paid_by) = '')
-                    THEN 1 ELSE 0 END) as missing_paid_by_count
-            FROM expenses e
-            LEFT JOIN categories c ON e.category_id = c.id
-            WHERE {filters['filter_sql']}
-            """,
-            tuple(PET_CATEGORIES * 5 + filters["params"]),
-        ).fetchone()
+        settlement = calculate_settlement_ledger(db, g.household_id, filters)
+        monthly_breakdown, monthly_totals = build_monthly_breakdown(
+            db, g.household_id, filters, settlement["opening_balance"]
+        )
+        settlement["monthly_breakdown"] = monthly_breakdown
+        settlement["monthly_totals"] = monthly_totals
 
-        monthly_settlement = db.execute(
-            f"""
-            SELECT
-                SUBSTR(e.date, 1, 7) as month,
-                ROUND(COALESCE(SUM(CASE
-                    WHEN e.amount < 0
-                         AND e.paid_by = 'DK'
-                         AND e.is_transfer = 0
-                         AND COALESCE(c.name, '') <> 'Personal'
-                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
-                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
-                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as dk_paid,
-                ROUND(COALESCE(SUM(CASE
-                    WHEN e.amount < 0
-                         AND e.paid_by = 'YZ'
-                         AND e.is_transfer = 0
-                         AND COALESCE(c.name, '') <> 'Personal'
-                         AND COALESCE(c.name, '') <> 'Credit Card Payments'
-                         AND COALESCE(c.name, '') NOT IN ({pet_placeholders})
-                    THEN ABS(e.amount) ELSE 0 END), 0), 2) as yz_paid
-            FROM expenses e
-            LEFT JOIN categories c ON e.category_id = c.id
-            WHERE {filters['filter_sql']}
-            GROUP BY SUBSTR(e.date, 1, 7)
-            ORDER BY month ASC
-            """,
-            tuple(PET_CATEGORIES * 2 + filters["params"]),
+        repayment_filters = [filters["filter_sql"].replace("e.", "")]
+        repayment_params = list(filters["params"])
+        repayments = db.execute(
+            """
+            SELECT id, date, from_person, to_person, amount, note
+            FROM settlement_payments
+            WHERE {where_sql}
+            ORDER BY date DESC, id DESC
+            """.format(where_sql=" AND ".join(repayment_filters)),
+            tuple(repayment_params),
         ).fetchall()
-
-        dk_shared = settlement_row["dk_shared"] or 0
-        yz_shared = settlement_row["yz_shared"] or 0
-        shared_total_abs = round(dk_shared + yz_shared, 2)
-        each_share = round(shared_total_abs / 2, 2)
-        pet_paid_by_dk = settlement_row["pet_paid_by_dk"] or 0
-        pet_paid_by_yz = settlement_row["pet_paid_by_yz"] or 0
-        missing_paid_by_count = settlement_row["missing_paid_by_count"] or 0
-
-        shared_receiver = "DK" if dk_shared > each_share else "YZ"
-        shared_payer = "YZ" if shared_receiver == "DK" else "DK"
-        shared_owes = round(abs(dk_shared - each_share), 2)
-
-        obligations = []
-        if pet_paid_by_dk > 0:
-            obligations.append({"from": "YZ", "to": "DK", "amount": pet_paid_by_dk})
-        if shared_owes > 0:
-            obligations.append({"from": shared_payer, "to": shared_receiver, "amount": shared_owes})
-
-        final_direction = "Settled"
-        final_amount = 0.0
-        if len(obligations) == 1:
-            final_direction = f"{obligations[0]['from']} owes {obligations[0]['to']}"
-            final_amount = obligations[0]["amount"]
-        elif len(obligations) == 2:
-            first, second = obligations
-            if first["from"] == second["from"] and first["to"] == second["to"]:
-                final_direction = f"{first['from']} owes {first['to']}"
-                final_amount = first["amount"] + second["amount"]
-            else:
-                diff = first["amount"] - second["amount"]
-                if diff > 0:
-                    final_direction = f"{first['from']} owes {first['to']}"
-                    final_amount = diff
-                elif diff < 0:
-                    final_direction = f"{second['from']} owes {second['to']}"
-                    final_amount = abs(diff)
-
-        if final_amount <= 0.005:
-            final_direction = "Settled"
-            final_amount = 0.0
-
-        settlement = {
-            "dk_shared": dk_shared,
-            "yz_shared": yz_shared,
-            "shared_total": shared_total_abs,
-            "each_share": each_share,
-            "pet_paid_by_dk": pet_paid_by_dk,
-            "pet_paid_by_yz": pet_paid_by_yz,
-            "missing_paid_by_count": missing_paid_by_count,
-            "result_direction": final_direction,
-            "result_amount": round(final_amount, 2),
-            "monthly_breakdown": [
-                {
-                    "month": row["month"],
-                    "dk_paid": row["dk_paid"] or 0,
-                    "yz_paid": row["yz_paid"] or 0,
-                    "result": round((row["yz_paid"] or 0) - (row["dk_paid"] or 0), 2),
-                }
-                for row in monthly_settlement
-            ],
-        }
 
         all_categories = db.execute(
             "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name",
@@ -1498,6 +1630,7 @@ def create_app(test_config=None):
             total=total,
             shared_total=shared_total,
             settlement=settlement,
+            repayments=repayments,
             selected_month=filters["selected_month"],
             start_date=filters["start_date"],
             end_date=filters["end_date"],
@@ -1505,6 +1638,49 @@ def create_app(test_config=None):
             all_categories=all_categories,
             household_role=g.household_role,
         )
+
+    @app.post("/settlement-payments")
+    @login_required
+    def create_settlement_payment():
+        payment_date = (request.form.get("date") or "").strip()
+        from_person = normalize_paid_by(request.form.get("from_person", ""))
+        to_person = normalize_paid_by(request.form.get("to_person", ""))
+        amount = parse_money(request.form.get("amount", ""))
+        note = (request.form.get("note") or "").strip()
+
+        if not payment_date:
+            flash("Repayment date is required.")
+            return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
+        if from_person not in {"DK", "YZ"} or to_person not in {"DK", "YZ"}:
+            flash("Repayment parties must be DK or YZ.")
+            return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
+        if from_person == to_person:
+            flash("From and To must be different people.")
+            return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
+        if amount is None or amount <= 0:
+            flash("Repayment amount must be greater than 0.")
+            return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
+
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO settlement_payments (household_id, date, from_person, to_person, amount, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (g.household_id, payment_date, from_person, to_person, amount, note, datetime.utcnow().isoformat()),
+        )
+        db.commit()
+        flash("Repayment recorded")
+        return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
+
+    @app.post("/settlement-payments/<int:payment_id>/delete")
+    @login_required
+    def delete_settlement_payment(payment_id):
+        db = get_db()
+        db.execute("DELETE FROM settlement_payments WHERE id = ? AND household_id = ?", (payment_id, g.household_id))
+        db.commit()
+        flash("Repayment deleted")
+        return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
 
     @app.route("/expenses/new", methods=("GET", "POST"))
     @login_required
