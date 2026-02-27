@@ -65,6 +65,54 @@ def confirm_import(client, rows, **form_data):
     return client.post("/import/csv", data=payload, follow_redirects=True)
 
 
+
+
+def test_import_preview_show_all_toggle_and_confirm_imports_all_rows(client):
+    register(client)
+    login(client)
+
+    parsed_rows = []
+    for idx in range(51):
+        parsed_rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-02-01",
+                "amount": -10.0 - idx,
+                "description": f"Merchant {idx}",
+                "normalized_description": f"merchant {idx}",
+                "vendor": f"Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+                "vendor_key": f"merchant {idx}",
+                "vendor_rule_key": f"merchant {idx}",
+                "description_rule_key": f"merchant {idx}",
+            }
+        )
+
+    import_id = stage_import_preview(client, parsed_rows, preview_id="preview-show-all-51")
+
+    default_preview = client.get(f"/import/csv?import_id={import_id}")
+    default_text = default_preview.get_data(as_text=True)
+    assert default_preview.status_code == 200
+    assert "Showing 25 of 51 rows" in default_text
+    assert default_text.count('class="preview-row"') == 25
+
+    show_all_preview = client.get(f"/import/csv?import_id={import_id}&show_all=1")
+    show_all_text = show_all_preview.get_data(as_text=True)
+    assert show_all_preview.status_code == 200
+    assert "Showing 51 of 51 rows" in show_all_text
+    assert show_all_text.count('class="preview-row"') == 51
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "show_all_rows": "1"},
+        follow_redirects=True,
+    )
+    assert b"Imported 51 transaction(s)." in confirm_response.data
+
 def test_register_login_logout(client):
     response = register(client)
     assert b"Registration successful" in response.data

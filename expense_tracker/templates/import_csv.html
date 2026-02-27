@@ -90,7 +90,22 @@
 
 {% if detected_mode %}
 <section class="card">
-  <h3>Preview (first 20 rows)</h3>
+  <h3>Preview</h3>
+  <p>Showing {{ displayed_rows_count }} of {{ total_rows_count }} rows</p>
+  <form method="get" class="inline-form">
+    <input type="hidden" name="import_id" value="{{ preview_id }}">
+    <label class="inline-form">
+      <input type="checkbox" name="show_all" value="1" {% if show_all_rows %}checked{% endif %} onchange="this.form.submit()">
+      Show all rows
+    </label>
+    {% if requires_show_all_confirmation %}
+    <label class="inline-form">
+      <input type="checkbox" name="confirm_show_all" value="1">
+      Confirm show all rows ({{ total_rows_count }} rows)
+    </label>
+    <small>Large previews may be slow.</small>
+    {% endif %}
+  </form>
   <p class="legend-text">Legend: <span class="confidence-badge confidence-high">High</span> = high confidence, <span class="confidence-badge confidence-medium">Medium</span> = review, <span class="confidence-badge confidence-low">Low</span> = needs review.</p>
   <p>Detected format: <strong>{{ detected_mode }}</strong> · detected_format: <strong>{{ detected_format or 'n/a' }}</strong>{% if header_row_index is not none %} · header_row_index: <strong>{{ header_row_index }}</strong>{% endif %}{% if skipped_rows %} · skipped_rows: <strong>{{ skipped_rows }}</strong>{% endif %}</p>
   <p><small>auto_mapped_fields: date=<strong>{{ auto_mapped_fields.date if auto_mapped_fields else 'None' }}</strong>, description=<strong>{{ auto_mapped_fields.description if auto_mapped_fields else 'None' }}</strong>, amount=<strong>{{ auto_mapped_fields.amount if auto_mapped_fields else 'None' }}</strong>, vendor=<strong>{{ auto_mapped_fields.vendor if auto_mapped_fields else 'None' }}</strong>, debit=<strong>{{ auto_mapped_fields.debit if auto_mapped_fields else 'None' }}</strong>, credit=<strong>{{ auto_mapped_fields.credit if auto_mapped_fields else 'None' }}</strong></small></p>
@@ -165,6 +180,7 @@
 
     <input type="hidden" name="action" value="confirm">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
+    <input type="hidden" name="show_all_rows" value="{{ 1 if show_all_rows else 0 }}">
     <input type="hidden" name="map_date" value="{{ mapping.date }}">
     <input type="hidden" name="map_description" value="{{ mapping.description }}">
     <input type="hidden" name="map_amount" value="{{ mapping.amount }}">

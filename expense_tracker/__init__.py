@@ -120,6 +120,9 @@ TRANSFER_KEYWORDS = [
     "return",
     "points",
 ]
+
+IMPORT_PREVIEW_DEFAULT_LIMIT = 25
+IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD = 500
 LEARNING_STOPLIST = {
     "shop",
     "store",
@@ -576,6 +579,42 @@ def save_import_preview_state(user_id, rows, preview_id=None):
     session.modified = True
     return generated_preview_id
 
+
+def get_import_preview_show_all(user_id, import_id):
+    by_user = session.get("import_preview_show_all_by_user") or {}
+    user_values = by_user.get(str(user_id)) or {}
+    return bool(user_values.get(import_id, False))
+
+
+def save_import_preview_show_all(user_id, import_id, enabled):
+    if not import_id:
+        return
+    by_user = session.get("import_preview_show_all_by_user") or {}
+    user_values = by_user.get(str(user_id)) or {}
+    user_values[import_id] = bool(enabled)
+    by_user[str(user_id)] = user_values
+    session["import_preview_show_all_by_user"] = by_user
+    session.modified = True
+
+
+def clear_import_preview_show_all(user_id, import_id):
+    by_user = session.get("import_preview_show_all_by_user") or {}
+    user_values = by_user.get(str(user_id)) or {}
+    if import_id in user_values:
+        user_values.pop(import_id, None)
+        by_user[str(user_id)] = user_values
+        session["import_preview_show_all_by_user"] = by_user
+        session.modified = True
+
+
+
+
+def preview_rows_for_display(rows, show_all=False, limit=IMPORT_PREVIEW_DEFAULT_LIMIT):
+    total_rows = len(rows)
+    if show_all:
+        return rows, total_rows, total_rows
+    displayed_rows = rows[:limit]
+    return displayed_rows, len(displayed_rows), total_rows
 
 def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=None):
     created_at = datetime.utcnow().isoformat()
@@ -2377,6 +2416,7 @@ def create_app(test_config=None):
                 db.execute("DELETE FROM import_staging WHERE import_id = ?", (import_id,))
                 db.commit()
                 save_import_preview_state(g.user["id"], [], preview_id="")
+                clear_import_preview_show_all(g.user["id"], import_id)
                 flash(f"Imported {imported_count} transaction(s).")
                 flash(f"Preview rows: {preview_count} · inserted: {imported_count} · skipped: {skipped_count}.")
                 return redirect(url_for("dashboard"))
@@ -2468,10 +2508,17 @@ def create_app(test_config=None):
                 row["confidence_label"] = confidence_label(categorized["confidence"])
 
             import_id = str(uuid.uuid4())
+            show_all = request.form.get("show_all_rows") == "1"
+            requires_show_all_confirmation = len(parsed_rows) > IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD
+            show_all_confirmed = request.form.get("confirm_show_all") == "1"
+            if requires_show_all_confirmation and show_all and not show_all_confirmed:
+                show_all = False
+                flash("This preview has more than 500 rows. Check 'Confirm show all rows' to render all rows.")
+            save_import_preview_show_all(g.user["id"], import_id, show_all)
             stage_import_preview_rows(db, import_id, parsed_rows, household_id=g.household_id, user_id=g.user["id"])
             db.commit()
             save_import_preview_state(g.user["id"], [], preview_id=import_id)
-            preview_rows = parsed_rows[:20]
+            preview_rows, displayed_rows_count, total_rows_count = preview_rows_for_display(parsed_rows, show_all=show_all)
             def mapped_column_name(field):
                 value = mapping.get(field, "")
                 if value == "":
@@ -2510,6 +2557,59 @@ def create_app(test_config=None):
                 auto_mapped_fields=auto_mapped_fields,
                 file_signature=file_signature,
                 import_default_paid_by=import_default_paid_by,
+                show_all_rows=show_all,
+                displayed_rows_count=displayed_rows_count,
+                total_rows_count=total_rows_count,
+                show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
+                requires_show_all_confirmation=requires_show_all_confirmation,
+            )
+
+        import_id = (request.args.get("import_id") or "").strip()
+        if import_id:
+            db = get_db()
+            parsed_rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
+            if not parsed_rows:
+                flash("Preview expired. Please re-upload the file.")
+                return redirect(url_for("import_csv"))
+
+            show_all_param = request.args.get("show_all")
+            show_all = get_import_preview_show_all(g.user["id"], import_id)
+            if show_all_param is not None:
+                show_all = show_all_param == "1"
+
+            requires_show_all_confirmation = len(parsed_rows) > IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD
+            confirm_show_all = request.args.get("confirm_show_all") == "1"
+            if requires_show_all_confirmation and show_all and not confirm_show_all:
+                show_all = False
+                flash("This preview has more than 500 rows. Check 'Confirm show all rows' to render all rows.")
+
+            save_import_preview_show_all(g.user["id"], import_id, show_all)
+            preview_rows, displayed_rows_count, total_rows_count = preview_rows_for_display(parsed_rows, show_all=show_all)
+            category_rows = db.execute(
+                "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
+            ).fetchall()
+
+            return render_template(
+                "import_csv.html",
+                preview_rows=preview_rows,
+                mapping=saved_mapping or default_mapping,
+                columns=placeholder_columns_from_mapping(saved_mapping),
+                categories=category_rows,
+                preview_id=import_id,
+                detected_mode="staged",
+                has_header=saved_payload.get("has_header", False),
+                detected_format=saved_payload.get("detected_format", ""),
+                auto_mapping_applied=False,
+                header_row_index=None,
+                skipped_rows=0,
+                auto_mapped_fields={},
+                file_signature=saved_payload.get("file_signature", ""),
+                import_default_paid_by="",
+                show_all_rows=show_all,
+                displayed_rows_count=displayed_rows_count,
+                total_rows_count=total_rows_count,
+                show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
+                requires_show_all_confirmation=requires_show_all_confirmation,
             )
 
         return render_template(
@@ -2528,6 +2628,11 @@ def create_app(test_config=None):
             auto_mapped_fields={},
             file_signature=saved_payload.get("file_signature", ""),
             import_default_paid_by="",
+            show_all_rows=False,
+            displayed_rows_count=0,
+            total_rows_count=0,
+            show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
+            requires_show_all_confirmation=False,
         )
 
     @app.route("/rules")
