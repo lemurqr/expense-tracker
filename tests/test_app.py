@@ -1556,6 +1556,252 @@ def test_import_preview_expiration_shows_friendly_message(client):
     assert b"Preview expired. Please re-upload the file." in response.data
 
 
+def test_import_preview_bulk_apply_paid_by_overwrites_selected_rows(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx, paid_by in enumerate(["", "YZ", "DK", "", "YZ"]):
+        rows.append(
+            {
+                "row_index": idx,
+                "user_id": 1,
+                "date": "2026-12-01",
+                "amount": -10.0 - idx,
+                "description": f"Bulk paid row {idx}",
+                "normalized_description": f"bulk paid row {idx}",
+                "vendor": f"Vendor {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+                "paid_by": paid_by,
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="bulk-paid-by")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staging_ids = [row["id"] for row in db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
+
+    response = client.post(
+        "/import/preview/action",
+        data={
+            "import_id": import_id,
+            "action": "apply_paid_by_selected",
+            "paid_by_value": "DK",
+            "selected_row_ids": [str(staging_ids[0]), str(staging_ids[2]), str(staging_ids[4])],
+        },
+        follow_redirects=True,
+    )
+    assert b"Updated Paid by for 3 rows." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged_rows = [json.loads(row["row_json"]) for row in db.execute("SELECT row_json FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
+
+    assert staged_rows[0]["paid_by"] == "DK"
+    assert staged_rows[1]["paid_by"] == "YZ"
+    assert staged_rows[2]["paid_by"] == "DK"
+    assert staged_rows[3]["paid_by"] == ""
+    assert staged_rows[4]["paid_by"] == "DK"
+
+
+def test_import_preview_bulk_apply_category_overwrites_selected_rows(client):
+    register(client)
+    login(client)
+
+    client.post("/categories", data={"name": "Bulk Category Override"}, follow_redirects=True)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        category_id = db.execute(
+            "SELECT id FROM categories WHERE user_id = 1 AND name = 'Bulk Category Override'"
+        ).fetchone()["id"]
+
+    rows = []
+    for idx in range(4):
+        rows.append(
+            {
+                "row_index": idx,
+                "user_id": 1,
+                "date": "2026-12-02",
+                "amount": -20.0 - idx,
+                "description": f"Bulk category row {idx}",
+                "normalized_description": f"bulk category row {idx}",
+                "vendor": f"Vendor {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+                "paid_by": "DK",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="bulk-category")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staging_ids = [row["id"] for row in db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
+
+    response = client.post(
+        "/import/preview/action",
+        data={
+            "import_id": import_id,
+            "action": "apply_category_selected",
+            "category_id": str(category_id),
+            "selected_row_ids": [str(staging_ids[1]), str(staging_ids[3])],
+        },
+        follow_redirects=True,
+    )
+    assert b"Updated Category for 2 rows." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged_rows = [json.loads(row["row_json"]) for row in db.execute("SELECT row_json FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
+
+    assert staged_rows[0]["category"] == "Groceries"
+    assert staged_rows[1]["category"] == "Bulk Category Override"
+    assert staged_rows[1]["category_id"] == category_id
+    assert staged_rows[1]["category_name"] == "Bulk Category Override"
+    assert staged_rows[2]["category"] == "Groceries"
+    assert staged_rows[3]["category"] == "Bulk Category Override"
+
+
+def test_import_confirm_uses_staging_bulk_edits(client):
+    register(client)
+    login(client)
+
+    client.post("/categories", data={"name": "Staged Bulk Category"}, follow_redirects=True)
+    with client.application.app_context():
+        db = client.application.get_db()
+        category_id = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Staged Bulk Category'").fetchone()["id"]
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-12-03",
+            "amount": -31.0,
+            "description": "Bulk edited import row",
+            "normalized_description": "bulk edited import row",
+            "vendor": "Bulk Vendor",
+            "category": "Groceries",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "paid_by": "",
+        },
+        {
+            "row_index": 1,
+            "user_id": 1,
+            "date": "2026-12-03",
+            "amount": -32.0,
+            "description": "Untouched import row",
+            "normalized_description": "untouched import row",
+            "vendor": "Other Vendor",
+            "category": "Groceries",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "paid_by": "YZ",
+        },
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="confirm-staged-edits")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        first_id = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1", (import_id,)).fetchone()["id"]
+
+    client.post(
+        "/import/preview/action",
+        data={
+            "import_id": import_id,
+            "action": "apply_paid_by_selected",
+            "paid_by_value": "DK",
+            "selected_row_ids": [str(first_id)],
+        },
+        follow_redirects=True,
+    )
+    client.post(
+        "/import/preview/action",
+        data={
+            "import_id": import_id,
+            "action": "apply_category_selected",
+            "category_id": str(category_id),
+            "selected_row_ids": [str(first_id)],
+        },
+        follow_redirects=True,
+    )
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id},
+        follow_redirects=True,
+    )
+    assert b"Imported 2 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        edited = db.execute(
+            """
+            SELECT e.paid_by, c.name as category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description = 'Bulk edited import row'
+            """
+        ).fetchone()
+        untouched = db.execute(
+            "SELECT paid_by FROM expenses WHERE description = 'Untouched import row'"
+        ).fetchone()
+        remaining_staging = db.execute("SELECT COUNT(*) as c FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["c"]
+
+    assert edited["paid_by"] == "DK"
+    assert edited["category"] == "Staged Bulk Category"
+    assert untouched["paid_by"] == "YZ"
+    assert remaining_staging == 0
+
+
+def test_import_preview_bulk_action_requires_selection(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-12-04",
+            "amount": -8.0,
+            "description": "No selection row",
+            "normalized_description": "no selection row",
+            "vendor": "Vendor",
+            "category": "Groceries",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "paid_by": "YZ",
+        }
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="no-selection")
+
+    response = client.post(
+        "/import/preview/action",
+        data={
+            "import_id": import_id,
+            "action": "apply_paid_by_selected",
+            "paid_by_value": "DK",
+        },
+        follow_redirects=True,
+    )
+    assert b"Please select at least one row first." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT row_json FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()
+    assert json.loads(row["row_json"])["paid_by"] == "YZ"
+
+
 def test_import_confirm_applies_vendor_and_category_overrides(client):
     register(client)
     login(client)
