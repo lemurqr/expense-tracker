@@ -629,6 +629,11 @@ def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=No
 
 
 def get_staged_preview_rows(db, import_id, household_id=None, user_id=None):
+    records = get_staged_preview_row_records(db, import_id, household_id=household_id, user_id=user_id)
+    return [record["row"] for record in records]
+
+
+def get_staged_preview_row_records(db, import_id, household_id=None, user_id=None):
     filters = ["import_id = ?"]
     params = [import_id]
     if household_id is not None:
@@ -640,7 +645,7 @@ def get_staged_preview_rows(db, import_id, household_id=None, user_id=None):
 
     staged_rows = db.execute(
         f"""
-        SELECT row_json FROM import_staging
+        SELECT id, row_json FROM import_staging
         WHERE {' AND '.join(filters)}
         ORDER BY id ASC
         """,
@@ -652,10 +657,14 @@ def get_staged_preview_rows(db, import_id, household_id=None, user_id=None):
     parsed_rows = []
     for row in staged_rows:
         try:
-            parsed_rows.append(json.loads(row["row_json"]))
+            parsed_rows.append({"id": row["id"], "row": json.loads(row["row_json"])})
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
     return parsed_rows
+
+
+def update_staged_preview_row(db, staging_id, row):
+    db.execute("UPDATE import_staging SET row_json = ? WHERE id = ?", (json.dumps(row), staging_id))
 
 def placeholder_columns_from_mapping(mapping):
     indices = []
@@ -2240,10 +2249,11 @@ def create_app(test_config=None):
         if not import_id:
             return jsonify({"updated_count": 0, "updated_rows": []}), 400
 
-        rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
+        records = get_staged_preview_row_records(db, import_id, household_id=g.household_id, user_id=g.user["id"])
         updated_rows = []
 
-        for row in rows:
+        for record in records:
+            row = record["row"]
             row_match_key = ""
             if match_type == "vendor":
                 row_match_key = row.get("vendor_rule_key") or normalize_text(row.get("vendor_key") or row.get("vendor", ""))
@@ -2265,6 +2275,7 @@ def create_app(test_config=None):
             row["confidence"] = categorized["confidence"]
             row["confidence_label"] = confidence_label(categorized["confidence"])
             row["suggested_source"] = categorized["source"]
+            update_staged_preview_row(db, record["id"], row)
             updated_rows.append(
                 {
                     "row_index": row.get("row_index"),
@@ -2276,10 +2287,60 @@ def create_app(test_config=None):
             )
 
         if updated_rows:
-            db.execute("DELETE FROM import_staging WHERE import_id = ?", (import_id,))
-            stage_import_preview_rows(db, import_id, rows, household_id=g.household_id, user_id=g.user["id"])
             db.commit()
         return jsonify({"updated_count": len(updated_rows), "updated_rows": updated_rows})
+
+    @app.post("/import/csv/apply_preview_edits")
+    @login_required
+    def apply_preview_edits():
+        import_id = (request.form.get("import_id") or "").strip()
+        if not import_id:
+            flash("Preview expired. Please re-upload the file.")
+            return redirect(url_for("import_csv"))
+
+        show_all = request.form.get("show_all") == "1"
+        confirm_show_all = request.form.get("confirm_show_all") == "1"
+
+        db = get_db()
+        records = get_staged_preview_row_records(db, import_id, household_id=g.household_id, user_id=g.user["id"])
+        if not records:
+            flash("Preview expired. Please re-upload the file.")
+            return redirect(url_for("import_csv"))
+
+        for record in records:
+            row = record["row"]
+            row_index = row.get("row_index")
+            if row_index is None:
+                continue
+
+            paid_by_override = normalize_paid_by(request.form.get(f"override_paid_by_{row_index}", row.get("paid_by", "")))
+            if paid_by_override:
+                row["paid_by"] = paid_by_override
+            else:
+                row.pop("paid_by", None)
+
+            category_override = (request.form.get(f"override_category_{row_index}", "") or "").strip()
+            if category_override:
+                row["category"] = category_override
+                row["override_category"] = category_override
+            else:
+                row.pop("override_category", None)
+
+            vendor_override = (request.form.get(f"override_vendor_{row_index}", "") or "").strip()
+            if vendor_override:
+                row["vendor"] = vendor_override
+
+            update_staged_preview_row(db, record["id"], row)
+
+        db.commit()
+        save_import_preview_show_all(g.user["id"], import_id, show_all)
+
+        redirect_args = {"import_id": import_id}
+        if show_all:
+            redirect_args["show_all"] = "1"
+        if confirm_show_all:
+            redirect_args["confirm_show_all"] = "1"
+        return redirect(url_for("import_csv", **redirect_args))
 
     @app.route("/import/csv", methods=("GET", "POST"))
     @login_required

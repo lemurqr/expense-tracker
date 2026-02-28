@@ -94,13 +94,17 @@
   <p>Showing {{ displayed_rows_count }} of {{ total_rows_count }} rows</p>
   <form method="get" class="inline-form">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
+    <input type="hidden" name="show_all" value="0">
+    {% if requires_show_all_confirmation and show_all_rows %}
+    <input type="hidden" name="confirm_show_all" value="1">
+    {% endif %}
     <label class="inline-form">
       <input type="checkbox" name="show_all" value="1" {% if show_all_rows %}checked{% endif %} onchange="this.form.submit()">
       Show all rows
     </label>
     {% if requires_show_all_confirmation %}
     <label class="inline-form">
-      <input type="checkbox" name="confirm_show_all" value="1">
+      <input type="checkbox" name="confirm_show_all" value="1" {% if show_all_rows %}checked{% endif %} onchange="this.form.submit()">
       Confirm show all rows ({{ total_rows_count }} rows)
     </label>
     <small>Large previews may be slow.</small>
@@ -113,7 +117,7 @@
   <p><small>Auto-mapped CIBC headerless format: Date=1, Desc=2, Debit=3, Credit=4 (ignored extra columns).</small></p>
   {% endif %}
   {% if preview_rows %}
-  <form method="post">
+  <form method="post" action="{{ url_for('apply_preview_edits') }}">
     <label>Paid by (default for this import)
       <select name="import_default_paid_by" id="importDefaultPaidBy">
         <option value="" {% if not import_default_paid_by %}selected{% endif %}>-- Select --</option>
@@ -178,6 +182,26 @@
       </tbody>
     </table>
 
+    <input type="hidden" name="import_id" value="{{ preview_id }}">
+    <input type="hidden" name="show_all" value="{{ 1 if show_all_rows else 0 }}">
+    <input type="hidden" name="confirm_show_all" value="{{ 1 if requires_show_all_confirmation and show_all_rows else 0 }}">
+    <input type="hidden" name="map_date" value="{{ mapping.date }}">
+    <input type="hidden" name="map_description" value="{{ mapping.description }}">
+    <input type="hidden" name="map_amount" value="{{ mapping.amount }}">
+    <input type="hidden" name="map_debit" value="{{ mapping.debit }}">
+    <input type="hidden" name="map_credit" value="{{ mapping.credit }}">
+    <input type="hidden" name="map_vendor" value="{{ mapping.vendor }}">
+    <input type="hidden" name="map_category" value="{{ mapping.category }}">
+    <input type="hidden" name="map_paid_by" value="{{ mapping.paid_by }}">
+    <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
+    <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
+    <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
+    <p id="applyVendorMessage" class="legend-text"></p>
+    <p class="legend-text">Rows with manual/bulk override are highlighted.</p>
+    <button type="submit" name="action" value="apply">Apply preview edits</button>
+  </form>
+
+  <form method="post">
     <input type="hidden" name="action" value="confirm">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all_rows" value="{{ 1 if show_all_rows else 0 }}">
@@ -192,8 +216,6 @@
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
-    <p id="applyVendorMessage" class="legend-text"></p>
-    <p class="legend-text">Rows with manual/bulk override are highlighted.</p>
     <button type="submit">Confirm Import</button>
   </form>
   {% else %}

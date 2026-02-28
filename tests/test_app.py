@@ -113,6 +113,78 @@ def test_import_preview_show_all_toggle_and_confirm_imports_all_rows(client):
     )
     assert b"Imported 51 transaction(s)." in confirm_response.data
 
+
+
+def test_import_preview_toggle_is_reversible_and_preserves_staged_edits(client):
+    register(client)
+    login(client)
+
+    parsed_rows = []
+    for idx in range(51):
+        parsed_rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-02-01",
+                "amount": -10.0 - idx,
+                "description": f"Merchant {idx}",
+                "normalized_description": f"merchant {idx}",
+                "vendor": f"Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+                "vendor_key": f"merchant {idx}",
+                "vendor_rule_key": f"merchant {idx}",
+                "description_rule_key": f"merchant {idx}",
+                "paid_by": "",
+            }
+        )
+
+    import_id = stage_import_preview(client, parsed_rows, preview_id="preview-edit-persist-51")
+
+    apply_response = client.post(
+        "/import/csv/apply_preview_edits",
+        data={
+            "import_id": import_id,
+            "show_all": "1",
+            "confirm_show_all": "0",
+            "override_paid_by_0": "YZ",
+            "override_category_0": "Restaurants",
+        },
+        follow_redirects=True,
+    )
+    apply_text = apply_response.get_data(as_text=True)
+    assert apply_response.status_code == 200
+    assert "Showing 51 of 51 rows" in apply_text
+    assert 'name="override_paid_by_0"' in apply_text
+    assert '<option value="YZ" selected>YZ</option>' in apply_text
+    assert '<option value="Restaurants" selected>Restaurants</option>' in apply_text
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged = db.execute(
+            "SELECT row_json FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1",
+            (import_id,),
+        ).fetchone()
+    staged_row = json.loads(staged["row_json"])
+    assert staged_row["paid_by"] == "YZ"
+    assert staged_row["override_category"] == "Restaurants"
+
+    limited_preview = client.get(f"/import/csv?import_id={import_id}&show_all=0")
+    limited_text = limited_preview.get_data(as_text=True)
+    assert limited_preview.status_code == 200
+    assert "Showing 25 of 51 rows" in limited_text
+    assert limited_text.count('class="preview-row"') == 25
+    assert '<option value="YZ" selected>YZ</option>' in limited_text
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "show_all_rows": "0"},
+        follow_redirects=True,
+    )
+    assert b"Imported 51 transaction(s)." in confirm_response.data
+
 def test_register_login_logout(client):
     response = register(client)
     assert b"Registration successful" in response.data
