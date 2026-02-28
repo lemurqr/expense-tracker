@@ -254,6 +254,32 @@ def normalize_description(value):
     return re.sub(r"\s+", " ", no_accents)
 
 
+def normalize_csv_category_name(value):
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def resolve_csv_category_mapping(raw_name, category_lookup):
+    csv_category_name = normalize_csv_category_name(raw_name)
+    if not csv_category_name:
+        return "", None, ""
+    category = category_lookup.get(normalize_description(csv_category_name))
+    if not category:
+        return csv_category_name, None, "unknown"
+    return csv_category_name, category["id"], "matched"
+
+
+def build_unknown_category_rows(rows):
+    unknown = {}
+    for row in rows:
+        if row.get("csv_category_match_status") != "unknown":
+            continue
+        name = row.get("csv_category_name")
+        if not name:
+            continue
+        unknown[name] = row.get("mapped_category_id")
+    return [{"name": name, "mapped_category_id": mapped_id} for name, mapped_id in sorted(unknown.items())]
+
+
 def normalize_text(value):
     normalized = normalize_description(value)
     normalized = re.sub(r"[^\w\s/]", " ", normalized)
@@ -735,6 +761,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
         parsed_date = parse_transaction_date(get_value("date"))
         row_description = get_value("description")
         row_category = get_value("category")
+        csv_category_name = normalize_csv_category_name(row_category)
         normalized_description = normalize_description(row_description)
         row_vendor = get_value("vendor") or derive_vendor(row_description)
         row_paid_by = normalize_paid_by(get_value("paid_by"))
@@ -782,6 +809,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 "normalized_description": normalized_description,
                 "description_rule_key": extract_pattern(row_description),
                 "category": infer_category(row_description, row_category),
+                "csv_category_name": csv_category_name,
                 "tags": derive_tags(row_description),
                 "paid_by": row_paid_by,
             }
@@ -2313,6 +2341,11 @@ def create_app(test_config=None):
             flash("Preview expired. Please re-upload the file.")
             return redirect(url_for("import_csv"))
 
+        category_rows = db.execute(
+            "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
+        ).fetchall()
+        category_lookup = {normalize_description(row["name"]): row for row in category_rows}
+
         for record in records:
             row = record["row"]
             row_index = row.get("row_index")
@@ -2327,8 +2360,15 @@ def create_app(test_config=None):
 
             category_override = (request.form.get(f"override_category_{row_index}", "") or "").strip()
             if category_override:
-                row["category"] = category_override
-                row["override_category"] = category_override
+                matched = category_lookup.get(normalize_description(category_override))
+                if matched:
+                    row["category"] = matched["name"]
+                    row["category_name"] = matched["name"]
+                    row["override_category"] = matched["name"]
+                    row["category_id"] = matched["id"]
+                    row["mapped_category_id"] = matched["id"]
+                    if row.get("csv_category_name"):
+                        row["csv_category_match_status"] = "mapped"
             else:
                 row.pop("override_category", None)
 
@@ -2441,10 +2481,14 @@ def create_app(test_config=None):
                         row["override_category"] = selected_category_name
                         row["category_name"] = selected_category_name
                         row["category_id"] = selected_category_id
+                        row["mapped_category_id"] = selected_category_id
+                        if row.get("csv_category_name"):
+                            row["csv_category_match_status"] = "mapped"
                     else:
                         row.pop("override_category", None)
                         row.pop("category_name", None)
                         row.pop("category_id", None)
+                        row.pop("mapped_category_id", None)
                     update_staged_preview_row(db, staged_row["id"], row)
 
                 db.commit()
@@ -2468,6 +2512,63 @@ def create_app(test_config=None):
             action = request.form.get("action", "preview")
             import_default_paid_by = normalize_paid_by(request.form.get("import_default_paid_by", ""))
 
+            if action == "apply_all_mappings":
+                import_id = (request.form.get("import_id") or "").strip()
+                if not import_id:
+                    flash("Preview expired. Please re-upload the file.")
+                    return redirect(url_for("import_csv"))
+
+                db = get_db()
+                records = get_staged_preview_row_records(db, import_id, household_id=g.household_id, user_id=g.user["id"])
+                if not records:
+                    flash("Preview expired. Please re-upload the file.")
+                    return redirect(url_for("import_csv"))
+
+                category_rows = db.execute(
+                    "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
+                ).fetchall()
+                categories_by_id = {row["id"]: row["name"] for row in category_rows}
+                mapping_by_category_name = {}
+                for key, value in request.form.items():
+                    if not key.startswith("map_unknown::"):
+                        continue
+                    csv_name = normalize_csv_category_name(key.split("::", 1)[1])
+                    apply_all = request.form.get(f"apply_unknown_all::{csv_name}") == "1"
+                    if not apply_all:
+                        continue
+                    try:
+                        category_id = int((value or "").strip())
+                    except (TypeError, ValueError):
+                        continue
+                    if category_id not in categories_by_id:
+                        continue
+                    mapping_by_category_name[csv_name] = {"id": category_id, "name": categories_by_id[category_id]}
+
+                if not mapping_by_category_name:
+                    flash("No category mappings were selected.")
+                    return redirect(url_for("import_csv", import_id=import_id))
+
+                updated_rows = 0
+                for record in records:
+                    row = record["row"]
+                    csv_name = normalize_csv_category_name(row.get("csv_category_name", ""))
+                    mapped = mapping_by_category_name.get(csv_name)
+                    if not mapped:
+                        continue
+                    row["category"] = mapped["name"]
+                    row["category_name"] = mapped["name"]
+                    row["category_id"] = mapped["id"]
+                    row["mapped_category_id"] = mapped["id"]
+                    row["override_category"] = mapped["name"]
+                    row["csv_category_name"] = csv_name
+                    row["csv_category_match_status"] = "mapped"
+                    update_staged_preview_row(db, record["id"], row)
+                    updated_rows += 1
+
+                db.commit()
+                flash(f"Applied mappings to {updated_rows} row(s).")
+                return redirect(url_for("import_csv", import_id=import_id))
+
             if action == "confirm":
                 import_id = request.form.get("import_id", "") or request.form.get("preview_id", "")
                 db = get_db()
@@ -2481,6 +2582,7 @@ def create_app(test_config=None):
                 category_rows = db.execute(
                     "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
                 ).fetchall()
+                categories_by_id = {row["id"]: row["name"] for row in category_rows}
                 category_lookup = {normalize_description(row["name"]): row["id"] for row in category_rows}
                 available_category_names = [row["name"] for row in category_rows]
                 learned_rule_keys = set()
@@ -2491,6 +2593,7 @@ def create_app(test_config=None):
                 if raw_default_paid_by is None and not has_paid_by_overrides:
                     default_paid_by = "DK"
                 skipped_count = 0
+                uncategorized_unmapped_count = 0
                 for index, row in enumerate(parsed_rows):
                     row_index = row.get("row_index", index)
                     override = request.form.get(f"override_category_{row_index}", "") or row.get("override_category", "")
@@ -2525,17 +2628,42 @@ def create_app(test_config=None):
                         continue
 
                     category_id = None
-                    categorized = categorize_transaction(
-                        g.user["id"],
-                        row.get("description", ""),
-                        row.get("vendor", ""),
-                        row.get("category", ""),
-                        available_category_names,
-                        db,
-                    )
-                    assigned_category = categorized["category"]
-                    if assigned_category:
-                        category_id = category_lookup.get(normalize_description(assigned_category))
+                    assigned_category = ""
+                    categorized = {"confidence": 25, "source": "unknown"}
+
+                    if override:
+                        assigned_category = pick_existing_category(override, available_category_names)
+                        if assigned_category:
+                            category_id = category_lookup.get(normalize_description(assigned_category))
+                            categorized = {"confidence": 100, "source": "import_override"}
+                    if not category_id:
+                        staged_category_id = row.get("mapped_category_id") if row.get("mapped_category_id") is not None else row.get("category_id")
+                        try:
+                            staged_category_id = int(staged_category_id) if staged_category_id not in (None, "") else None
+                        except (TypeError, ValueError):
+                            staged_category_id = None
+                        if staged_category_id and staged_category_id in categories_by_id:
+                            category_id = staged_category_id
+                            assigned_category = categories_by_id[staged_category_id]
+                            categorized = {"confidence": 100, "source": "csv_mapped"}
+
+                    if not category_id and row.get("csv_category_name"):
+                        categorized = {"confidence": 25, "source": "unknown_csv_category"}
+                        uncategorized_unmapped_count += 1
+                    elif not category_id:
+                        categorized_full = categorize_transaction(
+                            g.user["id"],
+                            row.get("description", ""),
+                            row.get("vendor", ""),
+                            row.get("category", ""),
+                            available_category_names,
+                            db,
+                        )
+                        assigned_category = categorized_full["category"]
+                        categorized = categorized_full
+                        if assigned_category:
+                            category_id = category_lookup.get(normalize_description(assigned_category))
+
                     is_personal = assigned_category == "Personal"
                     is_transfer = is_transfer_transaction(row.get("description", ""), assigned_category)
 
@@ -2595,24 +2723,26 @@ def create_app(test_config=None):
                 clear_import_preview_show_all(g.user["id"], import_id)
                 flash(f"Imported {imported_count} transaction(s).")
                 flash(f"Preview rows: {preview_count} · inserted: {imported_count} · skipped: {skipped_count}.")
+                if uncategorized_unmapped_count:
+                    flash(f"{uncategorized_unmapped_count} rows imported as Uncategorized because CSV categories were not mapped.")
                 return redirect(url_for("dashboard"))
 
             file = request.files.get("csv_file")
             if file is None or not file.filename:
                 flash("Please choose a CSV file.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None)
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[])
 
             file_bytes = file.read()
             content = decode_csv_bytes(file_bytes)
             if content is None:
                 flash("Could not read file encoding. Please re-save as CSV UTF-8.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None)
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[])
 
             rows = list(csv.reader(io.StringIO(content)))
             rows = [row for row in rows if any(cell.strip() for cell in row)]
             if not rows:
                 flash("CSV is empty.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None)
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[])
 
             has_header, inferred_mapping, header_row_index = detect_header_and_mapping(rows)
             detected_format = "header" if has_header else "headerless"
@@ -2672,16 +2802,43 @@ def create_app(test_config=None):
             category_rows = db.execute(
                 "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
             ).fetchall()
+            category_lookup = {normalize_description(row["name"]): row for row in category_rows}
             available_category_names = [row["name"] for row in category_rows]
             for row in parsed_rows:
                 categorized = categorize_transaction(
                     g.user["id"], row.get("description", ""), row.get("vendor", ""), row.get("category", ""), available_category_names, db
                 )
                 row["auto_category"] = categorized["category"]
-                row["category"] = categorized["category"]
                 row["suggested_source"] = categorized["source"]
                 row["confidence"] = categorized["confidence"]
                 row["confidence_label"] = confidence_label(categorized["confidence"])
+
+                csv_category_name, csv_matched_category_id, csv_match_status = resolve_csv_category_mapping(
+                    row.get("csv_category_name", ""), category_lookup
+                )
+                row["csv_category_name"] = csv_category_name
+                row["csv_category_match_status"] = csv_match_status
+
+                if csv_match_status == "matched":
+                    matched_name = category_lookup[normalize_description(csv_category_name)]["name"]
+                    row["category"] = matched_name
+                    row["category_name"] = matched_name
+                    row["category_id"] = csv_matched_category_id
+                    row["mapped_category_id"] = csv_matched_category_id
+                elif csv_match_status == "unknown":
+                    row["category"] = ""
+                    row["category_name"] = ""
+                    row["category_id"] = None
+                    row["mapped_category_id"] = None
+                    row["suggested_source"] = "unknown_csv_category"
+                    row["confidence"] = 25
+                    row["confidence_label"] = confidence_label(25)
+                else:
+                    resolved_category = categorized["category"]
+                    row["category"] = resolved_category
+                    row["category_name"] = resolved_category
+                    row["category_id"] = None
+                    row["mapped_category_id"] = None
 
             import_id = str(uuid.uuid4())
             show_all = request.form.get("show_all_rows") == "1"
@@ -2695,6 +2852,7 @@ def create_app(test_config=None):
             db.commit()
             save_import_preview_state(g.user["id"], [], preview_id=import_id)
             preview_rows, displayed_rows_count, total_rows_count = preview_rows_for_display(parsed_rows, show_all=show_all)
+            unknown_category_rows = build_unknown_category_rows(parsed_rows)
             def mapped_column_name(field):
                 value = mapping.get(field, "")
                 if value == "":
@@ -2739,6 +2897,7 @@ def create_app(test_config=None):
                 show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
                 requires_show_all_confirmation=requires_show_all_confirmation,
                 low_confidence_filter=False,
+                unknown_category_rows=unknown_category_rows,
             )
 
         import_id = (request.args.get("import_id") or "").strip()
@@ -2764,6 +2923,7 @@ def create_app(test_config=None):
 
             save_import_preview_show_all(g.user["id"], import_id, show_all)
             preview_rows, displayed_rows_count, total_rows_count = preview_rows_for_display(parsed_rows, show_all=show_all)
+            unknown_category_rows = build_unknown_category_rows(parsed_rows)
             category_rows = db.execute(
                 "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
             ).fetchall()
@@ -2790,6 +2950,7 @@ def create_app(test_config=None):
                 show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
                 requires_show_all_confirmation=requires_show_all_confirmation,
                 low_confidence_filter=low_confidence_filter,
+                unknown_category_rows=unknown_category_rows,
             )
 
         return render_template(
@@ -2814,6 +2975,7 @@ def create_app(test_config=None):
             show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
             requires_show_all_confirmation=False,
             low_confidence_filter=False,
+            unknown_category_rows=[],
         )
 
     @app.route("/rules")
