@@ -67,6 +67,46 @@ def confirm_import(client, rows, **form_data):
 
 
 
+def test_import_preview_get_show_all_query_param_controls_row_limit(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(51):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-03-01",
+                "amount": -5.0 - idx,
+                "description": f"Toggle Merchant {idx}",
+                "normalized_description": f"toggle merchant {idx}",
+                "vendor": f"Toggle Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+                "vendor_key": f"toggle merchant {idx}",
+                "vendor_rule_key": f"toggle merchant {idx}",
+                "description_rule_key": f"toggle merchant {idx}",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-get-toggle-51")
+
+    limited_preview = client.get(f"/import/csv?import_id={import_id}")
+    limited_html = limited_preview.get_data(as_text=True)
+    assert limited_preview.status_code == 200
+    assert "Showing 25 of 51 rows" in limited_html
+    assert limited_html.count('class="preview-row"') == 25
+
+    all_rows_preview = client.get(f"/import/csv?import_id={import_id}&show_all=1")
+    all_rows_html = all_rows_preview.get_data(as_text=True)
+    assert all_rows_preview.status_code == 200
+    assert "Showing 51 of 51 rows" in all_rows_html
+    assert all_rows_html.count('class="preview-row"') == 51
+
+
 def test_import_preview_show_all_toggle_and_confirm_imports_all_rows(client):
     register(client)
     login(client)
