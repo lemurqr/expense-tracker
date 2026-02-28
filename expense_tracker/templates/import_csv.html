@@ -117,6 +117,31 @@
   {% if auto_mapping_applied %}
   <p><small>Auto-mapped CIBC headerless format: Date=1, Desc=2, Debit=3, Credit=4 (ignored extra columns).</small></p>
   {% endif %}
+  {% if unknown_category_rows %}
+  <form method="post" class="stack-form">
+    <input type="hidden" name="action" value="apply_all_mappings">
+    <input type="hidden" name="import_id" value="{{ preview_id }}">
+    <h4>Unknown Categories</h4>
+    <p>Map CSV category values to existing categories in the app.</p>
+    {% for unknown in unknown_category_rows %}
+    <div class="inline-form">
+      <strong>{{ unknown.name }}</strong>
+      <select name="map_unknown::{{ unknown.name }}">
+        <option value="">-- Select category --</option>
+        {% for category in categories %}
+        <option value="{{ category.id }}" {% if unknown.mapped_category_id == category.id %}selected{% endif %}>{{ category.name }}</option>
+        {% endfor %}
+      </select>
+      <label class="inline-form">
+        <input type="checkbox" name="apply_unknown_all::{{ unknown.name }}" value="1" checked>
+        Apply mapping to all rows with this CSV category
+      </label>
+    </div>
+    {% endfor %}
+    <button type="submit">Apply all mappings</button>
+  </form>
+  {% endif %}
+
   {% if preview_rows %}
   <form method="post" action="{{ url_for('apply_preview_edits') }}" id="previewEditForm">
     <p class="inline-form">
@@ -177,9 +202,15 @@
           </td>
           <td>
             <select name="override_category_{{ row.row_index }}" class="category-select" data-original-category="{{ row.category or "" }}">
-              <option value="" {% if not row.override_category %}selected{% endif %}>Use suggested ({{ row.category or 'Uncategorized' }})</option>
+              <option value="" {% if not row.override_category %}selected{% endif %}>
+                {% if row.csv_category_match_status == 'unknown' %}
+                Unknown category: {{ row.csv_category_name }} (Uncategorized)
+                {% else %}
+                Use suggested ({{ row.category or 'Uncategorized' }})
+                {% endif %}
+              </option>
               {% for category in categories %}
-              <option value="{{ category.name }}" {% if row.override_category == category.name %}selected{% endif %}>{{ category.name }}</option>
+              <option value="{{ category.name }}" {% if row.override_category == category.name or (not row.override_category and row.category == category.name) %}selected{% endif %}>{{ category.name }}</option>
               {% endfor %}
             </select>
             <label class="inline-form apply-all-option" hidden>

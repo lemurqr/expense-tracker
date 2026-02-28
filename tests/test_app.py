@@ -2459,3 +2459,201 @@ def test_import_confirm_preview_expired_when_import_id_missing_or_empty(client):
         follow_redirects=True,
     )
     assert b"Preview expired. Please re-upload the file." in empty_id_response.data
+
+def test_import_preview_shows_unknown_csv_category_unmapped(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "user_id": 1,
+            "row_index": 0,
+            "date": "2026-02-01",
+            "amount": -15.0,
+            "description": "Camp fee",
+            "normalized_description": "camp fee",
+            "vendor": "Camp",
+            "category": "",
+            "csv_category_name": "  David   Camp ",
+            "csv_category_match_status": "unknown",
+            "category_id": None,
+            "mapped_category_id": None,
+            "confidence": 25,
+            "confidence_label": "Low",
+            "suggested_source": "unknown_csv_category",
+            "vendor_key": "camp",
+            "vendor_rule_key": "camp",
+            "description_rule_key": "camp fee",
+            "paid_by": "DK",
+        }
+    ]
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-unknown-csv-category")
+    response = client.get(f"/import/csv?import_id={import_id}")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Unknown Categories" in html
+    assert "David   Camp" in html
+    assert "Unknown category:   David   Camp" in html
+
+
+def test_import_apply_all_unknown_category_mappings_updates_all_rows(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        restaurants = db.execute(
+            "SELECT id FROM categories WHERE user_id = 1 AND name = 'Restaurants'"
+        ).fetchone()["id"]
+
+    rows = [
+        {
+            "user_id": 1,
+            "row_index": 0,
+            "date": "2026-02-01",
+            "amount": -25.0,
+            "description": "Practice one",
+            "normalized_description": "practice one",
+            "vendor": "Sports",
+            "category": "",
+            "csv_category_name": "Hockey training",
+            "csv_category_match_status": "unknown",
+            "category_id": None,
+            "mapped_category_id": None,
+            "confidence": 25,
+            "confidence_label": "Low",
+            "suggested_source": "unknown_csv_category",
+            "vendor_key": "sports",
+            "vendor_rule_key": "sports",
+            "description_rule_key": "practice one",
+            "paid_by": "DK",
+        },
+        {
+            "user_id": 1,
+            "row_index": 1,
+            "date": "2026-02-02",
+            "amount": -35.0,
+            "description": "Practice two",
+            "normalized_description": "practice two",
+            "vendor": "Sports",
+            "category": "",
+            "csv_category_name": "Hockey training",
+            "csv_category_match_status": "unknown",
+            "category_id": None,
+            "mapped_category_id": None,
+            "confidence": 25,
+            "confidence_label": "Low",
+            "suggested_source": "unknown_csv_category",
+            "vendor_key": "sports",
+            "vendor_rule_key": "sports",
+            "description_rule_key": "practice two",
+            "paid_by": "DK",
+        },
+    ]
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-map-unknown")
+    response = client.post(
+        "/import/csv",
+        data={
+            "action": "apply_all_mappings",
+            "import_id": import_id,
+            "map_unknown::Hockey training": str(restaurants),
+            "apply_unknown_all::Hockey training": "1",
+        },
+        follow_redirects=True,
+    )
+    assert b"Applied mappings to 2 row(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged_rows = [
+            json.loads(row["row_json"])
+            for row in db.execute(
+                "SELECT row_json FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)
+            ).fetchall()
+        ]
+
+    assert all(row["mapped_category_id"] == restaurants for row in staged_rows)
+    assert all(row["category_id"] == restaurants for row in staged_rows)
+    assert all(row["csv_category_match_status"] == "mapped" for row in staged_rows)
+
+
+def test_import_confirm_uses_mapped_category_and_never_creates_categories(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        restaurants = db.execute(
+            "SELECT id FROM categories WHERE user_id = 1 AND name = 'Restaurants'"
+        ).fetchone()["id"]
+        category_count_before = db.execute(
+            "SELECT COUNT(*) AS c FROM categories WHERE user_id = 1"
+        ).fetchone()["c"]
+
+    rows = [
+        {
+            "user_id": 1,
+            "row_index": 0,
+            "date": "2026-04-01",
+            "amount": -45.0,
+            "description": "Mapped row",
+            "normalized_description": "mapped row",
+            "vendor": "Vendor A",
+            "category": "Restaurants",
+            "csv_category_name": "Hockey training",
+            "csv_category_match_status": "mapped",
+            "category_id": restaurants,
+            "mapped_category_id": restaurants,
+            "confidence": 100,
+            "confidence_label": "High",
+            "suggested_source": "csv_mapped",
+            "vendor_key": "vendor a",
+            "vendor_rule_key": "vendor a",
+            "description_rule_key": "mapped row",
+            "paid_by": "DK",
+        },
+        {
+            "user_id": 1,
+            "row_index": 1,
+            "date": "2026-04-02",
+            "amount": -20.0,
+            "description": "Unmapped row",
+            "normalized_description": "unmapped row",
+            "vendor": "Vendor B",
+            "category": "",
+            "csv_category_name": "David Camp",
+            "csv_category_match_status": "unknown",
+            "category_id": None,
+            "mapped_category_id": None,
+            "confidence": 25,
+            "confidence_label": "Low",
+            "suggested_source": "unknown_csv_category",
+            "vendor_key": "vendor b",
+            "vendor_rule_key": "vendor b",
+            "description_rule_key": "unmapped row",
+            "paid_by": "DK",
+        },
+    ]
+
+    response = confirm_import(client, rows)
+    assert b"Imported 2 transaction(s)." in response.data
+    assert b"1 rows imported as Uncategorized because CSV categories were not mapped." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expenses = db.execute(
+            "SELECT description, category_id, category_source FROM expenses ORDER BY date"
+        ).fetchall()
+        category_count_after = db.execute(
+            "SELECT COUNT(*) AS c FROM categories WHERE user_id = 1"
+        ).fetchone()["c"]
+
+    assert expenses[0]["description"] == "Mapped row"
+    assert expenses[0]["category_id"] == restaurants
+    assert expenses[1]["description"] == "Unmapped row"
+    assert expenses[1]["category_id"] is None
+    assert expenses[1]["category_source"] == "unknown_csv_category"
+    assert category_count_after == category_count_before
