@@ -95,6 +95,7 @@
   <form method="get" action="{{ url_for('import_csv') }}" class="inline-form">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all" value="0">
+    <input type="hidden" name="low_confidence" value="{{ 1 if low_confidence_filter else 0 }}">
     {% if requires_show_all_confirmation and show_all_rows %}
     <input type="hidden" name="confirm_show_all" value="1">
     {% endif %}
@@ -117,18 +118,42 @@
   <p><small>Auto-mapped CIBC headerless format: Date=1, Desc=2, Debit=3, Credit=4 (ignored extra columns).</small></p>
   {% endif %}
   {% if preview_rows %}
-  <form method="post" action="{{ url_for('apply_preview_edits') }}">
-    <label>Paid by (default for this import)
-      <select name="import_default_paid_by" id="importDefaultPaidBy">
-        <option value="" {% if not import_default_paid_by %}selected{% endif %}>-- Select --</option>
-        <option value="DK" {% if import_default_paid_by == 'DK' %}selected{% endif %}>DK</option>
-        <option value="YZ" {% if import_default_paid_by == 'YZ' %}selected{% endif %}>YZ</option>
-      </select>
-    </label>
-    <p><button type="button" id="fillPaidByFromDefault">Fill missing with default</button></p>
+  <form method="post" action="{{ url_for('apply_preview_edits') }}" id="previewEditForm">
     <p class="inline-form">
+      <label>Paid by (default for this import)
+        <select name="import_default_paid_by" id="importDefaultPaidBy">
+          <option value="" {% if not import_default_paid_by %}selected{% endif %}>-- Select --</option>
+          <option value="DK" {% if import_default_paid_by == 'DK' %}selected{% endif %}>DK</option>
+          <option value="YZ" {% if import_default_paid_by == 'YZ' %}selected{% endif %}>YZ</option>
+        </select>
+      </label>
+      <button type="button" id="fillPaidByFromDefault">Fill missing with default</button>
+      <button
+        type="submit"
+        formaction="{{ url_for('import_preview_action') }}"
+        formmethod="post"
+        name="action"
+        value="apply_paid_by_selected"
+      >Apply to selected</button>
+    </p>
+    <p class="inline-form">
+      <label>Category
+        <select name="category_id" id="bulkCategoryId">
+          <option value="">-- Uncategorized --</option>
+          {% for category in categories %}
+          <option value="{{ category.id }}">{{ category.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button
+        type="submit"
+        formaction="{{ url_for('import_preview_action') }}"
+        formmethod="post"
+        name="action"
+        value="apply_category_selected"
+      >Apply category to selected</button>
       <label class="inline-form"><input type="checkbox" id="select-all-rows"> Select all</label>
-      <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle"> Show only low-confidence (&lt; 80)</label>
+      <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle" {% if low_confidence_filter %}checked{% endif %}> Show only low-confidence (&lt; 80)</label>
       <strong>Selected: <span id="selected-count">0</span></strong>
     </p>
     <table>
@@ -138,7 +163,7 @@
       <tbody>
         {% for row in preview_rows %}
         <tr class="preview-row" data-row-index="{{ row.row_index }}" data-vendor-key="{{ row.vendor_key }}" data-vendor-rule-key="{{ row.vendor_rule_key }}" data-description-rule-key="{{ row.description_rule_key }}" data-confidence="{{ row.confidence }}">
-          <td><input type="checkbox" class="row-check row-select" checked></td>
+          <td><input type="checkbox" class="row-check row-select" name="selected_row_ids" value="{{ row.staging_id }}" checked></td>
           <td>{{ row.date }}</td>
           <td>{{ '%.2f'|format(row.amount) }}</td>
           <td>{{ row.description }}</td>
@@ -189,6 +214,7 @@
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all" value="{{ 1 if show_all_rows else 0 }}">
     <input type="hidden" name="confirm_show_all" value="{{ 1 if requires_show_all_confirmation and show_all_rows else 0 }}">
+    <input type="hidden" name="low_confidence" value="{{ 1 if low_confidence_filter else 0 }}">
     <input type="hidden" name="map_date" value="{{ mapping.date }}">
     <input type="hidden" name="map_description" value="{{ mapping.description }}">
     <input type="hidden" name="map_amount" value="{{ mapping.amount }}">
@@ -209,6 +235,7 @@
     <input type="hidden" name="action" value="confirm">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all_rows" value="{{ 1 if show_all_rows else 0 }}">
+    <input type="hidden" name="low_confidence" value="{{ 1 if low_confidence_filter else 0 }}">
     <input type="hidden" name="map_date" value="{{ mapping.date }}">
     <input type="hidden" name="map_description" value="{{ mapping.description }}">
     <input type="hidden" name="map_amount" value="{{ mapping.amount }}">
@@ -236,6 +263,7 @@
   const fillPaidByFromDefaultButton = document.getElementById('fillPaidByFromDefault');
   const importDefaultPaidBy = document.getElementById('importDefaultPaidBy');
   const rowSelectCheckboxes = document.querySelectorAll('.row-select');
+  const lowConfidenceHiddenInputs = document.querySelectorAll('input[name="low_confidence"]');
 
   const visibleRowSelectCheckboxes = () => Array.from(document.querySelectorAll('.preview-row'))
     .filter((row) => row.style.display !== 'none')
@@ -387,16 +415,24 @@
     });
   }
 
+  const applyLowConfidenceFilter = (enabled) => {
+    document.querySelectorAll('.preview-row').forEach((row) => {
+      const confidence = parseInt(row.dataset.confidence || '0', 10);
+      row.style.display = enabled && confidence >= 80 ? 'none' : '';
+    });
+    lowConfidenceHiddenInputs.forEach((input) => {
+      input.value = enabled ? '1' : '0';
+    });
+    updateSelectionUI();
+  };
+
   if (lowConfidenceToggle) {
     lowConfidenceToggle.addEventListener('change', (event) => {
-      document.querySelectorAll('.preview-row').forEach((row) => {
-        const confidence = parseInt(row.dataset.confidence || '0', 10);
-        row.style.display = event.target.checked && confidence >= 80 ? 'none' : '';
-      });
-      updateSelectionUI();
+      applyLowConfidenceFilter(event.target.checked);
     });
+    applyLowConfidenceFilter(lowConfidenceToggle.checked);
+  } else {
+    updateSelectionUI();
   }
-
-  updateSelectionUI();
 </script>
 {% endblock %}

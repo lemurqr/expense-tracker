@@ -630,7 +630,12 @@ def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=No
 
 def get_staged_preview_rows(db, import_id, household_id=None, user_id=None):
     records = get_staged_preview_row_records(db, import_id, household_id=household_id, user_id=user_id)
-    return [record["row"] for record in records]
+    parsed_rows = []
+    for record in records:
+        row = dict(record["row"])
+        row["staging_id"] = record["id"]
+        parsed_rows.append(row)
+    return parsed_rows
 
 
 def get_staged_preview_row_records(db, import_id, household_id=None, user_id=None):
@@ -2300,6 +2305,7 @@ def create_app(test_config=None):
 
         show_all = request.form.get("show_all") == "1"
         confirm_show_all = request.form.get("confirm_show_all") == "1"
+        low_confidence = request.form.get("low_confidence") == "1"
 
         db = get_db()
         records = get_staged_preview_row_records(db, import_id, household_id=g.household_id, user_id=g.user["id"])
@@ -2340,6 +2346,115 @@ def create_app(test_config=None):
             redirect_args["show_all"] = "1"
         if confirm_show_all:
             redirect_args["confirm_show_all"] = "1"
+        if low_confidence:
+            redirect_args["low_confidence"] = "1"
+        return redirect(url_for("import_csv", **redirect_args))
+
+    @app.post("/import/preview/action")
+    @login_required
+    def import_preview_action():
+        import_id = (request.form.get("import_id") or "").strip()
+        action = (request.form.get("action") or "").strip()
+        show_all = request.form.get("show_all") == "1"
+        confirm_show_all = request.form.get("confirm_show_all") == "1"
+        low_confidence = request.form.get("low_confidence") == "1"
+
+        redirect_args = {"import_id": import_id}
+        if show_all:
+            redirect_args["show_all"] = "1"
+        if confirm_show_all:
+            redirect_args["confirm_show_all"] = "1"
+        if low_confidence:
+            redirect_args["low_confidence"] = "1"
+
+        if not import_id:
+            flash("Preview expired. Please re-upload the file.")
+            return redirect(url_for("import_csv"))
+
+        selected_row_ids = []
+        for raw_id in request.form.getlist("selected_row_ids"):
+            try:
+                parsed_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if parsed_id > 0:
+                selected_row_ids.append(parsed_id)
+        selected_row_ids = list(dict.fromkeys(selected_row_ids))
+        if not selected_row_ids:
+            flash("Please select at least one row first.")
+            return redirect(url_for("import_csv", **redirect_args))
+
+        db = get_db()
+        placeholders = ",".join(["?"] * len(selected_row_ids))
+        staged_rows = db.execute(
+            f"""
+            SELECT id, row_json FROM import_staging
+            WHERE import_id = ? AND household_id = ? AND user_id = ? AND id IN ({placeholders})
+            ORDER BY id
+            """,
+            (import_id, g.household_id, g.user["id"], *selected_row_ids),
+        ).fetchall()
+        if not staged_rows:
+            flash("No selected rows were found in this preview.")
+            return redirect(url_for("import_csv", **redirect_args))
+
+        try:
+            if action == "apply_paid_by_selected":
+                paid_by_value = normalize_paid_by(request.form.get("paid_by_value") or request.form.get("import_default_paid_by") or "")
+                if not paid_by_value:
+                    flash("Choose a Paid by value before applying.")
+                    return redirect(url_for("import_csv", **redirect_args))
+
+                for staged_row in staged_rows:
+                    row = json.loads(staged_row["row_json"])
+                    row["paid_by"] = paid_by_value
+                    update_staged_preview_row(db, staged_row["id"], row)
+
+                db.commit()
+                flash(f"Updated Paid by for {len(staged_rows)} rows.")
+
+            elif action == "apply_category_selected":
+                category_id_raw = (request.form.get("category_id") or "").strip()
+                selected_category_name = ""
+                selected_category_id = None
+
+                if category_id_raw:
+                    try:
+                        selected_category_id = int(category_id_raw)
+                    except ValueError:
+                        flash("Invalid category selection.")
+                        return redirect(url_for("import_csv", **redirect_args))
+
+                    category = db.execute(
+                        "SELECT id, name FROM categories WHERE id = ? AND user_id = ?",
+                        (selected_category_id, g.user["id"]),
+                    ).fetchone()
+                    if not category:
+                        flash("Selected category was not found.")
+                        return redirect(url_for("import_csv", **redirect_args))
+                    selected_category_name = category["name"]
+
+                for staged_row in staged_rows:
+                    row = json.loads(staged_row["row_json"])
+                    row["category"] = selected_category_name
+                    if selected_category_name:
+                        row["override_category"] = selected_category_name
+                        row["category_name"] = selected_category_name
+                        row["category_id"] = selected_category_id
+                    else:
+                        row.pop("override_category", None)
+                        row.pop("category_name", None)
+                        row.pop("category_id", None)
+                    update_staged_preview_row(db, staged_row["id"], row)
+
+                db.commit()
+                flash(f"Updated Category for {len(staged_rows)} rows.")
+            else:
+                flash("Unknown bulk action.")
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            db.rollback()
+            flash(f"Could not update selected rows: {exc}")
+
         return redirect(url_for("import_csv", **redirect_args))
 
     @app.route("/import/csv", methods=("GET", "POST"))
@@ -2623,6 +2738,7 @@ def create_app(test_config=None):
                 total_rows_count=total_rows_count,
                 show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
                 requires_show_all_confirmation=requires_show_all_confirmation,
+                low_confidence_filter=False,
             )
 
         import_id = (request.args.get("import_id") or "").strip()
@@ -2636,6 +2752,7 @@ def create_app(test_config=None):
             show_all_values = request.args.getlist("show_all")
             show_all_param = show_all_values[-1] if show_all_values else None
             show_all = get_import_preview_show_all(g.user["id"], import_id)
+            low_confidence_filter = request.args.get("low_confidence") == "1"
             if show_all_param is not None:
                 show_all = show_all_param == "1"
 
@@ -2672,6 +2789,7 @@ def create_app(test_config=None):
                 total_rows_count=total_rows_count,
                 show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
                 requires_show_all_confirmation=requires_show_all_confirmation,
+                low_confidence_filter=low_confidence_filter,
             )
 
         return render_template(
@@ -2695,6 +2813,7 @@ def create_app(test_config=None):
             total_rows_count=0,
             show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
             requires_show_all_confirmation=False,
+            low_confidence_filter=False,
         )
 
     @app.route("/rules")
