@@ -126,7 +126,11 @@
       </select>
     </label>
     <p><button type="button" id="fillPaidByFromDefault">Fill missing with default</button></p>
-    <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle"> Show only low-confidence (&lt; 80)</label>
+    <p class="inline-form">
+      <label class="inline-form"><input type="checkbox" id="select-all-rows"> Select all</label>
+      <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle"> Show only low-confidence (&lt; 80)</label>
+      <strong>Selected: <span id="selected-count">0</span></strong>
+    </p>
     <table>
       <thead>
         <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Confidence</th><th>Source</th></tr>
@@ -134,7 +138,7 @@
       <tbody>
         {% for row in preview_rows %}
         <tr class="preview-row" data-row-index="{{ row.row_index }}" data-vendor-key="{{ row.vendor_key }}" data-vendor-rule-key="{{ row.vendor_rule_key }}" data-description-rule-key="{{ row.description_rule_key }}" data-confidence="{{ row.confidence }}">
-          <td><input type="checkbox" class="row-check" checked></td>
+          <td><input type="checkbox" class="row-check row-select" checked></td>
           <td>{{ row.date }}</td>
           <td>{{ '%.2f'|format(row.amount) }}</td>
           <td>{{ row.description }}</td>
@@ -226,9 +230,42 @@
 
 <script>
   const lowConfidenceToggle = document.getElementById('lowConfidenceToggle');
+  const selectAllRowsToggle = document.getElementById('select-all-rows');
+  const selectedCount = document.getElementById('selected-count');
   const applyVendorMessage = document.getElementById('applyVendorMessage');
   const fillPaidByFromDefaultButton = document.getElementById('fillPaidByFromDefault');
   const importDefaultPaidBy = document.getElementById('importDefaultPaidBy');
+  const rowSelectCheckboxes = document.querySelectorAll('.row-select');
+
+  const visibleRowSelectCheckboxes = () => Array.from(document.querySelectorAll('.preview-row'))
+    .filter((row) => row.style.display !== 'none')
+    .map((row) => row.querySelector('.row-select'))
+    .filter((checkbox) => checkbox && !checkbox.disabled);
+
+  const updateSelectedCount = () => {
+    if (!selectedCount) return;
+    const count = Array.from(rowSelectCheckboxes).filter((checkbox) => checkbox.checked && !checkbox.disabled).length;
+    selectedCount.textContent = String(count);
+  };
+
+  const syncSelectAllState = () => {
+    if (!selectAllRowsToggle) return;
+    const visibleCheckboxes = visibleRowSelectCheckboxes();
+    if (!visibleCheckboxes.length) {
+      selectAllRowsToggle.checked = false;
+      selectAllRowsToggle.indeterminate = false;
+      return;
+    }
+
+    const checkedCount = visibleCheckboxes.filter((checkbox) => checkbox.checked).length;
+    selectAllRowsToggle.checked = checkedCount === visibleCheckboxes.length;
+    selectAllRowsToggle.indeterminate = checkedCount > 0 && checkedCount < visibleCheckboxes.length;
+  };
+
+  const updateSelectionUI = () => {
+    updateSelectedCount();
+    syncSelectAllState();
+  };
 
   const badgeClassFor = (source, confidence) => {
     if (source === 'transfer') return ['confidence-transfer', 'badge-transfer'];
@@ -322,9 +359,23 @@
       });
 
       showAppliedMessage(result.updated_count || 0);
+      updateSelectionUI();
       event.target.checked = false;
     });
   });
+
+  rowSelectCheckboxes.forEach((checkbox) => {
+    checkbox.addEventListener('change', updateSelectionUI);
+  });
+
+  if (selectAllRowsToggle) {
+    selectAllRowsToggle.addEventListener('change', (event) => {
+      visibleRowSelectCheckboxes().forEach((checkbox) => {
+        checkbox.checked = event.target.checked;
+      });
+      updateSelectionUI();
+    });
+  }
 
   if (fillPaidByFromDefaultButton) {
     fillPaidByFromDefaultButton.addEventListener('click', () => {
@@ -342,7 +393,10 @@
         const confidence = parseInt(row.dataset.confidence || '0', 10);
         row.style.display = event.target.checked && confidence >= 80 ? 'none' : '';
       });
+      updateSelectionUI();
     });
   }
+
+  updateSelectionUI();
 </script>
 {% endblock %}
