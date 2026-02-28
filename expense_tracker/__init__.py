@@ -2633,7 +2633,8 @@ def create_app(test_config=None):
                 flash("Preview expired. Please re-upload the file.")
                 return redirect(url_for("import_csv"))
 
-            show_all_param = request.args.get("show_all")
+            show_all_values = request.args.getlist("show_all")
+            show_all_param = show_all_values[-1] if show_all_values else None
             show_all = get_import_preview_show_all(g.user["id"], import_id)
             if show_all_param is not None:
                 show_all = show_all_param == "1"

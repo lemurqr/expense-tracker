@@ -92,7 +92,7 @@
 <section class="card">
   <h3>Preview</h3>
   <p>Showing {{ displayed_rows_count }} of {{ total_rows_count }} rows</p>
-  <form method="get" class="inline-form">
+  <form method="get" action="{{ url_for('import_csv') }}" class="inline-form">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all" value="0">
     {% if requires_show_all_confirmation and show_all_rows %}
