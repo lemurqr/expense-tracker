@@ -454,25 +454,21 @@ def detect_header_and_mapping(rows):
     first_row = rows[0] if rows else []
     first_date = first_row[0] if len(first_row) > 0 else ""
     description = first_row[1].strip() if len(first_row) > 1 else ""
-    debit = first_row[2] if len(first_row) > 2 else ""
-    credit = first_row[3] if len(first_row) > 3 else ""
 
-    if (
-        parse_transaction_date(first_date) is not None
-        and bool(description)
-        and (parse_money(debit) is not None or parse_money(credit) is not None or (not debit.strip() and not credit.strip()))
-    ):
-        mapping.update({"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": ""})
+    if parse_transaction_date(first_date) is not None and bool(description):
+        dual_amount_mapping = detect_mutually_exclusive_amount_columns(rows)
+        if dual_amount_mapping:
+            mapping.update({"date": "0", "description": "1", "debit": dual_amount_mapping["debit"], "credit": dual_amount_mapping["credit"], "amount": ""})
+            return False, mapping, 0
+
+        debit = first_row[2] if len(first_row) > 2 else ""
+        credit = first_row[3] if len(first_row) > 3 else ""
+        if parse_money(debit) is not None or parse_money(credit) is not None or (not debit.strip() and not credit.strip()):
+            mapping.update({"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": ""})
     return False, mapping, 0
 
 
 def detect_cibc_headerless_mapping(rows):
-    def is_numeric_or_blank(value):
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return True
-        return parse_money(cleaned) is not None
-
     first_non_empty_row = None
     for raw_row in rows:
         trimmed_row = [cell.strip() for cell in raw_row]
@@ -483,14 +479,24 @@ def detect_cibc_headerless_mapping(rows):
     if first_non_empty_row is None or len(first_non_empty_row) < 4:
         return None
 
-    if (
-        parse_transaction_date(first_non_empty_row[0]) is not None
-        and is_numeric_or_blank(first_non_empty_row[2])
-        and is_numeric_or_blank(first_non_empty_row[3])
-    ):
-        return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": "", "paid_by": ""}
+    if parse_transaction_date(first_non_empty_row[0]) is None:
+        return None
 
-    return None
+    dual_amount_mapping = detect_mutually_exclusive_amount_columns(rows)
+    if dual_amount_mapping:
+        return {
+            "date": "0",
+            "description": "1",
+            "debit": dual_amount_mapping["debit"],
+            "credit": dual_amount_mapping["credit"],
+            "amount": "",
+            "vendor": "",
+            "category": "",
+            "paid_by": "",
+        }
+
+    # fallback for classic CIBC-like ordering
+    return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": "", "paid_by": ""}
 
 
 def detect_amex_headered_mapping(rows, header_row_index):
@@ -716,36 +722,84 @@ def should_auto_map_cibc_headerless(rows, mapping, detected_format):
     if any((mapping.get(field) or "").strip() for field in ["date", "description", "amount", "debit", "credit", "vendor", "category", "paid_by"]):
         return None
 
-    def is_numeric_or_blank(value):
-        cleaned = (value or "").strip()
-        if not cleaned:
-            return True
-        return parse_money(cleaned) is not None
+    return detect_cibc_headerless_mapping(rows)
 
-    first_non_empty_row = None
-    for raw_row in rows:
-        trimmed_row = [cell.strip() for cell in raw_row]
-        if any(trimmed_row):
-            first_non_empty_row = trimmed_row
-            break
 
-    if first_non_empty_row is None or len(first_non_empty_row) < 4:
+def detect_mutually_exclusive_amount_columns(rows, start_index=2, end_index=7):
+    if not rows:
         return None
 
-    if (
-        parse_transaction_date(first_non_empty_row[0]) is not None
-        and is_numeric_or_blank(first_non_empty_row[2])
-        and is_numeric_or_blank(first_non_empty_row[3])
-    ):
-        return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": "", "paid_by": ""}
+    max_width = max((len(row) for row in rows), default=0)
+    if max_width <= start_index:
+        return None
 
-    return None
+    end = min(max_width, end_index)
+    candidates = []
+    for left_idx in range(start_index, end):
+        for right_idx in range(left_idx + 1, end):
+            left_count = 0
+            right_count = 0
+            both_non_zero = 0
+            either_non_zero = 0
+            invalid_parse = 0
+            for row in rows:
+                left_text = row[left_idx] if left_idx < len(row) else ""
+                right_text = row[right_idx] if right_idx < len(row) else ""
+                left_money = parse_money(left_text)
+                right_money = parse_money(right_text)
+                left_has_text = bool((left_text or "").strip())
+                right_has_text = bool((right_text or "").strip())
+
+                if left_has_text and left_money is None:
+                    invalid_parse += 1
+                if right_has_text and right_money is None:
+                    invalid_parse += 1
+
+                left_present = left_money is not None and abs(left_money) > 0
+                right_present = right_money is not None and abs(right_money) > 0
+                if left_present:
+                    left_count += 1
+                if right_present:
+                    right_count += 1
+                if left_present or right_present:
+                    either_non_zero += 1
+                if left_present and right_present:
+                    both_non_zero += 1
+
+            if either_non_zero == 0:
+                continue
+
+            mutual_exclusive_ratio = (either_non_zero - both_non_zero) / either_non_zero
+            if left_count == 0 or right_count == 0:
+                continue
+            if invalid_parse > max(2, len(rows) // 5):
+                continue
+            if mutual_exclusive_ratio < 0.8:
+                continue
+
+            candidates.append((left_idx, right_idx, both_non_zero, invalid_parse))
+
+    if not candidates:
+        return None
+
+    left_idx, right_idx, _, _ = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
+    return {"debit": str(left_idx), "credit": str(right_idx)}
 
 
-def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
+def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_payments=False):
     parsed_rows = []
-    skipped_rows = 0
+    diagnostics = {
+        "total_rows_seen": 0,
+        "rows_with_debit": 0,
+        "rows_with_credit": 0,
+        "skipped_missing_amount": 0,
+        "skipped_invalid_amount_parse": 0,
+        "skipped_both_debit_and_credit": 0,
+        "skipped_payment_rows": 0,
+    }
+
     for row_index, raw_row in enumerate(rows):
+        diagnostics["total_rows_seen"] += 1
         row = [cell.strip() for cell in raw_row]
 
         def get_value(field):
@@ -769,14 +823,43 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
         amount = None
         amount_col = mapping.get("amount", "")
         if amount_col != "":
-            amount = parse_money(get_value("amount"))
+            amount_raw = get_value("amount")
+            amount = parse_money(amount_raw)
+            if amount_raw.strip() and amount is None:
+                diagnostics["skipped_invalid_amount_parse"] += 1
+                continue
         else:
-            debit_value = parse_money(get_value("debit"))
-            credit_value = parse_money(get_value("credit"))
-            if debit_value is not None:
+            debit_raw = get_value("debit")
+            credit_raw = get_value("credit")
+            debit_value = parse_money(debit_raw) if debit_raw.strip() else None
+            credit_value = parse_money(credit_raw) if credit_raw.strip() else None
+
+            if debit_raw.strip() and debit_value is None:
+                diagnostics["skipped_invalid_amount_parse"] += 1
+                continue
+            if credit_raw.strip() and credit_value is None:
+                diagnostics["skipped_invalid_amount_parse"] += 1
+                continue
+
+            debit_present = debit_value is not None and abs(debit_value) > 0
+            credit_present = credit_value is not None and abs(credit_value) > 0
+
+            if debit_present:
+                diagnostics["rows_with_debit"] += 1
+            if credit_present:
+                diagnostics["rows_with_credit"] += 1
+
+            if debit_present and credit_present:
+                diagnostics["skipped_both_debit_and_credit"] += 1
+                continue
+
+            if debit_present:
                 amount = -abs(debit_value)
-            elif credit_value is not None:
+            elif credit_present:
                 amount = abs(credit_value)
+            else:
+                diagnostics["skipped_missing_amount"] += 1
+                continue
 
         if amount is None and bank_type == "amex" and any(keyword in normalized_description for keyword in PAYMENT_KEYWORDS):
             extracted_amount, cleaned_description = extract_embedded_amount(row_description)
@@ -787,7 +870,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 row_vendor = get_value("vendor") or derive_vendor(row_description)
 
         if parsed_date is None or amount is None:
-            skipped_rows += 1
+            diagnostics["skipped_missing_amount"] += 1
             continue
 
         if bank_type == "amex":
@@ -795,6 +878,10 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 amount = abs(amount)
             else:
                 amount = -abs(amount)
+
+        if skip_payments and any(keyword in normalized_description for keyword in PAYMENT_KEYWORDS):
+            diagnostics["skipped_payment_rows"] += 1
+            continue
 
         parsed_rows.append(
             {
@@ -814,8 +901,14 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default"):
                 "paid_by": row_paid_by,
             }
         )
-    return parsed_rows, skipped_rows
 
+    diagnostics["skipped_rows"] = (
+        diagnostics["skipped_missing_amount"]
+        + diagnostics["skipped_invalid_amount_parse"]
+        + diagnostics["skipped_both_debit_and_credit"]
+        + diagnostics["skipped_payment_rows"]
+    )
+    return parsed_rows, diagnostics
 
 def decode_csv_bytes(file_bytes):
     for encoding in ["utf-8-sig", "utf-8", "cp1252", "latin-1"]:
@@ -2730,19 +2823,19 @@ def create_app(test_config=None):
             file = request.files.get("csv_file")
             if file is None or not file.filename:
                 flash("Please choose a CSV file.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[])
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[], parse_diagnostics={}, skip_payments=False, displayed_rows_count=0, total_rows_count=0, show_all_rows=False, requires_show_all_confirmation=False, show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD, low_confidence_filter=False, auto_mapped_fields={}, skipped_rows=0, has_header=False, detected_format="", auto_mapping_applied=False, header_row_index=None, file_signature="", import_default_paid_by="")
 
             file_bytes = file.read()
             content = decode_csv_bytes(file_bytes)
             if content is None:
                 flash("Could not read file encoding. Please re-save as CSV UTF-8.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[])
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[], parse_diagnostics={}, skip_payments=False, displayed_rows_count=0, total_rows_count=0, show_all_rows=False, requires_show_all_confirmation=False, show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD, low_confidence_filter=False, auto_mapped_fields={}, skipped_rows=0, has_header=False, detected_format="", auto_mapping_applied=False, header_row_index=None, file_signature="", import_default_paid_by="")
 
             rows = list(csv.reader(io.StringIO(content)))
             rows = [row for row in rows if any(cell.strip() for cell in row)]
             if not rows:
                 flash("CSV is empty.")
-                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[])
+                return render_template("import_csv.html", preview_rows=[], mapping=saved_mapping, columns=[], categories=[], preview_id="", detected_mode=None, unknown_category_rows=[], parse_diagnostics={}, skip_payments=False, displayed_rows_count=0, total_rows_count=0, show_all_rows=False, requires_show_all_confirmation=False, show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD, low_confidence_filter=False, auto_mapped_fields={}, skipped_rows=0, has_header=False, detected_format="", auto_mapping_applied=False, header_row_index=None, file_signature="", import_default_paid_by="")
 
             has_header, inferred_mapping, header_row_index = detect_header_and_mapping(rows)
             detected_format = "header" if has_header else "headerless"
@@ -2792,8 +2885,53 @@ def create_app(test_config=None):
                             mapping[field] = saved_mapping[field]
 
             data_rows = rows[(header_row_index + 1):] if has_header else rows
+
+            def _valid_column_index(value):
+                if value is None or value == "":
+                    return False
+                try:
+                    idx = int(value)
+                except (TypeError, ValueError):
+                    return False
+                return 0 <= idx < len(columns)
+
+            debit_col = mapping.get("debit", "")
+            credit_col = mapping.get("credit", "")
+            if debit_col != "" or credit_col != "":
+                if not _valid_column_index(debit_col) or not _valid_column_index(credit_col) or debit_col == credit_col:
+                    flash("Invalid debit/credit mapping. Choose two different valid columns.")
+                    return render_template(
+                        "import_csv.html",
+                        preview_rows=[],
+                        mapping=mapping,
+                        columns=columns,
+                        categories=[],
+                        preview_id="",
+                        detected_mode=None,
+                        has_header=has_header,
+                        detected_format=detected_format,
+                        auto_mapping_applied=False,
+                        header_row_index=header_row_index if has_header else None,
+                        skipped_rows=0,
+                        parse_diagnostics={},
+                        auto_mapped_fields={},
+                        file_signature=file_signature,
+                        import_default_paid_by=import_default_paid_by,
+                        show_all_rows=False,
+                        displayed_rows_count=0,
+                        total_rows_count=0,
+                        show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
+                        requires_show_all_confirmation=False,
+                        low_confidence_filter=False,
+                        unknown_category_rows=[],
+                        skip_payments=request.form.get("skip_payments") == "1",
+                    )
+
             bank_type = detect_bank_type(rows[header_row_index] if has_header else [])
-            parsed_rows, skipped_rows = parse_csv_transactions(data_rows, mapping, g.user["id"], bank_type=bank_type)
+            skip_payments = request.form.get("skip_payments") == "1"
+            parsed_rows, diagnostics = parse_csv_transactions(
+                data_rows, mapping, g.user["id"], bank_type=bank_type, skip_payments=skip_payments
+            )
             for row in parsed_rows:
                 if not row.get("paid_by"):
                     row["paid_by"] = import_default_paid_by
@@ -2887,7 +3025,9 @@ def create_app(test_config=None):
                 detected_format=detected_format,
                 auto_mapping_applied=(detected_format == "cibc_headerless"),
                 header_row_index=header_row_index if has_header else None,
-                skipped_rows=skipped_rows,
+                skipped_rows=diagnostics.get("skipped_rows", 0),
+                parse_diagnostics=diagnostics,
+                skip_payments=skip_payments,
                 auto_mapped_fields=auto_mapped_fields,
                 file_signature=file_signature,
                 import_default_paid_by=import_default_paid_by,
@@ -2941,6 +3081,8 @@ def create_app(test_config=None):
                 auto_mapping_applied=False,
                 header_row_index=None,
                 skipped_rows=0,
+                parse_diagnostics={},
+                skip_payments=False,
                 auto_mapped_fields={},
                 file_signature=saved_payload.get("file_signature", ""),
                 import_default_paid_by="",
@@ -2966,6 +3108,8 @@ def create_app(test_config=None):
             auto_mapping_applied=False,
             header_row_index=None,
             skipped_rows=0,
+            parse_diagnostics={},
+            skip_payments=False,
             auto_mapped_fields={},
             file_signature=saved_payload.get("file_signature", ""),
             import_default_paid_by="",
