@@ -14,6 +14,7 @@ from expense_tracker import (
     parse_csv_transactions,
     derive_vendor,
     detect_header_and_mapping,
+    detect_cibc_headerless_mapping,
 )
 
 
@@ -563,6 +564,105 @@ def test_import_csv_auto_maps_headerless_with_extra_columns_and_shows_note(clien
     assert b"Auto-mapped CIBC headerless format" in preview_response.data
 
 
+
+
+def test_cibc_headerless_preview_includes_debit_and_credit_rows(client):
+    register(client)
+    login(client)
+
+    csv_content = "\n".join([
+        "2026-01-10,Groceries,52.10,,****1111",
+        "2026-01-11,Coffee,6.35,,****1111",
+        "2026-01-12,Payment Received,,200.00,****1111",
+    ])
+    response = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "cibc.csv")},
+        content_type="multipart/form-data",
+    )
+
+    text = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Groceries" in text
+    assert "Coffee" in text
+    assert "Payment Received" in text
+    assert "Parsed 3 rows (2 debit, 1 credit)" in text
+
+    with client.session_transaction() as sess:
+        mapping = sess["csv_mapping"]
+    assert mapping["debit_col"] == "2"
+    assert mapping["credit_col"] == "3"
+    assert mapping["amount_col"] == ""
+
+
+def test_cibc_headerless_skip_payments_keeps_purchases(client):
+    register(client)
+    login(client)
+
+    csv_content = "\n".join([
+        "2026-01-10,Groceries,52.10,,****1111",
+        "2026-01-11,Coffee,6.35,,****1111",
+        "2026-01-12,Payment Thank You,,200.00,****1111",
+    ])
+    response = client.post(
+        "/import/csv",
+        data={"action": "preview", "skip_payments": "1", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "cibc.csv")},
+        content_type="multipart/form-data",
+    )
+
+    text = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Groceries" in text
+    assert "Coffee" in text
+    assert "Payment Thank You" not in text
+    assert "payment-like rows: 1" in text
+
+
+def test_parse_csv_transactions_debit_credit_signs_and_diagnostics():
+    rows = [
+        ["2026-01-10", "Groceries", "52.10", ""],
+        ["2026-01-11", "Payment Thank You", "", "200.00"],
+    ]
+    mapping = {"date": "0", "description": "1", "amount": "", "debit": "2", "credit": "3", "vendor": "", "category": ""}
+
+    parsed, diagnostics = parse_csv_transactions(rows, mapping, user_id=1)
+
+    assert [row["amount"] for row in parsed] == [-52.1, 200.0]
+    assert diagnostics["rows_with_debit"] == 1
+    assert diagnostics["rows_with_credit"] == 1
+    assert diagnostics["skipped_rows"] == 0
+
+
+def test_detect_cibc_headerless_mapping_uses_two_amount_columns_not_single_amount():
+    rows = [
+        ["2026-01-10", "Groceries", "52.10", "", "memo"],
+        ["2026-01-11", "Payment", "", "200.00", "memo"],
+        ["2026-01-12", "Fuel", "40.00", "", "memo"],
+    ]
+
+    mapping = detect_cibc_headerless_mapping(rows)
+
+    assert mapping is not None
+    assert mapping["debit"] == "2"
+    assert mapping["credit"] == "3"
+    assert mapping["amount"] == ""
+
+
+def test_preview_shows_detected_debit_credit_labels(client):
+    register(client)
+    login(client)
+
+    csv_content = "2026-01-10,Coffee,5.50,,****1234\n"
+    response = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "cibc.csv")},
+        content_type="multipart/form-data",
+    )
+
+    text = response.get_data(as_text=True)
+    assert "Detected Debit column:" in text
+    assert "Detected Credit column:" in text
+
 def test_import_csv_get_prefills_saved_mapping_for_user(client):
     register(client)
     login(client)
@@ -993,8 +1093,8 @@ def test_signed_amount_from_debit_credit_mapping():
         ["2026-09-02", "Refund", "", "11.25"],
     ]
     mapping = {"date": "0", "description": "1", "amount": "", "debit": "2", "credit": "3", "vendor": "", "category": ""}
-    parsed, skipped = parse_csv_transactions(rows, mapping, user_id=1)
-    assert skipped == 0
+    parsed, diagnostics = parse_csv_transactions(rows, mapping, user_id=1)
+    assert diagnostics["skipped_rows"] == 0
     assert parsed[0]["amount"] == -5.2
     assert parsed[1]["amount"] == 11.25
 
@@ -1002,17 +1102,17 @@ def test_signed_amount_from_debit_credit_mapping():
 def test_amex_amount_is_normalized_to_canonical_sign_for_charges():
     rows = [["2026-09-10", "Restaurant", "20.00"]]
     mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": ""}
-    parsed, skipped = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
-    assert skipped == 0
+    parsed, diagnostics = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
+    assert diagnostics["skipped_rows"] == 0
     assert parsed[0]["amount"] == -20.0
 
 
 def test_amex_payment_amount_embedded_in_description_is_extracted_and_cleaned():
     rows = [["2026-09-11", "Online payment -162.67", ""]]
     mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": ""}
-    parsed, skipped = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
+    parsed, diagnostics = parse_csv_transactions(rows, mapping, user_id=1, bank_type="amex")
 
-    assert skipped == 0
+    assert diagnostics["skipped_rows"] == 0
     assert parsed[0]["amount"] == 162.67
     assert parsed[0]["description"] == "Online payment"
     assert parsed[0]["category"] == "Credit Card Payments"
