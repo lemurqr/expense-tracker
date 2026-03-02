@@ -24,12 +24,21 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from .db import connect_db, parse_database_config
 from .db_migrations import apply_migrations, get_db_health
 
 
 class DatabaseInitError(RuntimeError):
-    """Raised when the SQLite database cannot be initialized."""
+    """Raised when the database cannot be initialized."""
 
+
+
+try:
+    import psycopg
+except ImportError:  # pragma: no cover
+    psycopg = None
+
+DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,) + ((psycopg.IntegrityError,) if psycopg else ())
 
 DEFAULT_CATEGORIES = [
     "Groceries",
@@ -937,6 +946,14 @@ def create_app(test_config=None):
 
     os.makedirs(app.instance_path, exist_ok=True)
     app.config.setdefault("DB_INIT_ERROR", None)
+    db_config = parse_database_config(app.config.get("DATABASE"))
+    app.config["DB_BACKEND"] = db_config["backend"]
+    app.config["DB_DATABASE_NAME"] = db_config["database_name"]
+    app.config["DB_CONFIG"] = db_config
+    if db_config["backend"] == "postgres" and app.config.get("DATABASE"):
+        sqlite_path = app.config["DATABASE"]
+        if os.path.exists(sqlite_path):
+            print(f"[DB WARNING] SQLite file exists but DATABASE_URL is set, ignoring: {sqlite_path}")
 
     @app.teardown_appcontext
     def close_db(_=None):
@@ -947,24 +964,21 @@ def create_app(test_config=None):
     def get_db():
         if "db" not in g:
             try:
-                os.makedirs(os.path.dirname(app.config["DATABASE"]), exist_ok=True)
-                g.db = sqlite3.connect(app.config["DATABASE"])
-                g.db.row_factory = sqlite3.Row
-                g.db.execute("PRAGMA foreign_keys = ON")
-                g.db.execute("PRAGMA busy_timeout = 5000")
-            except sqlite3.Error as exc:
-                message = f"Unable to open SQLite database at {app.config['DATABASE']}: {exc}"
+                g.db = connect_db(app.config["DB_CONFIG"])
+            except Exception as exc:
+                message = f"Unable to open {app.config['DB_BACKEND']} database: {exc}"
                 print(f"[DB ERROR] {message}")
                 app.config["DB_INIT_ERROR"] = message
                 raise DatabaseInitError(message) from exc
         return g.db
 
+
     def init_db():
         try:
-            apply_migrations(app.config["DATABASE"])
+            apply_migrations(app.config["DB_CONFIG"])
             app.config["DB_INIT_ERROR"] = None
-        except (sqlite3.Error, OSError, RuntimeError) as exc:
-            message = f"Failed to initialize SQLite database at {app.config['DATABASE']}: {exc}"
+        except (OSError, RuntimeError, Exception) as exc:
+            message = f"Failed to initialize {app.config['DB_BACKEND']} database: {exc}"
             print(f"[DB INIT ERROR] {message}")
             app.config["DB_INIT_ERROR"] = message
             raise DatabaseInitError(message) from exc
@@ -982,8 +996,8 @@ def create_app(test_config=None):
     @app.get("/health/db")
     def db_health():
         try:
-            return jsonify(get_db_health(app.config["DATABASE"]))
-        except sqlite3.Error as exc:
+            return jsonify(get_db_health(app.config["DB_CONFIG"]))
+        except Exception as exc:
             return jsonify({
                 "ok": False,
                 "schema_version": 0,
@@ -1627,7 +1641,7 @@ def create_app(test_config=None):
                     ensure_default_categories(user_id)
                     flash("Registration successful. Please login.")
                     return redirect(url_for("login"))
-                except sqlite3.IntegrityError:
+                except DB_INTEGRITY_ERRORS:
                     error = "User already exists."
 
             flash(error)
@@ -2123,7 +2137,7 @@ def create_app(test_config=None):
                         details={"description": expense["description"], "amount": expense["amount"]},
                         db=db,
                     )
-        except sqlite3.IntegrityError:
+        except DB_INTEGRITY_ERRORS:
             return {
                 "ok": False,
                 "error": "Unable to delete one or more transactions due to related records. Please try again after refreshing.",
@@ -2269,7 +2283,7 @@ def create_app(test_config=None):
                     )
                     db.commit()
                     flash("Category added.")
-                except sqlite3.IntegrityError:
+                except DB_INTEGRITY_ERRORS:
                     flash("Category already exists.")
             else:
                 flash("Category name is required.")
@@ -2303,7 +2317,7 @@ def create_app(test_config=None):
                 db.commit()
                 flash("Category updated.")
                 return redirect(url_for("categories"))
-            except sqlite3.IntegrityError:
+            except DB_INTEGRITY_ERRORS:
                 flash("Category already exists.")
 
         return render_template("category_form.html", category=category)
@@ -3197,7 +3211,7 @@ def create_app(test_config=None):
             db.close()
 
         db_path = app.config["DATABASE"]
-        if os.path.exists(db_path):
+        if app.config.get("DB_BACKEND") == "sqlite" and os.path.exists(db_path):
             os.remove(db_path)
 
         init_db()
@@ -3207,6 +3221,7 @@ def create_app(test_config=None):
     with app.app_context():
         try:
             init_db()
+            print(f"[DB] backend={app.config['DB_BACKEND']} database={app.config['DB_DATABASE_NAME']}")
         except DatabaseInitError:
             pass
 
