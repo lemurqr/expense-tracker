@@ -600,6 +600,15 @@ def migration_006(conn):
     )
 
 
+def migration_007(conn):
+    create_index_if_missing(
+        conn,
+        "uq_categories_user_name",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_categories_user_name ON categories(user_id, name)",
+    )
+
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
@@ -607,6 +616,7 @@ MIGRATIONS = [
     (4, migration_004),
     (5, migration_005),
     (6, migration_006),
+    (7, migration_007),
 ]
 
 

@@ -1573,6 +1573,7 @@ def create_app(test_config=None):
 
     def ensure_default_categories(user_id):
         db = get_db()
+        is_postgres = getattr(db, "backend", "sqlite") == "postgres"
 
         existing = db.execute(
             "SELECT id, name FROM categories WHERE user_id = ?",
@@ -1581,8 +1582,15 @@ def create_app(test_config=None):
         existing_lookup = {normalize_description(row["name"]): row["id"] for row in existing}
 
         for category in DEFAULT_CATEGORIES:
+            if is_postgres:
+                insert_sql = (
+                    "INSERT INTO categories (user_id, name) VALUES (?, ?) "
+                    "ON CONFLICT (user_id, name) DO NOTHING"
+                )
+            else:
+                insert_sql = "INSERT OR IGNORE INTO categories (user_id, name) VALUES (?, ?)"
             db.execute(
-                "INSERT OR IGNORE INTO categories (user_id, name) VALUES (?, ?)",
+                insert_sql,
                 (user_id, category),
             )
 
@@ -1734,7 +1742,12 @@ def create_app(test_config=None):
             if existing is not None:
                 db.execute("DELETE FROM household_members WHERE user_id = ?", (g.user["id"],))
             db.execute(
-                "INSERT OR IGNORE INTO household_members (household_id, user_id, role) VALUES (?, ?, 'member')",
+                (
+                    "INSERT INTO household_members (household_id, user_id, role) VALUES (?, ?, 'member') "
+                    "ON CONFLICT (household_id, user_id) DO NOTHING"
+                    if getattr(db, "backend", "sqlite") == "postgres"
+                    else "INSERT OR IGNORE INTO household_members (household_id, user_id, role) VALUES (?, ?, 'member')"
+                ),
                 (invite["household_id"], g.user["id"]),
             )
             db.execute(
