@@ -65,6 +65,68 @@ class CompatConnection:
         cur = self._conn.execute(rewritten_sql, rewritten_params or ())
         return CompatCursor(cur)
 
+    def insert_ignore(self, table, columns, values, conflict_cols):
+        placeholders = ", ".join(["?"] * len(columns))
+        column_sql = ", ".join(columns)
+        if self.backend == "postgres":
+            conflict_sql = ", ".join(conflict_cols)
+            sql = (
+                f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+                f"ON CONFLICT ({conflict_sql}) DO NOTHING"
+            )
+        else:
+            sql = f"INSERT OR IGNORE INTO {table} ({column_sql}) VALUES ({placeholders})"
+        return self.execute(sql, tuple(values))
+
+    def upsert(self, table, columns, values, conflict_cols, update_cols):
+        placeholders = ", ".join(["?"] * len(columns))
+        column_sql = ", ".join(columns)
+        conflict_sql = ", ".join(conflict_cols)
+        if update_cols:
+            set_sql = ", ".join([f"{col} = excluded.{col}" for col in update_cols])
+            action_sql = f"DO UPDATE SET {set_sql}"
+        else:
+            action_sql = "DO NOTHING"
+        sql = (
+            f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+            f"ON CONFLICT ({conflict_sql}) {action_sql}"
+        )
+        return self.execute(sql, tuple(values))
+
+    def now_text(self):
+        if self.backend == "postgres":
+            return "CURRENT_TIMESTAMP::text"
+        return "datetime('now')"
+
+    def has_table(self, table_name):
+        if self.backend == "postgres":
+            row = self.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
+                (table_name,),
+            ).fetchone()
+            return row is not None
+        row = self.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (table_name,)).fetchone()
+        return row is not None
+
+    def has_column(self, table_name, column_name):
+        if self.backend == "postgres":
+            row = self.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+                (table_name, column_name),
+            ).fetchone()
+            return row is not None
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
+            raise ValueError("Unsafe table name")
+        rows = self.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return any((row["name"] if hasattr(row, "keys") else row[1]) == column_name for row in rows)
+
+    def last_insert_id(self):
+        if self.backend == "postgres":
+            row = self.execute("SELECT lastval() AS id").fetchone()
+        else:
+            row = self.execute("SELECT last_insert_rowid() AS id").fetchone()
+        return row["id"]
+
     def close(self):
         self._conn.close()
 
@@ -87,10 +149,30 @@ def is_postgres_url(value):
 
 
 def _convert_qmark_placeholders(sql):
-    pieces = sql.split("?")
-    if len(pieces) == 1:
+    if "?" not in sql:
         return sql
-    return "%s".join(pieces)
+    out = []
+    in_single_quote = False
+    in_double_quote = False
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch == "'" and not in_double_quote:
+            if in_single_quote and i + 1 < len(sql) and sql[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_single_quote = not in_single_quote
+            out.append(ch)
+        elif ch == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            out.append(ch)
+        elif ch == "?" and not in_single_quote and not in_double_quote:
+            out.append("%s")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def rewrite_sql(backend, sql, params):
@@ -98,8 +180,6 @@ def rewrite_sql(backend, sql, params):
     rewritten_params = params
 
     if backend == "postgres":
-        if "last_insert_rowid()" in rewritten_sql:
-            rewritten_sql = rewritten_sql.replace("last_insert_rowid()", "lastval()")
         pragma_match = re.match(r"\s*PRAGMA\s+table_info\(([^)]+)\)", rewritten_sql, re.IGNORECASE)
         if pragma_match:
             table_name = pragma_match.group(1).strip().strip("'\"")

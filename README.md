@@ -192,6 +192,11 @@ Login with:
 pytest
 ```
 
+Run Postgres regression tests (requires a running Postgres and `DATABASE_URL` or `TEST_DATABASE_URL`):
+```bash
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/expense_tracker pytest tests/test_postgres_runtime.py
+```
+
 ## Deployment
 - Uses `Procfile` with `gunicorn app:app`
 - Works with Render or Railway Python services.

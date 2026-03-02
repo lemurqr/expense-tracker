@@ -1380,7 +1380,7 @@ def create_app(test_config=None):
 
         household_name = f"{user_id}-household"
         db.execute("INSERT INTO households (name) VALUES (?)", (household_name,))
-        household_id = db.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+        household_id = db.last_insert_id()
         db.execute(
             "INSERT INTO household_members (household_id, user_id, role) VALUES (?, ?, 'owner')",
             (household_id, user_id),
@@ -1399,8 +1399,8 @@ def create_app(test_config=None):
             return
         db = db or get_db()
         payload = json.dumps(details or {})
-        columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
-        if "expense_id" in columns:
+        has_expense_id_column = db.has_column("audit_logs", "expense_id")
+        if has_expense_id_column:
             db.execute(
                 "INSERT INTO audit_logs (user_id, action, expense_id, details) VALUES (?, ?, ?, ?)",
                 (actor_id, action, expense_id, payload),
@@ -1537,9 +1537,8 @@ def create_app(test_config=None):
         if not pattern or pattern in LEARNING_STOPLIST or len(pattern) < 3:
             return
 
-        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
-        has_category_id = "category_id" in rule_columns
-        has_is_enabled = "is_enabled" in rule_columns
+        has_category_id = db.has_column("category_rules", "category_id")
+        has_is_enabled = db.has_column("category_rules", "is_enabled")
 
         existing = db.execute(
             "SELECT id FROM category_rules WHERE user_id = ? AND key_type = ? AND pattern = ?",
@@ -1573,8 +1572,6 @@ def create_app(test_config=None):
 
     def ensure_default_categories(user_id):
         db = get_db()
-        is_postgres = getattr(db, "backend", "sqlite") == "postgres"
-
         existing = db.execute(
             "SELECT id, name FROM categories WHERE user_id = ?",
             (user_id,),
@@ -1582,17 +1579,7 @@ def create_app(test_config=None):
         existing_lookup = {normalize_description(row["name"]): row["id"] for row in existing}
 
         for category in DEFAULT_CATEGORIES:
-            if is_postgres:
-                insert_sql = (
-                    "INSERT INTO categories (user_id, name) VALUES (?, ?) "
-                    "ON CONFLICT (user_id, name) DO NOTHING"
-                )
-            else:
-                insert_sql = "INSERT OR IGNORE INTO categories (user_id, name) VALUES (?, ?)"
-            db.execute(
-                insert_sql,
-                (user_id, category),
-            )
+            db.insert_ignore("categories", ["user_id", "name"], [user_id, category], ["user_id", "name"])
 
         categories = db.execute(
             "SELECT id, name FROM categories WHERE user_id = ?",
@@ -1741,14 +1728,11 @@ def create_app(test_config=None):
             existing = db.execute("SELECT id FROM household_members WHERE user_id = ?", (g.user["id"],)).fetchone()
             if existing is not None:
                 db.execute("DELETE FROM household_members WHERE user_id = ?", (g.user["id"],))
-            db.execute(
-                (
-                    "INSERT INTO household_members (household_id, user_id, role) VALUES (?, ?, 'member') "
-                    "ON CONFLICT (household_id, user_id) DO NOTHING"
-                    if getattr(db, "backend", "sqlite") == "postgres"
-                    else "INSERT OR IGNORE INTO household_members (household_id, user_id, role) VALUES (?, ?, 'member')"
-                ),
-                (invite["household_id"], g.user["id"]),
+            db.insert_ignore(
+                "household_members",
+                ["household_id", "user_id", "role"],
+                [invite["household_id"], g.user["id"], "member"],
+                ["household_id", "user_id"],
             )
             db.execute(
                 "UPDATE expenses SET household_id = ? WHERE user_id = ?",
@@ -1962,7 +1946,7 @@ def create_app(test_config=None):
                     json.dumps(derive_tags(description)),
                 ),
             )
-            expense_id = db.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+            expense_id = db.last_insert_id()
             log_audit("create", expense_id=expense_id, details={"description": description, "amount": amount_value}, db=db)
             db.commit()
             flash("Expense added.")
@@ -1991,8 +1975,8 @@ def create_app(test_config=None):
             flash("Expense not found.")
             return redirect(url_for("dashboard"))
 
-        audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
-        if "expense_id" in audit_columns:
+        has_expense_id_column = db.has_column("audit_logs", "expense_id")
+        if has_expense_id_column:
             logs = db.execute(
                 """
                 SELECT al.*, u.username
@@ -2141,8 +2125,8 @@ def create_app(test_config=None):
 
         try:
             with db:
-                audit_columns = {row["name"] for row in db.execute("PRAGMA table_info(audit_logs)").fetchall()}
-                if "expense_id" in audit_columns:
+                has_expense_id_column = db.has_column("audit_logs", "expense_id")
+                if has_expense_id_column:
                     db.execute(
                         f"DELETE FROM audit_logs WHERE expense_id IN ({placeholders})",
                         ids,
@@ -3201,13 +3185,14 @@ def create_app(test_config=None):
             flash("Invalid category.")
             return redirect(url_for("rules"))
 
-        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(category_rules)").fetchall()}
+        has_category_id = db.has_column("category_rules", "category_id")
+        has_is_enabled = db.has_column("category_rules", "is_enabled")
         set_parts = ["category = ?", "enabled = ?"]
         params = [category["name"], is_enabled]
-        if "category_id" in rule_columns:
+        if has_category_id:
             set_parts.append("category_id = ?")
             params.append(category["id"])
-        if "is_enabled" in rule_columns:
+        if has_is_enabled:
             set_parts.append("is_enabled = ?")
             params.append(is_enabled)
 

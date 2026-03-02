@@ -94,13 +94,14 @@ def backend_name(conn):
 
 
 def table_exists(conn, name):
+    if hasattr(conn, "has_table"):
+        return conn.has_table(name)
     if backend_name(conn) == "postgres":
         row = conn.execute(
             "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
             (name,),
         ).fetchone()
         return row is not None
-
     row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)).fetchone()
     return row is not None
 
@@ -108,13 +109,14 @@ def table_exists(conn, name):
 def column_exists(conn, table, column):
     if not table_exists(conn, table):
         return False
+    if hasattr(conn, "has_column"):
+        return conn.has_column(table, column)
     if backend_name(conn) == "postgres":
         row = conn.execute(
             "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
             (table, column),
         ).fetchone()
         return row is not None
-
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row[1] == column for row in rows)
 
@@ -163,6 +165,8 @@ def get_table_columns(conn, table):
 
 
 def db_now_text(conn):
+    if hasattr(conn, "now_text"):
+        return conn.now_text()
     if backend_name(conn) == "postgres":
         return "(CURRENT_TIMESTAMP::text)"
     return "CURRENT_TIMESTAMP"
@@ -608,6 +612,33 @@ def migration_007(conn):
     )
 
 
+def migration_008(conn):
+    conn.execute(
+        """
+        DELETE FROM category_rules
+        WHERE id IN (
+            SELECT r.id
+            FROM category_rules r
+            JOIN (
+                SELECT user_id, key_type, pattern, MIN(id) AS keep_id
+                FROM category_rules
+                GROUP BY user_id, key_type, pattern
+                HAVING COUNT(*) > 1
+            ) d
+              ON d.user_id = r.user_id
+             AND d.key_type = r.key_type
+             AND d.pattern = r.pattern
+            WHERE r.id <> d.keep_id
+        )
+        """
+    )
+    create_index_if_missing(
+        conn,
+        "uq_category_rules_user_key_pattern",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_category_rules_user_key_pattern ON category_rules(user_id, key_type, pattern)",
+    )
+
+
 
 MIGRATIONS = [
     (1, migration_001),
@@ -617,6 +648,7 @@ MIGRATIONS = [
     (5, migration_005),
     (6, migration_006),
     (7, migration_007),
+    (8, migration_008),
 ]
 
 
