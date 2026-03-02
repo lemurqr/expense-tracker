@@ -7,6 +7,8 @@ without importing application modules.
 
 import os
 import sqlite3
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 import psycopg
@@ -81,6 +83,71 @@ def pg_columns(conn, table_name):
         return [row[0] for row in cur.fetchall()]
 
 
+def pg_column_metadata(conn, table_name):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                column_name,
+                is_nullable,
+                data_type,
+                udt_name,
+                column_default
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (table_name,),
+        )
+        return [
+            {
+                "column_name": row[0],
+                "is_nullable": row[1],
+                "data_type": row[2],
+                "udt_name": row[3],
+                "column_default": row[4],
+            }
+            for row in cur.fetchall()
+        ]
+
+
+def _is_empty(value):
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def default_for_not_null_column(column_name, data_type, udt_name):
+    normalized = column_name.lower()
+
+    if any(token in normalized for token in ("created_at", "updated_at", "applied_at", "last_used")):
+        return datetime.utcnow().isoformat()
+
+    if normalized in {"enabled", "is_enabled", "reviewed", "is_transfer", "is_personal"}:
+        return 1 if normalized in {"enabled", "is_enabled"} else 0
+
+    if normalized == "hits":
+        return 0
+
+    numeric_types = {
+        "smallint",
+        "integer",
+        "bigint",
+        "real",
+        "double precision",
+        "numeric",
+        "decimal",
+    }
+    if data_type in numeric_types:
+        return 0
+
+    if udt_name in {"bool", "boolean"}:
+        return False
+
+    if data_type in {"text", "character varying", "character"}:
+        return ""
+
+    return None
+
+
 def count_rows_sqlite(conn, table_name):
     return int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
 
@@ -125,7 +192,8 @@ def copy_table(sqlite_conn, pg_conn, table_name):
         raise RuntimeError(f"Required destination table is missing in Postgres: {table_name}")
 
     src_cols = sqlite_columns(sqlite_conn, table_name)
-    dst_cols = pg_columns(pg_conn, table_name)
+    dst_column_info = pg_column_metadata(pg_conn, table_name)
+    dst_cols = [col["column_name"] for col in dst_column_info]
     common_cols = [col for col in src_cols if col in dst_cols]
 
     if not common_cols:
@@ -138,13 +206,43 @@ def copy_table(sqlite_conn, pg_conn, table_name):
         raise RuntimeError(f"No common columns found for table '{table_name}'")
 
     select_sql = f"SELECT {', '.join(common_cols)} FROM {table_name}"
-    rows = sqlite_conn.execute(select_sql).fetchall()
+    source_rows = sqlite_conn.execute(select_sql).fetchall()
+
+    metadata_by_column = {col["column_name"]: col for col in dst_column_info}
+    required_columns = {
+        col["column_name"]
+        for col in dst_column_info
+        if col["is_nullable"] == "NO" and col["column_default"] is None
+    }
+
+    insert_cols = list(common_cols)
+    for required_col in required_columns:
+        if required_col not in insert_cols:
+            insert_cols.append(required_col)
+
+    rows = []
+    filled_counts = Counter()
+    for source_row in source_rows:
+        row_map = dict(source_row)
+        row_values = []
+        for col in insert_cols:
+            value = row_map.get(col)
+            if col in required_columns and _is_empty(value):
+                meta = metadata_by_column[col]
+                value = default_for_not_null_column(col, meta["data_type"], meta["udt_name"])
+                if value is None:
+                    raise RuntimeError(
+                        f"Cannot determine safe default for NOT NULL column '{col}' in table '{table_name}'"
+                    )
+                filled_counts[col] += 1
+            row_values.append(value)
+        rows.append(tuple(row_values))
 
     if not rows:
         return {"source_rows": 0, "copied_rows": 0, "status": "copied"}
 
-    col_list = sql.SQL(", ").join(sql.Identifier(col) for col in common_cols)
-    value_placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in common_cols)
+    col_list = sql.SQL(", ").join(sql.Identifier(col) for col in insert_cols)
+    value_placeholders = sql.SQL(", ").join(sql.Placeholder() for _ in insert_cols)
     insert_sql = sql.SQL(
         "INSERT INTO {table} ({columns}) VALUES ({values}) ON CONFLICT DO NOTHING"
     ).format(
@@ -155,6 +253,11 @@ def copy_table(sqlite_conn, pg_conn, table_name):
 
     with pg_conn.cursor() as cur:
         cur.executemany(insert_sql, rows)
+
+    if filled_counts:
+        columns = ", ".join(sorted(filled_counts))
+        total_filled = sum(filled_counts.values())
+        print(f"Filled {total_filled} missing NOT NULL values in columns: {columns} (table: {table_name})")
 
     return {"source_rows": len(rows), "copied_rows": len(rows), "status": "copied"}
 
