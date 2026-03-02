@@ -134,14 +134,11 @@ flask --app app init-db
 When moving existing local SQLite data into a Postgres database (configured via `DATABASE_URL`), run:
 
 ```bash
-python scripts/sqlite_to_postgres.py
+docker compose exec web env SQLITE_PATH=/app/instance/expense_tracker.sqlite python scripts/sqlite_to_postgres.py
 ```
 
-Optional source path:
-
-```bash
-python scripts/sqlite_to_postgres.py --sqlite-path instance/expense_tracker.sqlite
-```
+The script is standalone and reads both `SQLITE_PATH` and `DATABASE_URL` from the environment.
+If required Postgres tables are missing, start the app once so migrations run, then rerun the command.
 
 ### DEV ONLY reset
 When running in debug mode, you can reset the DB safely with:
