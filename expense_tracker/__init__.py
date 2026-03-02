@@ -976,7 +976,10 @@ def create_app(test_config=None):
     def init_db():
         try:
             apply_migrations(app.config["DB_CONFIG"])
+            with connect_db(app.config["DB_CONFIG"]) as conn:
+                conn.execute("SELECT 1").fetchone()
             app.config["DB_INIT_ERROR"] = None
+            print(f"DB backend={app.config['DB_BACKEND']} OK")
         except (OSError, RuntimeError, Exception) as exc:
             message = f"Failed to initialize {app.config['DB_BACKEND']} database: {exc}"
             print(f"[DB INIT ERROR] {message}")
@@ -996,10 +999,15 @@ def create_app(test_config=None):
     @app.get("/health/db")
     def db_health():
         try:
-            return jsonify(get_db_health(app.config["DB_CONFIG"]))
+            health = get_db_health(app.config["DB_CONFIG"])
+            return jsonify({
+                **health,
+                "backend": app.config["DB_BACKEND"],
+            })
         except Exception as exc:
             return jsonify({
                 "ok": False,
+                "backend": app.config.get("DB_BACKEND"),
                 "schema_version": 0,
                 "missing_tables": [],
                 "missing_columns": {},

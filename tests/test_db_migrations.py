@@ -162,3 +162,15 @@ def test_migration_006_creates_settlement_payments(tmp_path):
     assert "idx_settlement_payments_household_from" in indexes
     assert "idx_settlement_payments_household_to" in indexes
     conn.close()
+
+
+def test_apply_migrations_does_not_close_passed_connection(tmp_path):
+    db_path = tmp_path / "connection.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    apply_migrations(conn)
+
+    row = conn.execute("SELECT 1").fetchone()
+    assert row[0] == 1
+    conn.close()

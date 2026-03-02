@@ -66,6 +66,15 @@ def confirm_import(client, rows, **form_data):
     return client.post("/import/csv", data=payload, follow_redirects=True)
 
 
+def test_db_health_reports_backend_and_schema_version(client):
+    response = client.get("/health/db")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["backend"] == "sqlite"
+    assert payload["schema_version"] >= 6
+    assert payload["ok"] is True
+
+
 
 
 def test_import_preview_get_show_all_query_param_controls_row_limit(client):

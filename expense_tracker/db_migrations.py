@@ -630,29 +630,48 @@ def validate_required_schema(conn):
         )
 
 
-def apply_migrations(db_config_or_path):
-    config = db_config_or_path if isinstance(db_config_or_path, dict) else parse_database_config(db_config_or_path)
+def _run_migrations(conn):
+    _ensure_schema_version_table(conn)
+
+    applied_versions = {
+        row[0] for row in conn.execute("SELECT version FROM schema_version").fetchall()
+    }
+
+    for version, migration_fn in MIGRATIONS:
+        if version in applied_versions:
+            continue
+        try:
+            migration_fn(conn)
+            conn.execute(
+                "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
+                (version, datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    validate_required_schema(conn)
+
+
+def apply_migrations(db_or_config_or_path):
+    if hasattr(db_or_config_or_path, "execute"):
+        _run_migrations(db_or_config_or_path)
+        return
+
+    config = db_or_config_or_path if isinstance(db_or_config_or_path, dict) else parse_database_config(db_or_config_or_path)
     conn = connect_db(config)
     try:
-        _ensure_schema_version_table(conn)
-
-        applied_versions = {
-            row[0] for row in conn.execute("SELECT version FROM schema_version").fetchall()
-        }
-
-        for version, migration_fn in MIGRATIONS:
-            if version in applied_versions:
-                continue
-            with conn:
-                migration_fn(conn)
-                conn.execute(
-                    "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
-                    (version, datetime.utcnow().isoformat(timespec="seconds") + "Z"),
-                )
-
-        validate_required_schema(conn)
+        _run_migrations(conn)
     finally:
         conn.close()
+
+
+def apply_migrations_from_url(url):
+    config = parse_database_config(None)
+    config["backend"] = "postgres"
+    config["database_url"] = url
+    apply_migrations(config)
 
 
 def inspect_db_health(conn):
