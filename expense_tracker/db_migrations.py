@@ -162,6 +162,12 @@ def get_table_columns(conn, table):
     return {row[1] for row in rows}
 
 
+def db_now_text(conn):
+    if backend_name(conn) == "postgres":
+        return "(CURRENT_TIMESTAMP::text)"
+    return "CURRENT_TIMESTAMP"
+
+
 def normalize_vendor(value):
     text = (value or "").strip().upper()
     text = unicodedata.normalize("NFKD", text)
@@ -514,7 +520,7 @@ def migration_004(conn):
     )
 
     conn.execute(
-        """
+        f"""
         INSERT INTO audit_logs_new (id, household_id, user_id, action, entity, entity_id, meta_json, created_at)
         SELECT
             id,
@@ -524,7 +530,7 @@ def migration_004(conn):
             COALESCE(NULLIF(entity, ''), CASE WHEN expense_id IS NOT NULL THEN 'expense' END),
             COALESCE(entity_id, expense_id),
             COALESCE(meta_json, details),
-            COALESCE(created_at, CURRENT_TIMESTAMP)
+            COALESCE(created_at, {db_now_text(conn)})
         FROM audit_logs
         """
     )
