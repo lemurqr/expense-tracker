@@ -130,6 +130,19 @@ Windows PowerShell:
 flask --app app init-db
 ```
 
+### One-time SQLite -> Postgres migration
+When moving existing local SQLite data into a Postgres database (configured via `DATABASE_URL`), run:
+
+```bash
+python scripts/sqlite_to_postgres.py
+```
+
+Optional source path:
+
+```bash
+python scripts/sqlite_to_postgres.py --sqlite-path instance/expense_tracker.sqlite
+```
+
 ### DEV ONLY reset
 When running in debug mode, you can reset the DB safely with:
 - Browser: `http://127.0.0.1:5000/dev/reset-db`
