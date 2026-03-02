@@ -54,7 +54,7 @@ def test_apply_migrations_on_empty_db(tmp_path):
     health = get_db_health(str(db_path))
 
     assert health["ok"] is True
-    assert health["schema_version"] >= 5
+    assert health["schema_version"] >= 7
     assert health["missing_tables"] == []
     assert health["missing_indexes"] == []
 
@@ -225,4 +225,15 @@ def test_apply_migrations_does_not_close_passed_connection(tmp_path):
 
     row = conn.execute("SELECT 1").fetchone()
     assert row[0] == 1
+    conn.close()
+
+
+
+def test_migration_007_creates_categories_unique_index(tmp_path):
+    db_path = tmp_path / "categories_uq.sqlite"
+    apply_migrations(str(db_path))
+
+    conn = sqlite3.connect(db_path)
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+    assert "uq_categories_user_name" in indexes
     conn.close()

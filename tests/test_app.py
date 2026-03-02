@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import io
 import json
 import sqlite3
@@ -15,6 +16,7 @@ from expense_tracker import (
     derive_vendor,
     detect_header_and_mapping,
     detect_cibc_headerless_mapping,
+    DEFAULT_CATEGORIES,
 )
 
 
@@ -71,7 +73,7 @@ def test_db_health_reports_backend_and_schema_version(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["backend"] == "sqlite"
-    assert payload["schema_version"] >= 6
+    assert payload["schema_version"] >= 7
     assert payload["ok"] is True
 
 
@@ -2766,3 +2768,39 @@ def test_import_confirm_uses_mapped_category_and_never_creates_categories(client
     assert expenses[1]["category_id"] is None
     assert expenses[1]["category_source"] == "unknown_csv_category"
     assert category_count_after == category_count_before
+
+
+
+def test_postgres_login_default_categories_idempotent(monkeypatch):
+    database_url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
+    if not database_url.startswith(("postgres://", "postgresql://")):
+        pytest.skip("Postgres regression test requires TEST_DATABASE_URL (or DATABASE_URL) pointing to postgres")
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    app = create_app({"TESTING": True, "SECRET_KEY": "test"})
+
+    with app.app_context():
+        app.init_db()
+
+    client = app.test_client()
+    username = f"pg_user_{datetime.utcnow().timestamp()}"
+    register_response = register(client, username=username, password="password")
+    assert register_response.status_code == 200
+
+    first_login = login(client, username=username, password="password")
+    assert first_login.status_code == 200
+
+    second_login = login(client, username=username, password="password")
+    assert second_login.status_code == 200
+
+    with app.app_context():
+        db = app.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        total_count = db.execute("SELECT COUNT(*) FROM categories WHERE user_id = ?", (user["id"],)).fetchone()[0]
+        distinct_count = db.execute(
+            "SELECT COUNT(DISTINCT name) FROM categories WHERE user_id = ?",
+            (user["id"],),
+        ).fetchone()[0]
+
+    assert total_count == len(DEFAULT_CATEGORIES)
+    assert distinct_count == len(DEFAULT_CATEGORIES)
