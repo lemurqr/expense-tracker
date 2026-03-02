@@ -54,7 +54,7 @@ def test_apply_migrations_on_empty_db(tmp_path):
     health = get_db_health(str(db_path))
 
     assert health["ok"] is True
-    assert health["schema_version"] >= 7
+    assert health["schema_version"] >= 8
     assert health["missing_tables"] == []
     assert health["missing_indexes"] == []
 
