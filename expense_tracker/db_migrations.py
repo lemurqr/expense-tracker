@@ -1,9 +1,10 @@
 import argparse
 import re
-import sqlite3
 import unicodedata
 from datetime import datetime
 from pathlib import Path
+
+from .db import connect_db, parse_database_config
 
 
 REQUIRED_TABLES = {
@@ -88,7 +89,18 @@ REQUIRED_TABLES = {
 }
 
 
+def backend_name(conn):
+    return getattr(conn, "backend", "sqlite")
+
+
 def table_exists(conn, name):
+    if backend_name(conn) == "postgres":
+        row = conn.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
+            (name,),
+        ).fetchone()
+        return row is not None
+
     row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?", (name,)).fetchone()
     return row is not None
 
@@ -96,18 +108,34 @@ def table_exists(conn, name):
 def column_exists(conn, table, column):
     if not table_exists(conn, table):
         return False
+    if backend_name(conn) == "postgres":
+        row = conn.execute(
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+            (table, column),
+        ).fetchone()
+        return row is not None
+
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row[1] == column for row in rows)
 
 
 def index_exists(conn, index_name):
+    if backend_name(conn) == "postgres":
+        row = conn.execute(
+            "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ?",
+            (index_name,),
+        ).fetchone()
+        return row is not None
+
     row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name = ?", (index_name,)).fetchone()
     return row is not None
 
 
 def add_column_if_missing(conn, table, col_def_sql):
     column = col_def_sql.split()[0]
-    if not column_exists(conn, table, column):
+    if backend_name(conn) == "postgres":
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col_def_sql}")
+    elif not column_exists(conn, table, column):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def_sql}")
 
 
@@ -117,7 +145,21 @@ def create_index_if_missing(conn, index_name, create_sql):
 
 
 def ensure_table(conn, create_sql):
+    if backend_name(conn) == "postgres":
+        create_sql = create_sql.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
     conn.execute(create_sql)
+
+
+def get_table_columns(conn, table):
+    if backend_name(conn) == "postgres":
+        rows = conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position",
+            (table,),
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row[1] for row in rows}
 
 
 def normalize_vendor(value):
@@ -276,7 +318,7 @@ def migration_002(conn):
     # Legacy transactions table support: create expenses and copy if mapping is clear.
     if table_exists(conn, "transactions") and not table_exists(conn, "expenses"):
         migration_001(conn)
-        tx_columns = {row[1] for row in conn.execute("PRAGMA table_info(transactions)").fetchall()}
+        tx_columns = get_table_columns(conn, "transactions")
         if {"user_id", "date", "amount"}.issubset(tx_columns):
             optional_fields = [
                 "category_id",
@@ -450,13 +492,14 @@ def migration_004(conn):
     if not table_exists(conn, "audit_logs"):
         return
 
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)").fetchall()}
+    columns = get_table_columns(conn, "audit_logs")
     if "expense_id" not in columns:
         return
 
-    conn.execute(
+    ensure_table(
+        conn,
         """
-        CREATE TABLE audit_logs_new (
+        CREATE TABLE IF NOT EXISTS audit_logs_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             household_id INTEGER,
             user_id INTEGER NOT NULL,
@@ -467,7 +510,7 @@ def migration_004(conn):
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
-        """
+        """,
     )
 
     conn.execute(
@@ -587,12 +630,10 @@ def validate_required_schema(conn):
         )
 
 
-def apply_migrations(db_path):
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+def apply_migrations(db_config_or_path):
+    config = db_config_or_path if isinstance(db_config_or_path, dict) else parse_database_config(db_config_or_path)
+    conn = connect_db(config)
     try:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
         _ensure_schema_version_table(conn)
 
         applied_versions = {
@@ -627,7 +668,7 @@ def inspect_db_health(conn):
             missing_indexes.extend(sorted(table_spec["indexes"]))
             continue
 
-        table_cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+        table_cols = get_table_columns(conn, table_name)
         absent_cols = sorted(col for col in table_spec["columns"] if col not in table_cols)
         missing_columns[table_name] = absent_cols
 
@@ -644,11 +685,10 @@ def inspect_db_health(conn):
     }
 
 
-def get_db_health(db_path):
-    conn = sqlite3.connect(db_path)
+def get_db_health(db_config_or_path):
+    config = db_config_or_path if isinstance(db_config_or_path, dict) else parse_database_config(db_config_or_path)
+    conn = connect_db(config)
     try:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
         return inspect_db_health(conn)
     finally:
         conn.close()
