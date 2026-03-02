@@ -3,6 +3,50 @@ import sqlite3
 from expense_tracker.db_migrations import apply_migrations, get_db_health, migration_004
 
 
+class _FakeCursor:
+    def __init__(self, one=None, all_rows=None):
+        self._one = one
+        self._all = all_rows or []
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return self._all
+
+
+class _FakePostgresMigration004Connection:
+    def __init__(self):
+        self.backend = "postgres"
+        self.inserted_rows = False
+
+    def execute(self, sql, params=None):
+        normalized_sql = " ".join(sql.split())
+        if "FROM information_schema.tables" in normalized_sql:
+            return _FakeCursor(one=(1,))
+        if "FROM information_schema.columns" in normalized_sql:
+            return _FakeCursor(all_rows=[("id",), ("expense_id",), ("created_at",)])
+
+        if normalized_sql.startswith("CREATE TABLE IF NOT EXISTS audit_logs_new"):
+            return _FakeCursor()
+
+        if "INSERT INTO audit_logs_new" in normalized_sql:
+            if "COALESCE(created_at, CURRENT_TIMESTAMP)" in normalized_sql:
+                raise RuntimeError("COALESCE types text and timestamp with time zone cannot be matched")
+            if "COALESCE(created_at, (CURRENT_TIMESTAMP::text))" in normalized_sql:
+                self.inserted_rows = True
+                return _FakeCursor()
+
+        if normalized_sql.startswith("DROP TABLE audit_logs"):
+            return _FakeCursor()
+        if normalized_sql.startswith("ALTER TABLE audit_logs_new RENAME TO audit_logs"):
+            return _FakeCursor()
+
+        raise AssertionError(f"Unexpected SQL in migration_004: {sql}")
+
+
+
+
 def test_apply_migrations_on_empty_db(tmp_path):
     db_path = tmp_path / "empty.sqlite"
 
@@ -76,6 +120,14 @@ def test_apply_migrations_on_legacy_db(tmp_path):
     assert rule[1] == 1
     assert rule[2] == 0
     conn.close()
+
+
+def test_migration_004_uses_text_timestamp_fallback_for_postgres():
+    conn = _FakePostgresMigration004Connection()
+
+    migration_004(conn)
+
+    assert conn.inserted_rows is True
 
 
 def test_migration_004_converts_audit_logs_to_entity_rows(tmp_path):
