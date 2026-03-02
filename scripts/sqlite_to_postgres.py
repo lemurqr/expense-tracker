@@ -115,16 +115,20 @@ def _is_empty(value):
     return value is None or (isinstance(value, str) and value.strip() == "")
 
 
-def default_for_not_null_column(column_name, data_type, udt_name):
+def default_for(column_name, meta):
     normalized = column_name.lower()
+    data_type = (meta.get("data_type") or "").lower()
 
     if any(token in normalized for token in ("created_at", "updated_at", "applied_at", "last_used")):
         return datetime.utcnow().isoformat()
 
-    if normalized in {"enabled", "is_enabled", "reviewed", "is_transfer", "is_personal"}:
-        return 1 if normalized in {"enabled", "is_enabled"} else 0
+    if "enabled" in normalized:
+        return 1
 
-    if normalized == "hits":
+    if "reviewed" in normalized:
+        return 0
+
+    if any(token in normalized for token in ("hits", "confidence", "priority")):
         return 0
 
     numeric_types = {
@@ -139,10 +143,14 @@ def default_for_not_null_column(column_name, data_type, udt_name):
     if data_type in numeric_types:
         return 0
 
-    if udt_name in {"bool", "boolean"}:
-        return False
+    if data_type == "boolean":
+        return 0
 
     if data_type in {"text", "character varying", "character"}:
+        print(
+            f"Warning: defaulting required text column '{column_name}' to empty string; "
+            "review data quality if this is unexpected."
+        )
         return ""
 
     return None
@@ -208,35 +216,44 @@ def copy_table(sqlite_conn, pg_conn, table_name):
     select_sql = f"SELECT {', '.join(common_cols)} FROM {table_name}"
     source_rows = sqlite_conn.execute(select_sql).fetchall()
 
-    metadata_by_column = {col["column_name"]: col for col in dst_column_info}
-    required_columns = {
-        col["column_name"]
+    pg_meta = {
+        col["column_name"]: {
+            "is_nullable": col["is_nullable"],
+            "data_type": col["data_type"],
+            "column_default": col["column_default"],
+        }
         for col in dst_column_info
-        if col["is_nullable"] == "NO" and col["column_default"] is None
     }
+    not_null_cols = [col for col, meta in pg_meta.items() if meta["is_nullable"] == "NO"]
 
     insert_cols = list(common_cols)
-    for required_col in required_columns:
+    for required_col in not_null_cols:
         if required_col not in insert_cols:
             insert_cols.append(required_col)
 
     rows = []
     filled_counts = Counter()
+    source_null_counts = Counter()
     for source_row in source_rows:
         row_map = dict(source_row)
         row_values = []
         for col in insert_cols:
-            value = row_map.get(col)
-            if col in required_columns and _is_empty(value):
-                meta = metadata_by_column[col]
-                value = default_for_not_null_column(col, meta["data_type"], meta["udt_name"])
-                if value is None:
+            val = row_map.get(col)
+            if col in not_null_cols and _is_empty(val):
+                source_null_counts[col] += 1
+                val = default_for(col, pg_meta[col])
+                if _is_empty(val):
                     raise RuntimeError(
-                        f"Cannot determine safe default for NOT NULL column '{col}' in table '{table_name}'"
+                        "Cannot determine non-null default for NOT NULL column "
+                        f"'{col}' in table '{table_name}'."
                     )
                 filled_counts[col] += 1
-            row_values.append(value)
+            row_values.append(val)
         rows.append(tuple(row_values))
+
+    for col in not_null_cols:
+        if source_null_counts[col] > 0:
+            print(f"{table_name}: filled {source_null_counts[col]} missing {col}")
 
     if not rows:
         return {"source_rows": 0, "copied_rows": 0, "status": "copied"}
