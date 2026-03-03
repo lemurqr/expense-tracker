@@ -159,3 +159,90 @@ def test_dashboard_loads_with_postgres_rounding(client):
 
     dashboard = client.get("/dashboard")
     assert dashboard.status_code == 200
+
+
+def _latest_invite_code(db):
+    return db.execute("SELECT code FROM household_invites ORDER BY id DESC LIMIT 1").fetchone()["code"]
+
+
+def test_postgres_household_membership_and_roles(client):
+    register(client, username="dk_owner", password="password")
+    login(client, username="dk_owner", password="password")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        owner = db.execute("SELECT id FROM users WHERE username = ?", ("dk_owner",)).fetchone()
+        owner_membership = db.execute(
+            "SELECT household_id, role FROM household_members WHERE user_id = ?",
+            (owner["id"],),
+        ).fetchone()
+        assert owner_membership["role"] == "owner"
+
+    self_invite = client.post("/household", data={"invite_email": "dk_owner"}, follow_redirects=True)
+    assert b"cannot invite yourself" in self_invite.data.lower()
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        owner = db.execute("SELECT id FROM users WHERE username = ?", ("dk_owner",)).fetchone()
+        owner_membership = db.execute(
+            "SELECT role FROM household_members WHERE user_id = ?",
+            (owner["id"],),
+        ).fetchone()
+        assert owner_membership["role"] == "owner"
+
+    client.get("/logout", follow_redirects=True)
+    register(client, username="yz_member", password="password")
+    login(client, username="yz_member", password="password")
+    client.get("/logout", follow_redirects=True)
+
+    login(client, username="dk_owner", password="password")
+    invite_response = client.post("/household", data={"invite_email": "yz_member"}, follow_redirects=True)
+    assert b"Invite created" in invite_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        code = _latest_invite_code(db)
+
+    client.get("/logout", follow_redirects=True)
+    login(client, username="yz_member", password="password")
+    join_response = client.post("/household/join", data={"code": code}, follow_redirects=True)
+    assert b"Joined household successfully" in join_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        owner = db.execute("SELECT id FROM users WHERE username = ?", ("dk_owner",)).fetchone()
+        member = db.execute("SELECT id FROM users WHERE username = ?", ("yz_member",)).fetchone()
+        owner_membership = db.execute(
+            "SELECT household_id, role FROM household_members WHERE user_id = ?",
+            (owner["id"],),
+        ).fetchone()
+        member_membership = db.execute(
+            "SELECT household_id, role FROM household_members WHERE user_id = ?",
+            (member["id"],),
+        ).fetchone()
+        assert member_membership["household_id"] == owner_membership["household_id"]
+        assert member_membership["role"] == "member"
+
+    client.get("/logout", follow_redirects=True)
+    login(client, username="dk_owner", password="password")
+    duplicate_member_invite = client.post("/household", data={"invite_email": "yz_member"}, follow_redirects=True)
+    assert b"already in your household" in duplicate_member_invite.data.lower()
+    client.get("/logout", follow_redirects=True)
+    login(client, username="yz_member", password="password")
+
+    member_invite = client.post("/household", data={"invite_email": "someone"}, follow_redirects=True)
+    assert b"Only household owner can invite members" in member_invite.data
+
+    second_join = client.post("/household/join", data={"code": code}, follow_redirects=True)
+    assert b"already a member of this household" in second_join.data.lower()
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        owner = db.execute("SELECT id FROM users WHERE username = ?", ("dk_owner",)).fetchone()
+        owner_role = db.execute("SELECT role FROM household_members WHERE user_id = ?", (owner["id"],)).fetchone()["role"]
+        assert owner_role == "owner"
+
+    client.get("/logout", follow_redirects=True)
+    login(client, username="dk_owner", password="password")
+    owner_invite = client.post("/household", data={"invite_email": "fresh_user"}, follow_redirects=True)
+    assert b"Invite created" in owner_invite.data

@@ -73,7 +73,7 @@ def test_db_health_reports_backend_and_schema_version(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["backend"] == "sqlite"
-    assert payload["schema_version"] >= 8
+    assert payload["schema_version"] >= 9
     assert payload["ok"] is True
 
 
