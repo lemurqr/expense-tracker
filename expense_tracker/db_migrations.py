@@ -64,7 +64,7 @@ REQUIRED_TABLES = {
     },
     "household_members": {
         "columns": {"id", "household_id", "user_id", "role", "created_at"},
-        "indexes": set(),
+        "indexes": {"uq_household_members_household_user"},
     },
     "household_invites": {
         "columns": {"id", "household_id", "email", "token", "status", "created_at", "expires_at"},
@@ -639,6 +639,37 @@ def migration_008(conn):
     )
 
 
+def migration_009(conn):
+    if not table_exists(conn, "household_members"):
+        return
+
+    rows = conn.execute(
+        """
+        SELECT id, household_id, user_id, role
+        FROM household_members
+        ORDER BY household_id ASC, user_id ASC, CASE WHEN role = 'owner' THEN 0 ELSE 1 END ASC, id ASC
+        """
+    ).fetchall()
+
+    seen = set()
+    duplicate_ids = []
+    for row in rows:
+        key = (row[1], row[2])
+        if key in seen:
+            duplicate_ids.append(row[0])
+            continue
+        seen.add(key)
+
+    for member_id in duplicate_ids:
+        conn.execute("DELETE FROM household_members WHERE id = ?", (member_id,))
+
+    create_index_if_missing(
+        conn,
+        "uq_household_members_household_user",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_household_members_household_user ON household_members(household_id, user_id)",
+    )
+
+
 
 MIGRATIONS = [
     (1, migration_001),
@@ -649,6 +680,7 @@ MIGRATIONS = [
     (6, migration_006),
     (7, migration_007),
     (8, migration_008),
+    (9, migration_009),
 ]
 
 

@@ -1381,9 +1381,11 @@ def create_app(test_config=None):
         household_name = f"{user_id}-household"
         db.execute("INSERT INTO households (name) VALUES (?)", (household_name,))
         household_id = db.last_insert_id()
-        db.execute(
-            "INSERT INTO household_members (household_id, user_id, role) VALUES (?, ?, 'owner')",
-            (household_id, user_id),
+        db.insert_ignore(
+            "household_members",
+            ["household_id", "user_id", "role"],
+            [household_id, user_id, "owner"],
+            ["household_id", "user_id"],
         )
         db.execute("UPDATE expenses SET household_id = ? WHERE user_id = ?", (household_id, user_id))
         return household_id, "owner"
@@ -1686,6 +1688,22 @@ def create_app(test_config=None):
                 flash("Only household owner can invite members.")
                 return redirect(url_for("household_settings"))
             invite_email = (request.form.get("invite_email") or "").strip()
+            if invite_email:
+                invite_user = db.execute(
+                    "SELECT id FROM users WHERE LOWER(username) = LOWER(?)",
+                    (invite_email,),
+                ).fetchone()
+                if invite_user and invite_user["id"] == g.user["id"]:
+                    flash("You cannot invite yourself.")
+                    return redirect(url_for("household_settings"))
+                if invite_user:
+                    existing_member = db.execute(
+                        "SELECT 1 FROM household_members WHERE household_id = ? AND user_id = ?",
+                        (g.household_id, invite_user["id"]),
+                    ).fetchone()
+                    if existing_member:
+                        flash("That user is already in your household.")
+                        return redirect(url_for("household_settings"))
             invite_code = uuid.uuid4().hex[:8].upper()
             db.execute(
                 "INSERT INTO household_invites (household_id, created_by_user_id, email, code) VALUES (?, ?, ?, ?)",
@@ -1725,9 +1743,15 @@ def create_app(test_config=None):
                 flash("Invalid invite code.")
                 return redirect(url_for("join_household"))
 
-            existing = db.execute("SELECT id FROM household_members WHERE user_id = ?", (g.user["id"],)).fetchone()
+            existing = db.execute(
+                "SELECT household_id, role FROM household_members WHERE household_id = ? AND user_id = ?",
+                (invite["household_id"], g.user["id"]),
+            ).fetchone()
             if existing is not None:
-                db.execute("DELETE FROM household_members WHERE user_id = ?", (g.user["id"],))
+                flash("You are already a member of this household.")
+                return redirect(url_for("dashboard"))
+
+            db.execute("DELETE FROM household_members WHERE user_id = ?", (g.user["id"],))
             db.insert_ignore(
                 "household_members",
                 ["household_id", "user_id", "role"],
