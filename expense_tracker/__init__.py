@@ -1749,6 +1749,12 @@ def create_app(test_config=None):
     def dashboard():
         filters = resolve_dashboard_filters(request.args)
         db = get_db()
+        if db.backend == "postgres":
+            rounded_category_total_sql = "ROUND(SUM(e.amount)::numeric, 2)"
+            rounded_total_sql = "ROUND(COALESCE(SUM(amount), 0)::numeric, 2)"
+        else:
+            rounded_category_total_sql = "ROUND(SUM(e.amount), 2)"
+            rounded_total_sql = "ROUND(COALESCE(SUM(amount), 0), 2)"
 
         expenses = db.execute(
             """
@@ -1764,31 +1770,34 @@ def create_app(test_config=None):
 
         summary = db.execute(
             """
-            SELECT COALESCE(c.name, 'Uncategorized') as category, ROUND(SUM(e.amount), 2) as total
+            SELECT COALESCE(c.name, 'Uncategorized') as category, {rounded_category_total_sql} as total
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
             WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
             ORDER BY total DESC
-            """.format(filter_sql=filters["filter_sql"]),
+            """.format(
+                filter_sql=filters["filter_sql"],
+                rounded_category_total_sql=rounded_category_total_sql,
+            ),
             tuple(filters["params"]),
         ).fetchall()
 
         total = db.execute(
             """
-            SELECT ROUND(COALESCE(SUM(amount), 0), 2) as total
+            SELECT {rounded_total_sql} as total
             FROM expenses e
             WHERE {filter_sql} AND e.is_transfer = 0
-            """.format(filter_sql=filters["filter_sql"]),
+            """.format(filter_sql=filters["filter_sql"], rounded_total_sql=rounded_total_sql),
             tuple(filters["params"]),
         ).fetchone()["total"]
 
         shared_total = db.execute(
             """
-            SELECT ROUND(COALESCE(SUM(amount), 0), 2) as total
+            SELECT {rounded_total_sql} as total
             FROM expenses e
             WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
-            """.format(filter_sql=filters["filter_sql"]),
+            """.format(filter_sql=filters["filter_sql"], rounded_total_sql=rounded_total_sql),
             tuple(filters["params"]),
         ).fetchone()["total"]
 

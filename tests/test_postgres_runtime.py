@@ -115,3 +115,47 @@ def test_postgres_runtime_paths(client):
     )
     assert bulk_delete.status_code == 200
     assert bulk_delete.get_json()["ok"] is True
+
+
+def test_dashboard_loads_with_postgres_rounding(client):
+    register_response = register(client, username="pgdash", password="password")
+    assert register_response.status_code == 200
+
+    login_response = login(client, username="pgdash", password="password")
+    assert login_response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", ("pgdash",)).fetchone()
+        category = db.execute(
+            "SELECT id FROM categories WHERE user_id = ? ORDER BY id ASC LIMIT 1", (user["id"],)
+        ).fetchone()
+        household = db.execute(
+            "SELECT household_id FROM household_members WHERE user_id = ?", (user["id"],)
+        ).fetchone()["household_id"]
+
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-03-01", -10.125, category["id"], "Coffee", user["id"], household, "DK"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-03-02", -20.235, category["id"], "Lunch", user["id"], household, "YZ"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-03-03", -30.345, category["id"], "Groceries", user["id"], household, "DK"),
+        )
+        db.commit()
+
+    dashboard = client.get("/dashboard")
+    assert dashboard.status_code == 200
