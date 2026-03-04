@@ -14,6 +14,7 @@ from expense_tracker import (
     normalize_text,
     extract_pattern,
     parse_csv_transactions,
+    normalize_amount,
     derive_vendor,
     detect_header_and_mapping,
     detect_cibc_headerless_mapping,
@@ -643,6 +644,36 @@ def test_parse_csv_transactions_debit_credit_signs_and_diagnostics():
     assert diagnostics["rows_with_debit"] == 1
     assert diagnostics["rows_with_credit"] == 1
     assert diagnostics["skipped_rows"] == 0
+
+
+def test_normalize_amount_manual_tracker_forces_expenses_negative():
+    amount, classification = normalize_amount(719.73, source_type="manual_tracker", is_refund_or_payment=False)
+    assert amount == -719.73
+    assert classification == "expense"
+
+    amount, classification = normalize_amount(-50.59, source_type="manual_tracker", is_refund_or_payment=False)
+    assert amount == -50.59
+    assert classification == "expense"
+
+
+def test_parse_csv_transactions_manual_tracker_positive_amount_becomes_negative():
+    rows = [["2026-01-10", "School Fee", "719.73", "School & Education"]]
+    mapping = {
+        "date": "0",
+        "description": "1",
+        "amount": "2",
+        "debit": "",
+        "credit": "",
+        "vendor": "",
+        "category": "3",
+        "paid_by": "",
+    }
+
+    parsed, _ = parse_csv_transactions(rows, mapping, user_id=1, source_type="manual_tracker")
+
+    assert len(parsed) == 1
+    assert parsed[0]["amount"] == -719.73
+    assert parsed[0]["amount_classification"] == "expense"
 
 
 def test_detect_cibc_headerless_mapping_uses_two_amount_columns_not_single_amount():
@@ -2855,3 +2886,93 @@ def test_postgres_login_default_categories_idempotent(monkeypatch):
 
     assert total_count == len(DEFAULT_CATEGORIES)
     assert distinct_count == len(DEFAULT_CATEGORIES)
+
+
+def test_import_confirm_manual_tracker_positive_amount_is_inserted_negative(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-01-10",
+            "amount": 719.73,
+            "description": "School supplies",
+            "normalized_description": "school supplies",
+            "vendor": "school store",
+            "category": "School & Education",
+            "source_type": "manual_tracker",
+            "is_refund_or_payment": False,
+            "paid_by": "DK",
+        }
+    ]
+
+    response = confirm_import(client, rows, import_default_paid_by="DK")
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute("SELECT amount FROM expenses WHERE description = ?", ("School supplies",)).fetchone()
+    assert expense is not None
+    assert expense["amount"] == -719.73
+
+
+def test_import_confirm_manual_tracker_negative_amount_stays_negative(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-01-10",
+            "amount": -50.59,
+            "description": "Groceries",
+            "normalized_description": "groceries",
+            "vendor": "market",
+            "category": "Groceries",
+            "source_type": "manual_tracker",
+            "is_refund_or_payment": False,
+            "paid_by": "DK",
+        }
+    ]
+
+    response = confirm_import(client, rows, import_default_paid_by="DK")
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute("SELECT amount FROM expenses WHERE description = ?", ("Groceries",)).fetchone()
+    assert expense is not None
+    assert expense["amount"] == -50.59
+
+
+def test_import_confirm_manual_tracker_refund_is_inserted_positive(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-01-10",
+            "amount": -21.0,
+            "description": "Refund - school credit",
+            "normalized_description": "refund - school credit",
+            "vendor": "school",
+            "category": "School & Education",
+            "source_type": "manual_tracker",
+            "is_refund_or_payment": True,
+            "paid_by": "",
+        }
+    ]
+
+    response = confirm_import(client, rows)
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute("SELECT amount FROM expenses WHERE description = ?", ("Refund - school credit",)).fetchone()
+    assert expense is not None
+    assert expense["amount"] == 21.0

@@ -257,6 +257,40 @@ def detect_bank_type(header_row):
     return "default"
 
 
+def infer_import_source_type(bank_type, mapping):
+    if bank_type == "amex":
+        return "bank"
+    if (mapping or {}).get("amount"):
+        return "manual_tracker"
+    return "bank"
+
+
+def is_refund_or_payment_row(description="", category_name=""):
+    normalized_description = normalize_description(description)
+    normalized_category = normalize_description(category_name)
+    explicit_terms = ("refund", "payment", "transfer")
+    if any(term in normalized_category for term in explicit_terms):
+        return True
+    if any(term in normalized_description for term in explicit_terms):
+        return True
+    return False
+
+
+def normalize_amount(parsed_amount, source_type="bank", is_refund_or_payment=False):
+    if parsed_amount is None:
+        return None, "unknown"
+
+    if is_refund_or_payment:
+        return round(abs(parsed_amount), 2), "refund_or_payment"
+
+    if source_type == "manual_tracker":
+        return round(-abs(parsed_amount), 2), "expense"
+
+    if parsed_amount < 0:
+        return round(-abs(parsed_amount), 2), "expense"
+    return round(abs(parsed_amount), 2), "credit"
+
+
 def normalize_description(value):
     normalized = unicodedata.normalize("NFKD", (value or "").strip().lower())
     no_accents = "".join(ch for ch in normalized if not unicodedata.combining(ch))
@@ -795,8 +829,9 @@ def detect_mutually_exclusive_amount_columns(rows, start_index=2, end_index=7):
     return {"debit": str(left_idx), "credit": str(right_idx)}
 
 
-def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_payments=False):
+def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_payments=False, source_type=None):
     parsed_rows = []
+    resolved_source_type = source_type or infer_import_source_type(bank_type, mapping)
     diagnostics = {
         "total_rows_seen": 0,
         "rows_with_debit": 0,
@@ -888,16 +923,24 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
             else:
                 amount = -abs(amount)
 
-        if skip_payments and any(keyword in normalized_description for keyword in PAYMENT_KEYWORDS):
+        payment_like_description = any(keyword in normalized_description for keyword in PAYMENT_KEYWORDS)
+        if skip_payments and payment_like_description:
             diagnostics["skipped_payment_rows"] += 1
             continue
+
+        refund_or_payment = is_refund_or_payment_row(row_description, row_category)
+        normalized_amount, amount_classification = normalize_amount(
+            amount,
+            source_type=resolved_source_type,
+            is_refund_or_payment=refund_or_payment,
+        )
 
         parsed_rows.append(
             {
                 "row_index": row_index,
                 "user_id": user_id,
                 "date": parsed_date.date().isoformat(),
-                "amount": round(amount, 2),
+                "amount": normalized_amount,
                 "description": row_description,
                 "vendor": row_vendor,
                 "vendor_key": normalize_text(row_vendor),
@@ -908,6 +951,9 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
                 "csv_category_name": csv_category_name,
                 "tags": derive_tags(row_description),
                 "paid_by": row_paid_by,
+                "source_type": resolved_source_type,
+                "is_refund_or_payment": refund_or_payment,
+                "amount_classification": amount_classification,
             }
         )
 
@@ -2745,6 +2791,24 @@ def create_app(test_config=None):
                         row["category"] = override
                     row["paid_by"] = paid_by_override
 
+                    parsed_amount = parse_money(str(row.get("amount", "")))
+                    if parsed_amount is None:
+                        skipped_count += 1
+                        continue
+                    row_source_type = row.get("source_type") or "bank"
+                    row_refund_or_payment = bool(
+                        row.get("is_refund_or_payment")
+                        or is_refund_or_payment_row(row.get("description", ""), row.get("category", ""))
+                    )
+                    normalized_amount, amount_classification = normalize_amount(
+                        parsed_amount,
+                        source_type=row_source_type,
+                        is_refund_or_payment=row_refund_or_payment,
+                    )
+                    row["amount"] = normalized_amount
+                    row["is_refund_or_payment"] = row_refund_or_payment
+                    row["amount_classification"] = amount_classification
+
                     if row.get("amount", 0) < 0 and not paid_by_override:
                         flash("Cannot import spending rows with missing Paid by. Fill missing values and confirm again.")
                         return redirect(url_for("import_csv"))
@@ -2971,9 +3035,15 @@ def create_app(test_config=None):
                     )
 
             bank_type = detect_bank_type(rows[header_row_index] if has_header else [])
+            source_type = infer_import_source_type(bank_type, mapping)
             skip_payments = request.form.get("skip_payments") == "1"
             parsed_rows, diagnostics = parse_csv_transactions(
-                data_rows, mapping, g.user["id"], bank_type=bank_type, skip_payments=skip_payments
+                data_rows,
+                mapping,
+                g.user["id"],
+                bank_type=bank_type,
+                skip_payments=skip_payments,
+                source_type=source_type,
             )
             for row in parsed_rows:
                 if not row.get("paid_by"):
