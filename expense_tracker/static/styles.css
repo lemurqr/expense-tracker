@@ -41,3 +41,12 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .card-subtitle { margin: -.35rem 0 .65rem; color: #5b6477; font-size: .88rem; }
 .chart-wrap { height: 320px; max-height: 320px; overflow-y: auto; }
 .chart-wrap canvas { min-height: 320px; }
+
+.transactions-subcard { margin: .75rem 0; padding: .75rem; border-radius: 8px; border: 1px solid #d7e3ff; }
+.bulk-subcard { background: #eef4ff; }
+.filters-subcard { background: #f8faff; }
+.tx-filters-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.tx-actions { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; }
+.tx-btn { display: inline-block; padding: .28rem .5rem; border-radius: 6px; font-size: .82rem; text-decoration: none; border: 1px solid #274690; background: #fff; color: #274690; }
+.tx-btn-outline { background: #fff; }
+.tx-btn-danger { border-color: #b42318; background: #d92d20; color: #fff; }

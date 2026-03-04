@@ -284,3 +284,44 @@ def test_postgres_manual_expense_creation(client):
         ).fetchone()
         assert row is not None
         assert row["amount"] == pytest.approx(19.99)
+
+def test_postgres_dashboard_transaction_filters(client):
+    register(client, username="pgfilters", password="password")
+    login(client, username="pgfilters", password="password")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", ("pgfilters",)).fetchone()
+        household = db.execute("SELECT household_id FROM household_members WHERE user_id = ?", (user["id"],)).fetchone()["household_id"]
+        categories = db.execute("SELECT id, name FROM categories WHERE user_id = ? ORDER BY id", (user["id"],)).fetchall()
+        groceries = next(row for row in categories if row["name"] == "Groceries")
+        restaurants = next(row for row in categories if row["name"] == "Restaurants")
+
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by, category_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-05-01", -25.0, groceries["id"], "Paid by DK", user["id"], household, "DK", "rule"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by, category_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-05-02", -31.0, restaurants["id"], "Paid by YZ", user["id"], household, "YZ", "rule"),
+        )
+        db.commit()
+
+    resp_paid_by = client.get("/dashboard?month=2026-05&tx_paid_by=DK")
+    assert resp_paid_by.status_code == 200
+    assert b"Paid by DK" in resp_paid_by.data
+    assert b"Paid by YZ" not in resp_paid_by.data
+
+    resp_category = client.get(f"/dashboard?month=2026-05&tx_category_id={groceries['id']}")
+    assert resp_category.status_code == 200
+    assert b"Paid by DK" in resp_category.data
+    assert b"Paid by YZ" not in resp_category.data
+
+    resp_with_filters = client.get("/dashboard?month=2026-05&tx_source=rule&tx_transfer_mode=exclude")
+    assert resp_with_filters.status_code == 200
