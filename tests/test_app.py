@@ -353,7 +353,7 @@ def test_dashboard_date_range_filter_and_totals(client):
     assert b"Inside A" in response.data
     assert b"Inside B" in response.data
     assert b"Outside" not in response.data
-    assert b"$-50.00" in response.data
+    assert b'id="shared-category-chart"' in response.data
 
 
 def test_export_csv_respects_date_range(client):
@@ -811,7 +811,7 @@ def test_import_header_based_csv_with_mapping(client):
     assert b"Imported 0 transaction(s)." in duplicate_response.data
 
 
-def test_transfer_and_personal_excluded_from_shared_totals(client):
+def test_dashboard_shared_category_chart_and_repayment_markup(client):
     register(client)
     login(client)
 
@@ -839,8 +839,16 @@ def test_transfer_and_personal_excluded_from_shared_totals(client):
 
     response = client.get("/dashboard?month=2026-04")
     text = response.get_data(as_text=True)
-    assert "Total spending (includes Personal, excludes Transfers):</strong> $140.00" in text
-    assert "Shared spending (excludes Personal + Transfers):</strong> $100.00" in text
+
+    assert response.status_code == 200
+    assert 'id="shared-category-chart"' in text
+    assert "Shared spending by category" in text
+    assert "No shared expenses in selected period." not in text
+    assert "Total spending (includes Personal, excludes Transfers):" not in text
+    assert "Shared spending (excludes Personal + Transfers):" not in text
+    assert "Monthly Summary" not in text
+    assert 'id="record-repayment-section"' in text
+    assert "'record-repayment-section'" in text
 
 
 def test_refund_keeps_original_category_not_transfer(client):

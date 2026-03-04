@@ -14,8 +14,6 @@
     <a class="button" href="{{ url_for('export_csv', month=selected_month, start=start_date, end=end_date) }}">Export CSV</a>
   </form>
   <p><small>Period: {{ period_label }}</small></p>
-  <p><strong>Total spending (includes Personal, excludes Transfers):</strong> ${{ '%.2f'|format(total) }}</p>
-  <p><strong>Shared spending (excludes Personal + Transfers):</strong> ${{ '%.2f'|format(shared_total) }}</p>
 </section>
 
 <section class="card">
@@ -76,53 +74,55 @@
     </table>
   </details>
 
-  <h4>Record repayment</h4>
-  <form method="post" action="{{ url_for('create_settlement_payment') }}" class="inline-form">
-    <input type="hidden" name="month" value="{{ selected_month }}">
-    <input type="hidden" name="start" value="{{ start_date or '' }}">
-    <input type="hidden" name="end" value="{{ end_date or '' }}">
-    <label>Date <input type="date" name="date" required></label>
-    <label>From
-      <select name="from_person" required>
-        <option value="DK">DK</option>
-        <option value="YZ">YZ</option>
-      </select>
-    </label>
-    <label>To
-      <select name="to_person" required>
-        <option value="YZ">YZ</option>
-        <option value="DK">DK</option>
-      </select>
-    </label>
-    <label>Amount <input type="number" step="0.01" min="0.01" name="amount" required></label>
-    <label>Note <input type="text" name="note"></label>
-    <button type="submit">Record repayment</button>
-  </form>
+  <details id="record-repayment-section">
+    <summary><strong>Record repayment</strong></summary>
+    <form method="post" action="{{ url_for('create_settlement_payment') }}" class="inline-form">
+      <input type="hidden" name="month" value="{{ selected_month }}">
+      <input type="hidden" name="start" value="{{ start_date or '' }}">
+      <input type="hidden" name="end" value="{{ end_date or '' }}">
+      <label>Date <input type="date" name="date" required></label>
+      <label>From
+        <select name="from_person" required>
+          <option value="DK">DK</option>
+          <option value="YZ">YZ</option>
+        </select>
+      </label>
+      <label>To
+        <select name="to_person" required>
+          <option value="YZ">YZ</option>
+          <option value="DK">DK</option>
+        </select>
+      </label>
+      <label>Amount <input type="number" step="0.01" min="0.01" name="amount" required></label>
+      <label>Note <input type="text" name="note"></label>
+      <button type="submit">Record repayment</button>
+    </form>
 
-  <table>
-    <thead><tr><th>Date</th><th>From</th><th>To</th><th>Amount</th><th>Note</th><th>Action</th></tr></thead>
-    <tbody>
-      {% for repayment in repayments %}
-      <tr>
-        <td>{{ repayment.date }}</td>
-        <td>{{ repayment.from_person }}</td>
-        <td>{{ repayment.to_person }}</td>
-        <td>${{ '%.2f'|format(repayment.amount) }}</td>
-        <td>{{ repayment.note or '' }}</td>
-        <td>
-          <form method="post" action="{{ url_for('delete_settlement_payment', payment_id=repayment.id) }}" class="inline-form">
-            <input type="hidden" name="month" value="{{ selected_month }}">
-            <input type="hidden" name="start" value="{{ start_date or '' }}">
-            <input type="hidden" name="end" value="{{ end_date or '' }}">
-            <button type="submit">Delete</button>
-          </form>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6">No repayments in selected period.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+    <table>
+      <thead><tr><th>Date</th><th>From</th><th>To</th><th>Amount</th><th>Note</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for repayment in repayments %}
+        <tr>
+          <td>{{ repayment.date }}</td>
+          <td>{{ repayment.from_person }}</td>
+          <td>{{ repayment.to_person }}</td>
+          <td>${{ '%.2f'|format(repayment.amount) }}</td>
+          <td>{{ repayment.note or '' }}</td>
+          <td>
+            <form method="post" action="{{ url_for('delete_settlement_payment', payment_id=repayment.id) }}" class="inline-form">
+              <input type="hidden" name="month" value="{{ selected_month }}">
+              <input type="hidden" name="start" value="{{ start_date or '' }}">
+              <input type="hidden" name="end" value="{{ end_date or '' }}">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No repayments in selected period.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
 
   <details id="monthly-breakdown-section">
     <summary><strong>Monthly Breakdown</strong></summary>
@@ -178,14 +178,12 @@
 
 <section class="grid-two">
   <div class="card">
-    <h3>Monthly Summary</h3>
-    <ul>
-      {% for row in summary %}
-      <li>{{ row.category }}: ${{ '%.2f'|format(row.total) }}</li>
-      {% else %}
-      <li>No expenses for this period.</li>
-      {% endfor %}
-    </ul>
+    <h3>Shared spending by category</h3>
+    {% if shared_category_chart %}
+    <canvas id="shared-category-chart" aria-label="Shared spending by category chart"></canvas>
+    {% else %}
+    <p>No shared expenses in selected period.</p>
+    {% endif %}
   </div>
 
   <div class="card">
@@ -270,6 +268,7 @@
       </table>
     </form>
   </div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
     (function () {
       const form = document.getElementById('bulk-actions-form');
@@ -309,7 +308,53 @@
       }
       syncSelection();
 
-      ['shared-expenses-section', 'balance-repayments-section', 'monthly-breakdown-section'].forEach((id) => {
+      const sharedChartData = {{ shared_category_chart|tojson }};
+      const chartCanvas = document.getElementById('shared-category-chart');
+      if (chartCanvas && sharedChartData.length > 0) {
+        const labels = sharedChartData.map((row) => row.label);
+        const values = sharedChartData.map((row) => row.value);
+        const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
+
+        if (window.Chart) {
+          new window.Chart(chartCanvas, {
+            type: 'bar',
+            data: {
+              labels: labels,
+              datasets: [{
+                label: 'Shared spending',
+                data: values,
+                backgroundColor: '#4f46e5'
+              }]
+            },
+            options: {
+              responsive: true,
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  callbacks: {
+                    label: function (context) {
+                      return formatCurrency(context.parsed.x ?? context.parsed.y ?? 0);
+                    }
+                  }
+                }
+              },
+              indexAxis: 'y',
+              scales: {
+                x: {
+                  beginAtZero: true,
+                  ticks: {
+                    callback: function (value) {
+                      return formatCurrency(value);
+                    }
+                  }
+                }
+              }
+            }
+          });
+        }
+      }
+
+      ['shared-expenses-section', 'balance-repayments-section', 'record-repayment-section', 'monthly-breakdown-section'].forEach((id) => {
         const el = document.getElementById(id);
         if (!el) return;
         const key = `collapse:${id}`;
