@@ -454,6 +454,17 @@ def confidence_label(confidence):
     return "Low"
 
 
+def transaction_confidence_filter_options():
+    return [
+        {"value": "", "label": "All"},
+        {"value": "high", "label": "High (≥ 80)"},
+        {"value": "medium", "label": "Medium (50-79)"},
+        {"value": "low", "label": "Low (< 50)"},
+        {"value": "transfer", "label": "Transfer"},
+        {"value": "unknown", "label": "N/A"},
+    ]
+
+
 def detect_header_and_mapping(rows):
     mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "paid_by": ""}
     if not rows:
@@ -699,7 +710,7 @@ def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=No
             INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status)
             VALUES (?, ?, ?, ?, ?, 'preview')
             """,
-            (import_id, household_id, user_id, created_at, json.dumps(row)),
+            (import_id, household_id, user_id, created_at, json.dumps({**row, "selected": bool(row.get("selected", True))})),
         )
 
 
@@ -745,6 +756,36 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
 
 def update_staged_preview_row(db, staging_id, row):
     db.execute("UPDATE import_staging SET row_json = ? WHERE id = ?", (json.dumps(row), staging_id))
+
+
+
+def parse_selected_row_ids(values):
+    selected_row_ids = []
+    for raw_id in values:
+        try:
+            parsed_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if parsed_id > 0:
+            selected_row_ids.append(parsed_id)
+    return list(dict.fromkeys(selected_row_ids))
+
+
+def update_staged_selection(db, import_id, selected_row_ids, household_id=None, user_id=None):
+    records = get_staged_preview_row_records(db, import_id, household_id=household_id, user_id=user_id)
+    if not records:
+        return 0
+    selected_set = set(selected_row_ids)
+    updated = 0
+    for record in records:
+        row = record["row"]
+        is_selected = record["id"] in selected_set
+        if bool(row.get("selected", True)) == is_selected:
+            continue
+        row["selected"] = is_selected
+        update_staged_preview_row(db, record["id"], row)
+        updated += 1
+    return updated
 
 def placeholder_columns_from_mapping(mapping):
     indices = []
@@ -1076,11 +1117,30 @@ def create_app(test_config=None):
         end_date = (args.get("end") or "").strip()
         quick = (args.get("preset") or "").strip()
 
+        tx_date_from = (args.get("tx_date_from") or "").strip()
+        tx_date_to = (args.get("tx_date_to") or "").strip()
+        tx_amount_min = (args.get("tx_amount_min") or "").strip()
+        tx_amount_max = (args.get("tx_amount_max") or "").strip()
+        tx_paid_by = (args.get("tx_paid_by") or "").strip().upper()
+        tx_category_id = (args.get("tx_category_id") or "").strip()
+        tx_q = (args.get("tx_q") or "").strip()
+        tx_confidence_bucket = (args.get("tx_confidence_bucket") or "").strip().lower()
+        tx_source = (args.get("tx_source") or "").strip()
+        tx_transfer_mode = (args.get("tx_transfer_mode") or "all").strip().lower() or "all"
+
         def parse_date(value):
             if not value:
                 return None
             try:
                 return datetime.strptime(value, "%Y-%m-%d").date()
+            except ValueError:
+                return None
+
+        def parse_number(value):
+            if value == "":
+                return None
+            try:
+                return float(value)
             except ValueError:
                 return None
 
@@ -1135,6 +1195,95 @@ def create_app(test_config=None):
                 params.append(f"{selected_month}%")
                 period_label = selected_month
 
+        tx_sql_parts = []
+        tx_params = []
+
+        tx_parsed_date_from = parse_date(tx_date_from)
+        tx_parsed_date_to = parse_date(tx_date_to)
+        if tx_date_from and tx_date_to and tx_parsed_date_from and tx_parsed_date_to and tx_parsed_date_from > tx_parsed_date_to:
+            tx_parsed_date_from, tx_parsed_date_to = tx_parsed_date_to, tx_parsed_date_from
+            tx_date_from, tx_date_to = tx_parsed_date_from.isoformat(), tx_parsed_date_to.isoformat()
+
+        if tx_parsed_date_from:
+            tx_sql_parts.append("e.date >= ?")
+            tx_params.append(tx_date_from)
+        if tx_parsed_date_to:
+            tx_sql_parts.append("e.date <= ?")
+            tx_params.append(tx_date_to)
+
+        parsed_amount_min = parse_number(tx_amount_min)
+        parsed_amount_max = parse_number(tx_amount_max)
+        if parsed_amount_min is not None and parsed_amount_max is not None and parsed_amount_min > parsed_amount_max:
+            parsed_amount_min, parsed_amount_max = parsed_amount_max, parsed_amount_min
+            tx_amount_min, tx_amount_max = str(parsed_amount_min), str(parsed_amount_max)
+
+        if parsed_amount_min is not None:
+            tx_sql_parts.append("ABS(e.amount) >= ?")
+            tx_params.append(parsed_amount_min)
+        if parsed_amount_max is not None:
+            tx_sql_parts.append("ABS(e.amount) <= ?")
+            tx_params.append(parsed_amount_max)
+
+        if tx_paid_by in {"DK", "YZ"}:
+            tx_sql_parts.append("e.paid_by = ?")
+            tx_params.append(tx_paid_by)
+        elif tx_paid_by == "BLANK":
+            tx_sql_parts.append("COALESCE(TRIM(e.paid_by), '') = ''")
+
+        if tx_category_id:
+            if tx_category_id == "uncategorized":
+                tx_sql_parts.append("e.category_id IS NULL")
+            else:
+                try:
+                    tx_category_id_int = int(tx_category_id)
+                except ValueError:
+                    tx_category_id_int = None
+                if tx_category_id_int:
+                    tx_sql_parts.append("e.category_id = ?")
+                    tx_params.append(tx_category_id_int)
+
+        if tx_q:
+            tx_sql_parts.append("LOWER(e.description) LIKE ?")
+            tx_params.append(f"%{tx_q.lower()}%")
+
+        if tx_confidence_bucket == "high":
+            tx_sql_parts.append("e.category_confidence >= 80")
+        elif tx_confidence_bucket == "medium":
+            tx_sql_parts.append("e.category_confidence >= 50 AND e.category_confidence < 80")
+        elif tx_confidence_bucket == "low":
+            tx_sql_parts.append("e.category_confidence < 50")
+        elif tx_confidence_bucket == "transfer":
+            tx_sql_parts.append("e.category_source = 'transfer'")
+        elif tx_confidence_bucket == "unknown":
+            tx_sql_parts.append("e.category_confidence IS NULL")
+
+        if tx_source:
+            tx_sql_parts.append("LOWER(COALESCE(e.category_source, '')) LIKE ?")
+            tx_params.append(f"%{tx_source.lower()}%")
+
+        if tx_transfer_mode == "only":
+            tx_sql_parts.append("e.is_transfer = 1")
+        elif tx_transfer_mode == "exclude":
+            tx_sql_parts.append("COALESCE(e.is_transfer, 0) = 0")
+        else:
+            tx_transfer_mode = "all"
+
+        tx_filter_sql = " AND ".join(tx_sql_parts) if tx_sql_parts else "1=1"
+
+        tx_filter_values = {
+            "tx_date_from": tx_date_from,
+            "tx_date_to": tx_date_to,
+            "tx_amount_min": tx_amount_min,
+            "tx_amount_max": tx_amount_max,
+            "tx_paid_by": tx_paid_by if tx_paid_by in {"DK", "YZ", "BLANK"} else "",
+            "tx_category_id": tx_category_id,
+            "tx_q": tx_q,
+            "tx_confidence_bucket": tx_confidence_bucket,
+            "tx_source": tx_source,
+            "tx_transfer_mode": tx_transfer_mode,
+        }
+        active_tx_filter_count = sum(1 for value in tx_filter_values.values() if value not in {"", "all"})
+
         return {
             "filter_sql": filter_sql,
             "params": params,
@@ -1142,6 +1291,10 @@ def create_app(test_config=None):
             "start_date": start_date,
             "end_date": end_date,
             "period_label": period_label,
+            "tx_filter_sql": tx_filter_sql,
+            "tx_params": tx_params,
+            "tx_filter_values": tx_filter_values,
+            "active_tx_filter_count": active_tx_filter_count,
         }
 
     def current_filter_redirect_params(values_source):
@@ -1155,6 +1308,22 @@ def create_app(test_config=None):
             params["end"] = end_date
         elif month:
             params["month"] = month
+
+        for key in [
+            "tx_date_from",
+            "tx_date_to",
+            "tx_amount_min",
+            "tx_amount_max",
+            "tx_paid_by",
+            "tx_category_id",
+            "tx_q",
+            "tx_confidence_bucket",
+            "tx_source",
+            "tx_transfer_mode",
+        ]:
+            value = (values_source.get(key) or "").strip()
+            if value:
+                params[key] = value
         return params
 
 
@@ -1856,10 +2025,10 @@ def create_app(test_config=None):
                    e.category_confidence, e.category_source, e.paid_by
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE {filter_sql}
+            WHERE {filter_sql} AND {tx_filter_sql}
             ORDER BY e.date DESC, e.id DESC
-            """.format(filter_sql=filters["filter_sql"]),
-            tuple(filters["params"]),
+            """.format(filter_sql=filters["filter_sql"], tx_filter_sql=filters["tx_filter_sql"]),
+            tuple(filters["params"] + filters["tx_params"]),
         ).fetchall()
 
         shared_category_chart = _fetch_shared_spending_by_category(db, filters)
@@ -1887,6 +2056,16 @@ def create_app(test_config=None):
             "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name",
             (g.user["id"],),
         ).fetchall()
+        tx_source_rows = db.execute(
+            """
+            SELECT DISTINCT COALESCE(category_source, '') AS source
+            FROM expenses
+            WHERE household_id = ?
+            ORDER BY source ASC
+            """,
+            (g.household_id,),
+        ).fetchall()
+        tx_sources = [row["source"] for row in tx_source_rows if row["source"]]
 
         return render_template(
             "dashboard.html",
@@ -1899,6 +2078,10 @@ def create_app(test_config=None):
             end_date=filters["end_date"],
             period_label=filters["period_label"],
             all_categories=all_categories,
+            tx_filter_values=filters["tx_filter_values"],
+            active_tx_filter_count=filters["active_tx_filter_count"],
+            tx_confidence_options=transaction_confidence_filter_options(),
+            tx_sources=tx_sources,
             household_role=g.household_role,
         )
 
@@ -2527,9 +2710,12 @@ def create_app(test_config=None):
             "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
         ).fetchall()
         category_lookup = {normalize_description(row["name"]): row for row in category_rows}
+        selected_row_ids = parse_selected_row_ids(request.form.getlist("selected_row_ids"))
+        selected_set = set(selected_row_ids)
 
         for record in records:
             row = record["row"]
+            row["selected"] = record["id"] in selected_set if selected_row_ids else bool(row.get("selected", True))
             row_index = row.get("row_index")
             if row_index is None:
                 continue
@@ -2593,20 +2779,15 @@ def create_app(test_config=None):
             flash("Preview expired. Please re-upload the file.")
             return redirect(url_for("import_csv"))
 
-        selected_row_ids = []
-        for raw_id in request.form.getlist("selected_row_ids"):
-            try:
-                parsed_id = int(raw_id)
-            except (TypeError, ValueError):
-                continue
-            if parsed_id > 0:
-                selected_row_ids.append(parsed_id)
-        selected_row_ids = list(dict.fromkeys(selected_row_ids))
+        selected_row_ids = parse_selected_row_ids(request.form.getlist("selected_row_ids"))
         if not selected_row_ids:
             flash("Please select at least one row first.")
             return redirect(url_for("import_csv", **redirect_args))
 
         db = get_db()
+        update_staged_selection(db, import_id, selected_row_ids, household_id=g.household_id, user_id=g.user["id"])
+        db.commit()
+
         placeholders = ",".join(["?"] * len(selected_row_ids))
         staged_rows = db.execute(
             f"""
@@ -2754,12 +2935,19 @@ def create_app(test_config=None):
             if action == "confirm":
                 import_id = request.form.get("import_id", "") or request.form.get("preview_id", "")
                 db = get_db()
+                selected_row_ids = parse_selected_row_ids(request.form.getlist("selected_row_ids"))
+                if selected_row_ids:
+                    update_staged_selection(db, import_id, selected_row_ids, household_id=g.household_id, user_id=g.user["id"])
+                    db.commit()
+
                 parsed_rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
                 if not parsed_rows:
                     flash("Preview expired. Please re-upload the file.")
                     return redirect(url_for("import_csv"))
+                selected_rows = [row for row in parsed_rows if bool(row.get("selected", True))]
                 imported_count = 0
                 preview_count = len(parsed_rows)
+                selected_count = len(selected_rows)
 
                 category_rows = db.execute(
                     "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
@@ -2776,7 +2964,7 @@ def create_app(test_config=None):
                     default_paid_by = "DK"
                 skipped_count = 0
                 uncategorized_unmapped_count = 0
-                for index, row in enumerate(parsed_rows):
+                for index, row in enumerate(selected_rows):
                     row_index = row.get("row_index", index)
                     override = request.form.get(f"override_category_{row_index}", "") or row.get("override_category", "")
                     paid_by_override = normalize_paid_by(
@@ -2921,8 +3109,10 @@ def create_app(test_config=None):
                 db.commit()
                 save_import_preview_state(g.user["id"], [], preview_id="")
                 clear_import_preview_show_all(g.user["id"], import_id)
+                unselected_count = max(preview_count - selected_count, 0)
                 flash(f"Imported {imported_count} transaction(s).")
-                flash(f"Preview rows: {preview_count} · inserted: {imported_count} · skipped: {skipped_count}.")
+                flash(f"Selected rows: {selected_count} · Inserted: {imported_count} · Skipped (unselected): {unselected_count}.")
+                flash(f"Preview rows: {preview_count} · inserted: {imported_count} · skipped duplicates/invalid: {skipped_count}.")
                 if uncategorized_unmapped_count:
                     flash(f"{uncategorized_unmapped_count} rows imported as Uncategorized because CSV categories were not mapped.")
                 return redirect(url_for("dashboard"))
@@ -3156,6 +3346,11 @@ def create_app(test_config=None):
         import_id = (request.args.get("import_id") or "").strip()
         if import_id:
             db = get_db()
+            selected_row_ids = parse_selected_row_ids(request.args.getlist("selected_row_ids"))
+            if selected_row_ids:
+                update_staged_selection(db, import_id, selected_row_ids, household_id=g.household_id, user_id=g.user["id"])
+                db.commit()
+
             parsed_rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
             if not parsed_rows:
                 flash("Preview expired. Please re-upload the file.")

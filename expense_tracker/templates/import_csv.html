@@ -97,7 +97,7 @@
 <section class="card">
   <h3>Preview</h3>
   <p>Showing {{ displayed_rows_count }} of {{ total_rows_count }} rows</p>
-  <form method="get" action="{{ url_for('import_csv') }}" class="inline-form">
+  <form method="get" action="{{ url_for('import_csv') }}" class="inline-form" id="preview-toggle-form">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all" value="0">
     <input type="hidden" name="low_confidence" value="{{ 1 if low_confidence_filter else 0 }}">
@@ -115,6 +115,7 @@
     </label>
     <small>Large previews may be slow.</small>
     {% endif %}
+    <div id="preview-toggle-selected-row-ids"></div>
   </form>
   <p class="legend-text">Legend: <span class="confidence-badge confidence-high">High</span> = high confidence, <span class="confidence-badge confidence-medium">Medium</span> = review, <span class="confidence-badge confidence-low">Low</span> = needs review.</p>
   <p>Detected format: <strong>{{ detected_mode }}</strong> · detected_format: <strong>{{ detected_format or 'n/a' }}</strong>{% if header_row_index is not none %} · header_row_index: <strong>{{ header_row_index }}</strong>{% endif %}{% if skipped_rows %} · skipped_rows: <strong>{{ skipped_rows }}</strong>{% endif %}</p>
@@ -197,7 +198,7 @@
       <tbody>
         {% for row in preview_rows %}
         <tr class="preview-row" data-row-index="{{ row.row_index }}" data-vendor-key="{{ row.vendor_key }}" data-vendor-rule-key="{{ row.vendor_rule_key }}" data-description-rule-key="{{ row.description_rule_key }}" data-confidence="{{ row.confidence }}">
-          <td><input type="checkbox" class="row-check row-select" name="selected_row_ids" value="{{ row.staging_id }}" checked></td>
+          <td><input type="checkbox" class="row-check row-select" name="selected_row_ids" value="{{ row.staging_id }}" {% if row.selected is not defined or row.selected %}checked{% endif %}></td>
           <td>{{ row.date }}</td>
           <td>{{ '%.2f'|format(row.amount) }}</td>
           <td>{{ row.description }}</td>
@@ -289,6 +290,7 @@
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
     <input type="hidden" name="skip_payments" value="{{ 1 if skip_payments else 0 }}">
+    <div id="confirm-selected-row-ids"></div>
     <button type="submit">Confirm Import</button>
   </form>
   {% else %}
@@ -306,6 +308,25 @@
   const importDefaultPaidBy = document.getElementById('importDefaultPaidBy');
   const rowSelectCheckboxes = document.querySelectorAll('.row-select');
   const lowConfidenceHiddenInputs = document.querySelectorAll('input[name="low_confidence"]');
+  const previewToggleForm = document.getElementById('preview-toggle-form');
+  const previewToggleSelectedContainer = document.getElementById('preview-toggle-selected-row-ids');
+  const confirmSelectedContainer = document.getElementById('confirm-selected-row-ids');
+
+  const selectedRowIds = () => Array.from(rowSelectCheckboxes)
+    .filter((checkbox) => checkbox.checked && !checkbox.disabled)
+    .map((checkbox) => checkbox.value);
+
+  const syncSelectedRowHiddenInputs = (container) => {
+    if (!container) return;
+    container.innerHTML = '';
+    selectedRowIds().forEach((id) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'selected_row_ids';
+      input.value = id;
+      container.appendChild(input);
+    });
+  };
 
   const visibleRowSelectCheckboxes = () => Array.from(document.querySelectorAll('.preview-row'))
     .filter((row) => row.style.display !== 'none')
@@ -335,6 +356,8 @@
   const updateSelectionUI = () => {
     updateSelectedCount();
     syncSelectAllState();
+    syncSelectedRowHiddenInputs(previewToggleSelectedContainer);
+    syncSelectedRowHiddenInputs(confirmSelectedContainer);
   };
 
   const badgeClassFor = (source, confidence) => {
@@ -475,6 +498,12 @@
     applyLowConfidenceFilter(lowConfidenceToggle.checked);
   } else {
     updateSelectionUI();
+  }
+
+  if (previewToggleForm) {
+    previewToggleForm.addEventListener('submit', () => {
+      syncSelectedRowHiddenInputs(previewToggleSelectedContainer);
+    });
   }
 </script>
 {% endblock %}

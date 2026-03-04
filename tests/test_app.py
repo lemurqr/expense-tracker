@@ -2976,3 +2976,59 @@ def test_import_confirm_manual_tracker_refund_is_inserted_positive(client):
         expense = db.execute("SELECT amount FROM expenses WHERE description = ?", ("Refund - school credit",)).fetchone()
     assert expense is not None
     assert expense["amount"] == 21.0
+
+def test_import_confirm_inserts_only_selected_rows(client):
+    register(client)
+    login(client)
+    rows = [
+        {"row_index": i, "date": f"2026-11-0{i+1}", "amount": -10.0 - i, "description": f"Row {i+1}", "normalized_description": f"row {i+1}", "vendor": f"Vendor {i+1}", "category": "Groceries", "confidence": 90, "confidence_label": "High", "suggested_source": "rule"}
+        for i in range(5)
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="selected-only")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()
+        selected_ids = [staged[0]["id"], staged[3]["id"]]
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK", "selected_row_ids": [str(selected_ids[0]), str(selected_ids[1])]},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Selected rows: 2" in response.data
+    assert b"Inserted: 2" in response.data
+    assert b"Skipped (unselected): 3" in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description LIKE 'Row %'").fetchone()["c"]
+        assert count == 2
+
+
+def test_import_preview_toggle_queries_keep_selection_flags(client):
+    register(client)
+    login(client)
+    rows = [
+        {"row_index": i, "date": f"2026-12-0{i+1}", "amount": -5.0 - i, "description": f"Toggle {i+1}", "normalized_description": f"toggle {i+1}", "vendor": "Toggle", "category": "Groceries", "confidence": 40 if i % 2 == 0 else 90, "confidence_label": "Low", "suggested_source": "rule"}
+        for i in range(5)
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="selection-toggle")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()
+        keep_ids = [staged[1]["id"], staged[4]["id"]]
+
+    resp = client.get(f"/import/csv?import_id={import_id}&show_all=1&selected_row_ids={keep_ids[0]}&selected_row_ids={keep_ids[1]}")
+    assert resp.status_code == 200
+
+    resp_low = client.get(f"/import/csv?import_id={import_id}&show_all=1&low_confidence=1")
+    assert resp_low.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged_rows = [json.loads(row["row_json"]) for row in db.execute("SELECT row_json FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
+        selected_flags = [bool(row.get("selected", True)) for row in staged_rows]
+        assert selected_flags == [False, True, False, False, True]
