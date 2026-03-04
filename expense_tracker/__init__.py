@@ -1215,7 +1215,7 @@ def create_app(test_config=None):
             "repayment_effect": round(dk_to_yz - yz_to_dk, 2),
         }
 
-    def _fetch_shared_spending_by_category(db, filters, top_n=8):
+    def _fetch_shared_spending_by_category(db, filters, top_n=10):
         if db.backend == "postgres":
             rounded_total_sql = "ROUND(SUM(ABS(e.amount))::numeric, 2)"
         else:
