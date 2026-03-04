@@ -18,8 +18,11 @@
 
 <section class="card">
   <h3>Shared spending by category</h3>
+  <p class="card-subtitle">Top 10 (shared only)</p>
   {% if shared_category_chart %}
-  <canvas id="shared-category-chart" aria-label="Shared spending by category chart"></canvas>
+  <div class="chart-wrap" aria-label="Shared spending by category chart container">
+    <canvas id="shared-category-chart" aria-label="Shared spending by category chart"></canvas>
+  </div>
   {% else %}
   <p>No shared expenses in selected period.</p>
   {% endif %}
@@ -314,8 +317,6 @@
         const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
         const values = sharedChartData.map((row) => row.value);
         const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
-        chartCanvas.height = 60 + (values.length * 32);
-
         if (window.Chart) {
           new window.Chart(chartCanvas, {
             type: 'bar',
@@ -324,7 +325,9 @@
               datasets: [{
                 label: 'Shared spending',
                 data: values,
-                backgroundColor: '#4f46e5'
+                backgroundColor: '#4f46e5',
+                barThickness: 14,
+                maxBarThickness: 18
               }]
             },
             options: {
@@ -332,7 +335,10 @@
               maintainAspectRatio: false,
               layout: {
                 padding: {
-                  left: 32
+                  left: 10,
+                  right: 6,
+                  top: 4,
+                  bottom: 4
                 }
               },
               plugins: {
@@ -353,7 +359,10 @@
               scales: {
                 y: {
                   ticks: {
-                    autoSkip: false
+                    autoSkip: false,
+                    font: {
+                      size: 12
+                    }
                   }
                 },
                 x: {
