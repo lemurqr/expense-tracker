@@ -1215,6 +1215,36 @@ def create_app(test_config=None):
             "repayment_effect": round(dk_to_yz - yz_to_dk, 2),
         }
 
+    def _fetch_shared_spending_by_category(db, filters, top_n=8):
+        if db.backend == "postgres":
+            rounded_total_sql = "ROUND(SUM(ABS(e.amount))::numeric, 2)"
+        else:
+            rounded_total_sql = "ROUND(SUM(ABS(e.amount)), 2)"
+
+        rows = db.execute(
+            """
+            SELECT COALESCE(c.name, 'Uncategorized') AS category, {rounded_total_sql} AS total
+            FROM expenses e
+            LEFT JOIN categories c ON e.category_id = c.id
+            WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
+            GROUP BY COALESCE(c.name, 'Uncategorized')
+            HAVING SUM(ABS(e.amount)) > 0
+            ORDER BY total DESC, category ASC
+            """.format(filter_sql=filters["filter_sql"], rounded_total_sql=rounded_total_sql),
+            tuple(filters["params"]),
+        ).fetchall()
+
+        top_rows = rows[:top_n]
+        other_total = round(sum(float(row["total"] or 0) for row in rows[top_n:]), 2)
+
+        chart_rows = [
+            {"label": row["category"], "value": round(float(row["total"] or 0), 2)}
+            for row in top_rows
+        ]
+        if other_total > 0:
+            chart_rows.append({"label": "Other", "value": other_total})
+        return chart_rows
+
     def calculate_settlement_ledger(db, household_id, filters):
         period = _fetch_settlement_expense_totals(
             db, household_id, start_date=filters["start_date"], end_date=filters["end_date"]
@@ -1773,12 +1803,6 @@ def create_app(test_config=None):
     def dashboard():
         filters = resolve_dashboard_filters(request.args)
         db = get_db()
-        if db.backend == "postgres":
-            rounded_category_total_sql = "ROUND(SUM(e.amount)::numeric, 2)"
-            rounded_total_sql = "ROUND(COALESCE(SUM(amount), 0)::numeric, 2)"
-        else:
-            rounded_category_total_sql = "ROUND(SUM(e.amount), 2)"
-            rounded_total_sql = "ROUND(COALESCE(SUM(amount), 0), 2)"
 
         expenses = db.execute(
             """
@@ -1792,38 +1816,7 @@ def create_app(test_config=None):
             tuple(filters["params"]),
         ).fetchall()
 
-        summary = db.execute(
-            """
-            SELECT COALESCE(c.name, 'Uncategorized') as category, {rounded_category_total_sql} as total
-            FROM expenses e
-            LEFT JOIN categories c ON e.category_id = c.id
-            WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
-            GROUP BY COALESCE(c.name, 'Uncategorized')
-            ORDER BY total DESC
-            """.format(
-                filter_sql=filters["filter_sql"],
-                rounded_category_total_sql=rounded_category_total_sql,
-            ),
-            tuple(filters["params"]),
-        ).fetchall()
-
-        total = db.execute(
-            """
-            SELECT {rounded_total_sql} as total
-            FROM expenses e
-            WHERE {filter_sql} AND e.is_transfer = 0
-            """.format(filter_sql=filters["filter_sql"], rounded_total_sql=rounded_total_sql),
-            tuple(filters["params"]),
-        ).fetchone()["total"]
-
-        shared_total = db.execute(
-            """
-            SELECT {rounded_total_sql} as total
-            FROM expenses e
-            WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
-            """.format(filter_sql=filters["filter_sql"], rounded_total_sql=rounded_total_sql),
-            tuple(filters["params"]),
-        ).fetchone()["total"]
+        shared_category_chart = _fetch_shared_spending_by_category(db, filters)
 
         settlement = calculate_settlement_ledger(db, g.household_id, filters)
         monthly_breakdown, monthly_totals = build_monthly_breakdown(
@@ -1852,9 +1845,7 @@ def create_app(test_config=None):
         return render_template(
             "dashboard.html",
             expenses=expenses,
-            summary=summary,
-            total=total,
-            shared_total=shared_total,
+            shared_category_chart=shared_category_chart,
             settlement=settlement,
             repayments=repayments,
             selected_month=filters["selected_month"],
