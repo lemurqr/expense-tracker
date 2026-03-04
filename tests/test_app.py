@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import io
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -843,12 +844,54 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
     assert response.status_code == 200
     assert 'id="shared-category-chart"' in text
     assert "Shared spending by category" in text
+    assert "Shared Expenses and Settlements" in text
     assert "No shared expenses in selected period." not in text
     assert "Total spending (includes Personal, excludes Transfers):" not in text
     assert "Shared spending (excludes Personal + Transfers):" not in text
     assert "Monthly Summary" not in text
     assert 'id="record-repayment-section"' in text
     assert "'record-repayment-section'" in text
+
+
+def test_dashboard_shared_category_chart_shows_top_10_and_other(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        for index in range(12):
+            db.execute("INSERT INTO categories (user_id, name) VALUES (?, ?)", (1, f"Category {index + 1}"),)
+        category_rows = db.execute(
+            "SELECT id, name FROM categories WHERE name LIKE 'Category %' ORDER BY name ASC"
+        ).fetchall()
+        db.commit()
+
+    for index, row in enumerate(category_rows):
+        client.post(
+            "/expenses/new",
+            data={
+                "date": "2026-04-10",
+                "amount": str(index + 1),
+                "category_id": str(row["id"]),
+                "description": f"Expense {index + 1}",
+            },
+            follow_redirects=True,
+        )
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert 'id="shared-category-chart"' in text
+    assert "Shared Expenses and Settlements" in text
+
+    match = re.search(r"const sharedChartData = (\[.*?\]);", text, re.DOTALL)
+    assert match is not None
+
+    chart_data = json.loads(match.group(1))
+    assert len(chart_data) == 11
+    assert chart_data[-1]["label"] == "Other"
+    assert all(item["value"] >= 0 for item in chart_data)
 
 
 def test_refund_keeps_original_category_not_transfer(client):

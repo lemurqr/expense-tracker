@@ -17,7 +17,16 @@
 </section>
 
 <section class="card">
-  <h3>Household Settlement</h3>
+  <h3>Shared spending by category</h3>
+  {% if shared_category_chart %}
+  <canvas id="shared-category-chart" aria-label="Shared spending by category chart"></canvas>
+  {% else %}
+  <p>No shared expenses in selected period.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h3>Shared Expenses and Settlements</h3>
 
   <details id="shared-expenses-section" open>
     <summary><strong>Shared Expenses</strong></summary>
@@ -176,18 +185,8 @@
   </details>
 </section>
 
-<section class="grid-two">
-  <div class="card">
-    <h3>Shared spending by category</h3>
-    {% if shared_category_chart %}
-    <canvas id="shared-category-chart" aria-label="Shared spending by category chart"></canvas>
-    {% else %}
-    <p>No shared expenses in selected period.</p>
-    {% endif %}
-  </div>
-
-  <div class="card">
-    <h3>Transactions</h3>
+<section class="card">
+  <h3>Transactions</h3>
     <form method="post" action="{{ url_for('bulk_expense_action') }}" id="bulk-actions-form">
       <input type="hidden" name="month" value="{{ selected_month }}">
       <input type="hidden" name="start" value="{{ start_date or '' }}">
@@ -267,7 +266,6 @@
         </tbody>
       </table>
     </form>
-  </div>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
     (function () {
@@ -311,15 +309,18 @@
       const sharedChartData = {{ shared_category_chart|tojson }};
       const chartCanvas = document.getElementById('shared-category-chart');
       if (chartCanvas && sharedChartData.length > 0) {
+        const maxLabelLength = 22;
         const labels = sharedChartData.map((row) => row.label);
+        const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
         const values = sharedChartData.map((row) => row.value);
         const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
+        chartCanvas.height = 60 + (values.length * 32);
 
         if (window.Chart) {
           new window.Chart(chartCanvas, {
             type: 'bar',
             data: {
-              labels: labels,
+              labels: shortLabels,
               datasets: [{
                 label: 'Shared spending',
                 data: values,
@@ -328,10 +329,20 @@
             },
             options: {
               responsive: true,
+              maintainAspectRatio: false,
+              layout: {
+                padding: {
+                  left: 32
+                }
+              },
               plugins: {
                 legend: { display: false },
                 tooltip: {
                   callbacks: {
+                    title: function (context) {
+                      const index = context[0]?.dataIndex ?? 0;
+                      return labels[index] || '';
+                    },
                     label: function (context) {
                       return formatCurrency(context.parsed.x ?? context.parsed.y ?? 0);
                     }
@@ -340,6 +351,11 @@
               },
               indexAxis: 'y',
               scales: {
+                y: {
+                  ticks: {
+                    autoSkip: false
+                  }
+                },
                 x: {
                   beginAtZero: true,
                   ticks: {
