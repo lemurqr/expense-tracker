@@ -175,6 +175,33 @@ def _convert_qmark_placeholders(sql):
     return "".join(out)
 
 
+def _escape_psycopg_percent_literals(sql):
+    """Escape percent signs that are not valid psycopg placeholders."""
+    if "%" not in sql:
+        return sql
+
+    out = []
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if ch != "%":
+            out.append(ch)
+            i += 1
+            continue
+
+        if i + 1 < len(sql):
+            nxt = sql[i + 1]
+            if nxt in {"s", "b", "t", "%"}:
+                out.append("%" + nxt)
+                i += 2
+                continue
+
+        out.append("%%")
+        i += 1
+
+    return "".join(out)
+
+
 def rewrite_sql(backend, sql, params):
     rewritten_sql = sql
     rewritten_params = params
@@ -192,6 +219,8 @@ def rewrite_sql(backend, sql, params):
             rewritten_params = (table_name,)
         elif "?" in rewritten_sql:
             rewritten_sql = _convert_qmark_placeholders(rewritten_sql)
+
+        rewritten_sql = _escape_psycopg_percent_literals(rewritten_sql)
 
         if rewritten_params is None:
             rewritten_params = ()

@@ -246,3 +246,41 @@ def test_postgres_household_membership_and_roles(client):
     login(client, username="dk_owner", password="password")
     owner_invite = client.post("/household", data={"invite_email": "fresh_user"}, follow_redirects=True)
     assert b"Invite created" in owner_invite.data
+
+
+def test_postgres_manual_expense_creation(client):
+    register_response = register(client, username="pgmanual", password="password")
+    assert register_response.status_code == 200
+
+    login_response = login(client, username="pgmanual", password="password")
+    assert login_response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", ("pgmanual",)).fetchone()
+        category = db.execute(
+            "SELECT id FROM categories WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+            (user["id"],),
+        ).fetchone()
+
+    response = client.post(
+        "/expenses/new",
+        data={
+            "date": "2026-04-01",
+            "amount": "19.99",
+            "category_id": str(category["id"]),
+            "description": "Postgres manual entry",
+            "paid_by": "DK",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code in {302, 200}
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            "SELECT id, amount, description FROM expenses WHERE user_id = ? AND description = ?",
+            (user["id"], "Postgres manual entry"),
+        ).fetchone()
+        assert row is not None
+        assert row["amount"] == pytest.approx(19.99)
