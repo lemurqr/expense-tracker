@@ -1549,6 +1549,17 @@ def test_settlement_template_has_collapsible_details_ids(client):
     assert '<details id="monthly-breakdown-section">' in text
 
 
+def test_dashboard_transactions_template_has_collapsible_bulk_and_filters(client):
+    register(client)
+    login(client)
+
+    response = client.get("/dashboard?month=2026-02")
+    text = response.get_data(as_text=True)
+
+    assert '<details id="transactions-bulk-actions"' in text
+    assert '<details id="transactions-filters"' in text
+
+
 def test_import_preview_applies_default_paid_by_when_column_missing(client):
     register(client)
     login(client)

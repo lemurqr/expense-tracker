@@ -45,7 +45,13 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .transactions-subcard { margin: .75rem 0; padding: .75rem; border-radius: 8px; border: 1px solid #d7e3ff; }
 .bulk-subcard { background: #eef4ff; }
 .filters-subcard { background: #f8faff; }
-.tx-filters-grid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.transactions-subcard summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: .5rem; font-weight: 600; }
+.transactions-subcard summary::-webkit-details-marker { display: none; }
+.transactions-subcard summary::before { content: '▸'; color: #475569; transition: transform .15s ease; }
+.transactions-subcard[open] summary::before { transform: rotate(90deg); }
+.transactions-subcard summary > span:first-child { margin-right: auto; }
+.tx-summary-badge { background: #eef2ff; color: #475569; border-radius: 999px; padding: .2rem .55rem; font-size: .78rem; font-weight: 600; }
+.tx-filters-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: .75rem; }
 .tx-actions { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; }
 .tx-btn { display: inline-block; padding: .28rem .5rem; border-radius: 6px; font-size: .82rem; text-decoration: none; border: 1px solid #274690; background: #fff; color: #274690; }
 .tx-btn-outline { background: #fff; }
@@ -53,7 +59,9 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 
 
 .button-secondary { background: #fff; color: #274690; border: 1px solid #274690; }
-.tx-filters-grid label { display: flex; flex-direction: column; gap: .35rem; }
+.tx-filter-group { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+.form-label { font-size: .9rem; color: #334155; font-weight: 600; }
+.form-control, .form-select { width: 100%; box-sizing: border-box; }
 .tx-description-filter input { width: 100%; }
 .tx-filters-actions { display: flex; align-items: center; justify-content: space-between; gap: .65rem; margin-top: .75rem; flex-wrap: wrap; }
 .tx-filters-buttons { display: inline-flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
