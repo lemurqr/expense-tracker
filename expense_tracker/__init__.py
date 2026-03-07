@@ -268,7 +268,19 @@ def infer_import_source_type(bank_type, mapping):
 def is_refund_or_payment_row(description="", category_name=""):
     normalized_description = normalize_description(description)
     normalized_category = normalize_description(category_name)
-    explicit_terms = ("refund", "payment", "transfer")
+    explicit_terms = (
+        "refund",
+        "reversal",
+        "credit",
+        "return",
+        "payment received",
+        "payroll",
+        "salary",
+        "deposit",
+        "online payment",
+        "payment thank you",
+        "autopay",
+    )
     if any(term in normalized_category for term in explicit_terms):
         return True
     if any(term in normalized_description for term in explicit_terms):
@@ -289,6 +301,31 @@ def normalize_amount(parsed_amount, source_type="bank", is_refund_or_payment=Fal
     if parsed_amount < 0:
         return round(-abs(parsed_amount), 2), "expense"
     return round(abs(parsed_amount), 2), "credit"
+
+
+def normalize_amount_for_confirm(row, amount_override=None):
+    if amount_override is not None:
+        return round(float(amount_override), 2), "override"
+
+    debit_value = parse_money(str(row.get("debit_value", "")))
+    credit_value = parse_money(str(row.get("credit_value", "")))
+    debit_present = debit_value is not None and abs(debit_value) > 0
+    credit_present = credit_value is not None and abs(credit_value) > 0
+    if debit_present and not credit_present:
+        return round(-abs(debit_value), 2), "debit"
+    if credit_present and not debit_present:
+        return round(abs(credit_value), 2), "credit"
+
+    parsed_amount = parse_money(str(row.get("amount", "")))
+    if parsed_amount is None:
+        return None, "unknown"
+    if is_refund_or_payment_row(row.get("description", ""), row.get("category", "")):
+        return round(abs(parsed_amount), 2), "inflow_keyword"
+    if parsed_amount < 0:
+        return round(-abs(parsed_amount), 2), "expense"
+    if (row.get("source_type") or "") == "manual_tracker":
+        return round(-abs(parsed_amount), 2), "expense"
+    return round(-abs(parsed_amount), 2), "expense_default"
 
 
 def normalize_description(value):
@@ -724,10 +761,19 @@ def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=No
         is_selected = bool(row.get("selected", True))
         db.execute(
             """
-            INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status, selected)
-            VALUES (?, ?, ?, ?, ?, 'preview', ?)
+            INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status, selected, amount_override, has_override)
+            VALUES (?, ?, ?, ?, ?, 'preview', ?, ?, ?)
             """,
-            (import_id, household_id, user_id, created_at, json.dumps({**row, "selected": is_selected}), 1 if is_selected else 0),
+            (
+                import_id,
+                household_id,
+                user_id,
+                created_at,
+                json.dumps({**row, "selected": is_selected}),
+                1 if is_selected else 0,
+                None,
+                0,
+            ),
         )
 
 
@@ -754,7 +800,7 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
 
     staged_rows = db.execute(
         f"""
-        SELECT id, row_json, selected FROM import_staging
+        SELECT id, row_json, selected, amount_override, has_override FROM import_staging
         WHERE {' AND '.join(filters)}
         ORDER BY id ASC
         """,
@@ -766,7 +812,10 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
     parsed_rows = []
     for row in staged_rows:
         try:
-            parsed_rows.append({"id": row["id"], "selected": bool(row["selected"]), "row": json.loads(row["row_json"])})
+            row_payload = json.loads(row["row_json"])
+            row_payload["amount_override"] = row["amount_override"]
+            row_payload["has_override"] = bool(row["has_override"])
+            parsed_rows.append({"id": row["id"], "selected": bool(row["selected"]), "row": row_payload})
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
     return parsed_rows
@@ -774,7 +823,12 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
 
 def update_staged_preview_row(db, staging_id, row):
     is_selected = bool(row.get("selected", True))
-    db.execute("UPDATE import_staging SET row_json = ?, selected = ? WHERE id = ?", (json.dumps(row), 1 if is_selected else 0, staging_id))
+    amount_override = row.get("amount_override")
+    has_override = 1 if amount_override is not None else 0
+    db.execute(
+        "UPDATE import_staging SET row_json = ?, selected = ?, amount_override = ?, has_override = ? WHERE id = ?",
+        (json.dumps(row), 1 if is_selected else 0, amount_override, has_override, staging_id),
+    )
 
 
 
@@ -969,6 +1023,8 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
         row_paid_by = normalize_paid_by(get_value("paid_by"))
 
         amount = None
+        debit_value = None
+        credit_value = None
         amount_col = mapping.get("amount", "")
         if amount_col != "":
             amount_raw = get_value("amount")
@@ -1033,10 +1089,15 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
             continue
 
         refund_or_payment = is_refund_or_payment_row(row_description, row_category)
-        normalized_amount, amount_classification = normalize_amount(
-            amount,
-            source_type=resolved_source_type,
-            is_refund_or_payment=refund_or_payment,
+        normalized_amount, amount_classification = normalize_amount_for_confirm(
+            {
+                "amount": amount,
+                "debit_value": debit_value,
+                "credit_value": credit_value,
+                "description": row_description,
+                "category": row_category,
+                "source_type": resolved_source_type,
+            }
         )
 
         parsed_rows.append(
@@ -1045,6 +1106,8 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
                 "user_id": user_id,
                 "date": parsed_date.date().isoformat(),
                 "amount": normalized_amount,
+                "debit_value": debit_value,
+                "credit_value": credit_value,
                 "description": row_description,
                 "vendor": row_vendor,
                 "vendor_key": normalize_text(row_vendor),
@@ -2871,6 +2934,61 @@ def create_app(test_config=None):
         db.commit()
         return jsonify({"ok": True, "updated": updated})
 
+    @app.post("/import/preview/row_update")
+    @login_required
+    def import_preview_row_update():
+        payload = request.get_json(silent=True) or {}
+        import_id = (payload.get("import_id") or "").strip()
+        try:
+            row_id = int(payload.get("row_id"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid_row_id"}), 400
+        if not import_id or row_id <= 0:
+            return jsonify({"ok": False, "error": "invalid_payload"}), 400
+
+        db = get_db()
+        staged = db.execute(
+            "SELECT id, row_json, selected, amount_override, has_override FROM import_staging WHERE id = ? AND import_id = ? AND household_id = ? AND user_id = ?",
+            (row_id, import_id, g.household_id, g.user["id"]),
+        ).fetchone()
+        if staged is None:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+
+        try:
+            row = json.loads(staged["row_json"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return jsonify({"ok": False, "error": "bad_row"}), 400
+
+        if "vendor" in payload:
+            row["vendor"] = (payload.get("vendor") or "").strip()
+        if "paid_by" in payload:
+            paid_by = normalize_paid_by(payload.get("paid_by") or "")
+            if paid_by:
+                row["paid_by"] = paid_by
+            else:
+                row.pop("paid_by", None)
+        if "override_category" in payload:
+            category_override = (payload.get("override_category") or "").strip()
+            row["override_category"] = category_override
+            if category_override:
+                row["category"] = category_override
+
+        if "amount_override" in payload:
+            raw_override = payload.get("amount_override")
+            if raw_override in (None, ""):
+                row["amount_override"] = None
+            else:
+                parsed_override = parse_money(str(raw_override))
+                if parsed_override is None:
+                    return jsonify({"ok": False, "error": "invalid_amount_override"}), 400
+                row["amount_override"] = round(parsed_override, 2)
+            if row.get("amount_override") is not None:
+                row["amount"] = row["amount_override"]
+
+        update_staged_preview_row(db, row_id, row)
+        db.commit()
+        return jsonify({"ok": True, "row": row})
+
     @app.post("/import/preview/action")
     @login_required
     def import_preview_action():
@@ -3049,7 +3167,6 @@ def create_app(test_config=None):
                 if selected_row_ids:
                     update_staged_selection(db, import_id, selected_row_ids, household_id=g.household_id, user_id=g.user["id"])
                     db.commit()
-
                 parsed_rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
                 if not parsed_rows:
                     flash("Preview expired. Please re-upload the file.")
@@ -3085,7 +3202,7 @@ def create_app(test_config=None):
                     paid_by_override = normalize_paid_by(
                         request.form.get(f"override_paid_by_{row_index}", "") or row.get("paid_by", "") or default_paid_by
                     )
-                    vendor_override = request.form.get(f"override_vendor_{row_index}", "").strip()
+                    vendor_override = (request.form.get(f"override_vendor_{row_index}", "") or "").strip()
                     if vendor_override:
                         row["vendor"] = vendor_override
                     elif not row.get("vendor"):
@@ -3094,22 +3211,13 @@ def create_app(test_config=None):
                         row["category"] = override
                     row["paid_by"] = paid_by_override
 
-                    parsed_amount = parse_money(str(row.get("amount", "")))
-                    if parsed_amount is None:
+                    amount_override = parse_money(str(row.get("amount_override"))) if row.get("amount_override") not in (None, "") else None
+                    normalized_amount, amount_classification = normalize_amount_for_confirm(row, amount_override=amount_override)
+                    if normalized_amount is None:
                         skipped_invalid += 1
                         continue
                     row_source_type = row.get("source_type") or "bank"
-                    row_refund_or_payment = bool(
-                        row.get("is_refund_or_payment")
-                        or is_refund_or_payment_row(row.get("description", ""), row.get("category", ""))
-                    )
-                    normalized_amount, amount_classification = normalize_amount(
-                        parsed_amount,
-                        source_type=row_source_type,
-                        is_refund_or_payment=row_refund_or_payment,
-                    )
                     row["amount"] = normalized_amount
-                    row["is_refund_or_payment"] = row_refund_or_payment
                     row["amount_classification"] = amount_classification
 
                     if row.get("amount", 0) < 0 and not paid_by_override:
@@ -3225,7 +3333,7 @@ def create_app(test_config=None):
                     "skipped_unselected": skipped_unselected,
                     "skipped_duplicates": skipped_duplicates,
                     "skipped_invalid": skipped_invalid,
-                    "skipped_payments_transfers": skipped_payments_transfers,
+                    "skipped_other": skipped_payments_transfers,
                 }
                 log_audit("import", details=summary, db=db)
                 db.execute("DELETE FROM import_staging WHERE import_id = ?", (import_id,))
