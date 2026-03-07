@@ -54,10 +54,10 @@ def stage_import_preview(client, rows, preview_id="preview-1", created_at=None):
         for row in rows:
             db.execute(
                 """
-                INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status)
-                VALUES (?, ?, ?, ?, ?, 'preview')
+                INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status, selected)
+                VALUES (?, ?, ?, ?, ?, 'preview', ?)
                 """,
-                (preview_id, 1, 1, timestamp, json.dumps(row)),
+                (preview_id, 1, 1, timestamp, json.dumps({**row, "selected": bool(row.get("selected", True))}), 1 if row.get("selected", True) else 0),
             )
         db.commit()
     return preview_id
@@ -75,7 +75,7 @@ def test_db_health_reports_backend_and_schema_version(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["backend"] == "sqlite"
-    assert payload["schema_version"] >= 9
+    assert payload["schema_version"] >= 10
     assert payload["ok"] is True
 
 
@@ -2997,9 +2997,9 @@ def test_import_confirm_inserts_only_selected_rows(client):
         follow_redirects=True,
     )
     assert response.status_code == 200
-    assert b"Selected rows: 2" in response.data
-    assert b"Inserted: 2" in response.data
-    assert b"Skipped (unselected): 3" in response.data
+    assert b"Preview rows: 5" in response.data
+    assert b"Selected: 2" in response.data
+    assert b"Skipped unselected: 3" in response.data
 
     with client.application.app_context():
         db = client.application.get_db()
@@ -3021,7 +3021,11 @@ def test_import_preview_toggle_queries_keep_selection_flags(client):
         staged = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()
         keep_ids = [staged[1]["id"], staged[4]["id"]]
 
-    resp = client.get(f"/import/csv?import_id={import_id}&show_all=1&selected_row_ids={keep_ids[0]}&selected_row_ids={keep_ids[1]}")
+    client.post("/import/preview/selection/bulk", json={"import_id": import_id, "selected": False, "scope": "all"})
+    client.post("/import/preview/selection", json={"import_id": import_id, "row_id": keep_ids[0], "selected": True})
+    client.post("/import/preview/selection", json={"import_id": import_id, "row_id": keep_ids[1], "selected": True})
+
+    resp = client.get(f"/import/csv?import_id={import_id}&show_all=1")
     assert resp.status_code == 200
 
     resp_low = client.get(f"/import/csv?import_id={import_id}&show_all=1&low_confidence=1")
@@ -3029,6 +3033,88 @@ def test_import_preview_toggle_queries_keep_selection_flags(client):
 
     with client.application.app_context():
         db = client.application.get_db()
-        staged_rows = [json.loads(row["row_json"]) for row in db.execute("SELECT row_json FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
-        selected_flags = [bool(row.get("selected", True)) for row in staged_rows]
+        selected_flags = [row["selected"] == 1 for row in db.execute("SELECT selected FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
         assert selected_flags == [False, True, False, False, True]
+
+
+def test_import_preview_selection_endpoint_persists_single_toggle(client):
+    register(client)
+    login(client)
+    rows = [
+        {"row_index": i, "date": "2026-12-01", "amount": -5.0 - i, "description": f"Select {i+1}", "normalized_description": f"select {i+1}", "vendor": "Select", "category": "Groceries", "confidence": 70, "confidence_label": "Medium", "suggested_source": "rule"}
+        for i in range(3)
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="selection-endpoint")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1", (import_id,)).fetchone()["id"]
+
+    response = client.post(
+        "/import/preview/selection",
+        json={"import_id": import_id, "row_id": row_id, "selected": False},
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        selected = db.execute("SELECT selected FROM import_staging WHERE id = ?", (row_id,)).fetchone()["selected"]
+        assert selected == 0
+
+
+def test_import_preview_selection_bulk_endpoint_updates_all_rows(client):
+    register(client)
+    login(client)
+    rows = [
+        {"row_index": i, "date": "2026-12-01", "amount": -9.0 - i, "description": f"Bulk {i+1}", "normalized_description": f"bulk {i+1}", "vendor": "Bulk", "category": "Groceries", "confidence": 70, "confidence_label": "Medium", "suggested_source": "rule"}
+        for i in range(4)
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="selection-bulk")
+
+    response = client.post(
+        "/import/preview/selection/bulk",
+        json={"import_id": import_id, "selected": False, "scope": "all"},
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute("SELECT selected FROM import_staging WHERE import_id = ?", (import_id,)).fetchall()
+        assert all(row["selected"] == 0 for row in rows)
+
+
+def test_import_confirm_skips_duplicate_when_paid_by_and_category_differ(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "date": "2026-11-20",
+            "amount": -42.5,
+            "description": "Freshco #101",
+            "normalized_description": "freshco #101",
+            "vendor": "Freshco",
+            "category": "Groceries",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "source_type": "bank",
+            "paid_by": "DK",
+        }
+    ]
+
+    first = confirm_import(client, rows, import_default_paid_by="DK")
+    assert first.status_code == 200
+    assert b"Imported 1 transaction(s)." in first.data
+
+    second_rows = [dict(rows[0], category="Uncategorized", paid_by="YZ")]
+    second = confirm_import(client, second_rows, import_default_paid_by="YZ")
+    assert second.status_code == 200
+    assert b"Imported 0 transaction(s)." in second.data
+    assert b"Skipped duplicates: 1" in second.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = ?", ("Freshco #101",)).fetchone()["c"]
+        assert count == 1

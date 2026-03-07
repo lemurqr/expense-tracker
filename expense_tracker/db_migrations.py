@@ -31,11 +31,13 @@ REQUIRED_TABLES = {
             "reviewed",
             "category_confidence",
             "category_source",
+            "txn_hash",
         },
         "indexes": {
             "idx_expenses_date",
             "idx_expenses_household_id",
             "idx_expenses_vendor_normalized",
+            "uq_expenses_household_txn_hash",
         },
     },
     "category_rules": {
@@ -75,7 +77,7 @@ REQUIRED_TABLES = {
         "indexes": set(),
     },
     "import_staging": {
-        "columns": {"id", "import_id", "household_id", "user_id", "created_at", "row_json", "status"},
+        "columns": {"id", "import_id", "household_id", "user_id", "created_at", "row_json", "status", "selected"},
         "indexes": {"idx_import_staging_import_id", "idx_import_staging_created_at"},
     },
     "settlement_payments": {
@@ -554,7 +556,8 @@ def migration_005(conn):
             user_id INTEGER,
             created_at TEXT NOT NULL,
             row_json TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'preview'
+            status TEXT NOT NULL DEFAULT 'preview',
+            selected INTEGER NOT NULL DEFAULT 1
         )
         """,
     )
@@ -670,6 +673,18 @@ def migration_009(conn):
     )
 
 
+def migration_010(conn):
+    add_column_if_missing(conn, "import_staging", "selected INTEGER NOT NULL DEFAULT 1")
+    conn.execute("UPDATE import_staging SET selected = 1 WHERE selected IS NULL")
+
+    add_column_if_missing(conn, "expenses", "txn_hash TEXT")
+    create_index_if_missing(
+        conn,
+        "uq_expenses_household_txn_hash",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_expenses_household_txn_hash ON expenses(household_id, txn_hash)",
+    )
+
+
 
 MIGRATIONS = [
     (1, migration_001),
@@ -681,6 +696,7 @@ MIGRATIONS = [
     (7, migration_007),
     (8, migration_008),
     (9, migration_009),
+    (10, migration_010),
 ]
 
 

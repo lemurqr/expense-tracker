@@ -94,7 +94,7 @@
 </section>
 
 {% if detected_mode %}
-<section class="card">
+<section class="card" data-import-id="{{ preview_id }}" id="preview-card">
   <h3>Preview</h3>
   <p>Showing {{ displayed_rows_count }} of {{ total_rows_count }} rows</p>
   <form method="get" action="{{ url_for('import_csv') }}" class="inline-form" id="preview-toggle-form">
@@ -117,6 +117,11 @@
     {% endif %}
     <div id="preview-toggle-selected-row-ids"></div>
   </form>
+  <p class="inline-form">
+    <button type="button" id="select-all-preview-rows">Select all</button>
+    <button type="button" id="deselect-all-preview-rows">Deselect all</button>
+    <small>Selected rows: <span id="selected-count">0</span></small>
+  </p>
   <p class="legend-text">Legend: <span class="confidence-badge confidence-high">High</span> = high confidence, <span class="confidence-badge confidence-medium">Medium</span> = review, <span class="confidence-badge confidence-low">Low</span> = needs review.</p>
   <p>Detected format: <strong>{{ detected_mode }}</strong> · detected_format: <strong>{{ detected_format or 'n/a' }}</strong>{% if header_row_index is not none %} · header_row_index: <strong>{{ header_row_index }}</strong>{% endif %}{% if skipped_rows %} · skipped_rows: <strong>{{ skipped_rows }}</strong>{% endif %}</p>
   {% if parse_diagnostics %}
@@ -187,9 +192,7 @@
         name="action"
         value="apply_category_selected"
       >Apply category to selected</button>
-      <label class="inline-form"><input type="checkbox" id="select-all-rows"> Select all</label>
       <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle" {% if low_confidence_filter %}checked{% endif %}> Show only low-confidence (&lt; 80)</label>
-      <strong>Selected: <span id="selected-count">0</span></strong>
     </p>
     <table>
       <thead>
@@ -301,7 +304,10 @@
 
 <script>
   const lowConfidenceToggle = document.getElementById('lowConfidenceToggle');
-  const selectAllRowsToggle = document.getElementById('select-all-rows');
+  const previewCard = document.getElementById('preview-card');
+  const importId = previewCard ? previewCard.dataset.importId : '';
+  const selectAllRowsButton = document.getElementById('select-all-preview-rows');
+  const deselectAllRowsButton = document.getElementById('deselect-all-preview-rows');
   const selectedCount = document.getElementById('selected-count');
   const applyVendorMessage = document.getElementById('applyVendorMessage');
   const fillPaidByFromDefaultButton = document.getElementById('fillPaidByFromDefault');
@@ -339,25 +345,28 @@
     selectedCount.textContent = String(count);
   };
 
-  const syncSelectAllState = () => {
-    if (!selectAllRowsToggle) return;
-    const visibleCheckboxes = visibleRowSelectCheckboxes();
-    if (!visibleCheckboxes.length) {
-      selectAllRowsToggle.checked = false;
-      selectAllRowsToggle.indeterminate = false;
-      return;
-    }
-
-    const checkedCount = visibleCheckboxes.filter((checkbox) => checkbox.checked).length;
-    selectAllRowsToggle.checked = checkedCount === visibleCheckboxes.length;
-    selectAllRowsToggle.indeterminate = checkedCount > 0 && checkedCount < visibleCheckboxes.length;
-  };
-
   const updateSelectionUI = () => {
     updateSelectedCount();
-    syncSelectAllState();
     syncSelectedRowHiddenInputs(previewToggleSelectedContainer);
     syncSelectedRowHiddenInputs(confirmSelectedContainer);
+  };
+
+  const persistRowSelection = async (rowId, selected) => {
+    if (!importId) return;
+    await fetch('/import/preview/selection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ import_id: importId, row_id: parseInt(rowId, 10), selected }),
+    });
+  };
+
+  const persistBulkSelection = async (selected) => {
+    if (!importId) return;
+    await fetch('/import/preview/selection/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ import_id: importId, selected, scope: 'all' }),
+    });
   };
 
   const badgeClassFor = (source, confidence) => {
@@ -458,14 +467,24 @@
   });
 
   rowSelectCheckboxes.forEach((checkbox) => {
-    checkbox.addEventListener('change', updateSelectionUI);
+    checkbox.addEventListener('change', async (event) => {
+      await persistRowSelection(event.target.value, event.target.checked);
+      updateSelectionUI();
+    });
   });
 
-  if (selectAllRowsToggle) {
-    selectAllRowsToggle.addEventListener('change', (event) => {
-      visibleRowSelectCheckboxes().forEach((checkbox) => {
-        checkbox.checked = event.target.checked;
-      });
+  if (selectAllRowsButton) {
+    selectAllRowsButton.addEventListener('click', async () => {
+      rowSelectCheckboxes.forEach((checkbox) => { if (!checkbox.disabled) checkbox.checked = true; });
+      await persistBulkSelection(true);
+      updateSelectionUI();
+    });
+  }
+
+  if (deselectAllRowsButton) {
+    deselectAllRowsButton.addEventListener('click', async () => {
+      rowSelectCheckboxes.forEach((checkbox) => { if (!checkbox.disabled) checkbox.checked = false; });
+      await persistBulkSelection(false);
       updateSelectionUI();
     });
   }
