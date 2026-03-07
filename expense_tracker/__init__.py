@@ -204,6 +204,13 @@ def parse_money(value):
         return None
 
 
+def parse_positive_money_2dp(value):
+    amount = parse_money(value)
+    if amount is None or amount <= 0:
+        return None
+    return round(amount, 2) if abs(amount - round(amount, 2)) < 1e-9 else None
+
+
 def parse_transaction_date(value):
     cleaned = (value or "").strip()
     if not cleaned:
@@ -2177,6 +2184,14 @@ def create_app(test_config=None):
             """.format(where_sql=" AND ".join(repayment_filters)),
             tuple(repayment_params),
         ).fetchall()
+        edit_repayment_id_raw = (request.args.get("edit_repayment_id") or "").strip()
+        try:
+            edit_repayment_id = int(edit_repayment_id_raw) if edit_repayment_id_raw else None
+        except ValueError:
+            edit_repayment_id = None
+
+        if edit_repayment_id is not None and not any(row["id"] == edit_repayment_id for row in repayments):
+            edit_repayment_id = None
 
         all_categories = db.execute(
             "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name",
@@ -2209,6 +2224,7 @@ def create_app(test_config=None):
             tx_confidence_options=transaction_confidence_filter_options(),
             tx_sources=tx_sources,
             household_role=g.household_role,
+            edit_repayment_id=edit_repayment_id,
         )
 
     @app.post("/settlement-payments")
@@ -2217,7 +2233,7 @@ def create_app(test_config=None):
         payment_date = (request.form.get("date") or "").strip()
         from_person = normalize_paid_by(request.form.get("from_person", ""))
         to_person = normalize_paid_by(request.form.get("to_person", ""))
-        amount = parse_money(request.form.get("amount", ""))
+        amount = parse_positive_money_2dp(request.form.get("amount", ""))
         note = (request.form.get("note") or "").strip()
 
         if not payment_date:
@@ -2229,8 +2245,8 @@ def create_app(test_config=None):
         if from_person == to_person:
             flash("From and To must be different people.")
             return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
-        if amount is None or amount <= 0:
-            flash("Repayment amount must be greater than 0.")
+        if amount is None:
+            flash("Repayment amount must be a positive number with up to 2 decimal places.")
             return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
 
         db = get_db()
@@ -2243,6 +2259,52 @@ def create_app(test_config=None):
         )
         db.commit()
         flash("Repayment recorded")
+        return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
+
+    @app.post("/settlement-payments/<int:payment_id>/edit")
+    @login_required
+    def edit_settlement_payment(payment_id):
+        payment_date = (request.form.get("date") or "").strip()
+        from_person = normalize_paid_by(request.form.get("from_person", ""))
+        to_person = normalize_paid_by(request.form.get("to_person", ""))
+        amount = parse_positive_money_2dp(request.form.get("amount", ""))
+        note = (request.form.get("note") or "").strip()
+
+        redirect_params = current_filter_redirect_params(request.form)
+        redirect_params["edit_repayment_id"] = payment_id
+
+        if not payment_date:
+            flash("Repayment date is required.")
+            return redirect(url_for("dashboard", **redirect_params))
+        if from_person not in {"DK", "YZ"} or to_person not in {"DK", "YZ"}:
+            flash("Repayment parties must be DK or YZ.")
+            return redirect(url_for("dashboard", **redirect_params))
+        if from_person == to_person:
+            flash("From and To must be different people.")
+            return redirect(url_for("dashboard", **redirect_params))
+        if amount is None:
+            flash("Repayment amount must be a positive number with up to 2 decimal places.")
+            return redirect(url_for("dashboard", **redirect_params))
+
+        db = get_db()
+        existing = db.execute(
+            "SELECT id FROM settlement_payments WHERE id = ? AND household_id = ?",
+            (payment_id, g.household_id),
+        ).fetchone()
+        if existing is None:
+            flash("Repayment not found.")
+            return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
+
+        db.execute(
+            """
+            UPDATE settlement_payments
+            SET date = ?, from_person = ?, to_person = ?, amount = ?, note = ?
+            WHERE id = ? AND household_id = ?
+            """,
+            (payment_date, from_person, to_person, amount, note, payment_id, g.household_id),
+        )
+        db.commit()
+        flash("Repayment updated")
         return redirect(url_for("dashboard", **current_filter_redirect_params(request.form)))
 
     @app.post("/settlement-payments/<int:payment_id>/delete")

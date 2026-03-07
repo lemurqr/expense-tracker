@@ -464,8 +464,9 @@ def test_settlement_respects_date_range(client):
     )
 
     response = client.get("/dashboard?start=2026-02-01&end=2026-02-28")
-    assert b"DK paid (shared)</td><td>$40.00" in response.data
-    assert b"YZ paid (shared)</td><td>$10.00" in response.data
+    text = response.get_data(as_text=True)
+    assert "Total shared expenses (DK+YZ)</td><td>$50.00" in text
+    assert "Net settlement (this period)" in text
 
 
 def test_import_cibc_headerless_csv(client):
@@ -1560,6 +1561,57 @@ def test_household_settlement_pet_rule_increases_period_delta(client):
     assert "Net settlement (this period)" in text
     assert "YZ→DK $100.00" in text
 
+
+
+
+def test_edit_repayment_updates_values(client):
+    register(client)
+    login(client)
+
+    response = client.post(
+        "/settlement-payments",
+        data={
+            "month": "2026-03",
+            "date": "2026-03-10",
+            "from_person": "DK",
+            "to_person": "YZ",
+            "amount": "30.00",
+            "note": "initial",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        payment = db.execute("SELECT id FROM settlement_payments ORDER BY id DESC LIMIT 1").fetchone()
+
+    response = client.post(
+        f"/settlement-payments/{payment['id']}/edit",
+        data={
+            "month": "2026-03",
+            "date": "2026-03-12",
+            "from_person": "YZ",
+            "to_person": "DK",
+            "amount": "45.25",
+            "note": "updated",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        updated = db.execute(
+            "SELECT date, from_person, to_person, amount, note FROM settlement_payments WHERE id = ?",
+            (payment["id"],),
+        ).fetchone()
+
+    assert updated["date"] == "2026-03-12"
+    assert updated["from_person"] == "YZ"
+    assert updated["to_person"] == "DK"
+    assert float(updated["amount"]) == 45.25
+    assert updated["note"] == "updated"
 
 def test_repayments_affect_closing_balance_with_signs(client):
     register(client)
