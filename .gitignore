@@ -1,0 +1,26 @@
+# Local app data / databases
+instance/
+*.sqlite
+*.sqlite3
+*.db
+
+# Personal exports / trackers (keep these out of git)
+archive/
+AMEX*_header*.csv
+Budget*.csv
+Summary*.csv
+cibc*.csv
+
+# Windows/editor junk
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Personal spreadsheets
+*.xlsx
+*.xls
+
+# Ignore ad-hoc CSVs in repo root (keep tests/fixtures tracked)
+/*.csv
