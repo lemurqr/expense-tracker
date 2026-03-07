@@ -685,6 +685,11 @@ def migration_010(conn):
     )
 
 
+def migration_011(conn):
+    add_column_if_missing(conn, "import_staging", "amount_override NUMERIC")
+    add_column_if_missing(conn, "import_staging", "has_override INTEGER NOT NULL DEFAULT 0")
+    conn.execute("UPDATE import_staging SET has_override = 0 WHERE has_override IS NULL")
+
 
 MIGRATIONS = [
     (1, migration_001),
@@ -697,6 +702,7 @@ MIGRATIONS = [
     (8, migration_008),
     (9, migration_009),
     (10, migration_010),
+    (11, migration_011),
 ]
 
 

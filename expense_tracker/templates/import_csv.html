@@ -158,7 +158,7 @@
   {% endif %}
 
   {% if preview_rows %}
-  <form method="post" action="{{ url_for('apply_preview_edits') }}" id="previewEditForm">
+  <form method="post" id="previewEditForm" onsubmit="return false;">
     <p class="inline-form">
       <label>Paid by (default for this import)
         <select name="import_default_paid_by" id="importDefaultPaidBy">
@@ -168,13 +168,7 @@
         </select>
       </label>
       <button type="button" id="fillPaidByFromDefault">Fill missing with default</button>
-      <button
-        type="submit"
-        formaction="{{ url_for('import_preview_action') }}"
-        formmethod="post"
-        name="action"
-        value="apply_paid_by_selected"
-      >Apply to selected</button>
+      <button type="button" id="applyPaidBySelected">Apply to selected</button>
     </p>
     <p class="inline-form">
       <label>Category
@@ -185,27 +179,21 @@
           {% endfor %}
         </select>
       </label>
-      <button
-        type="submit"
-        formaction="{{ url_for('import_preview_action') }}"
-        formmethod="post"
-        name="action"
-        value="apply_category_selected"
-      >Apply category to selected</button>
+      <button type="button" id="applyCategorySelected">Apply category to selected</button>
       <label class="inline-form"><input type="checkbox" id="lowConfidenceToggle" {% if low_confidence_filter %}checked{% endif %}> Show only low-confidence (&lt; 80)</label>
     </p>
     <table>
       <thead>
-        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Confidence</th><th>Source</th></tr>
+        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Edited</th><th>Confidence</th><th>Source</th></tr>
       </thead>
       <tbody>
         {% for row in preview_rows %}
-        <tr class="preview-row" data-row-index="{{ row.row_index }}" data-vendor-key="{{ row.vendor_key }}" data-vendor-rule-key="{{ row.vendor_rule_key }}" data-description-rule-key="{{ row.description_rule_key }}" data-confidence="{{ row.confidence }}">
+        <tr class="preview-row" data-row-index="{{ row.row_index }}" data-row-id="{{ row.staging_id }}" data-vendor-key="{{ row.vendor_key }}" data-vendor-rule-key="{{ row.vendor_rule_key }}" data-description-rule-key="{{ row.description_rule_key }}" data-confidence="{{ row.confidence }}">
           <td><input type="checkbox" class="row-check row-select" name="selected_row_ids" value="{{ row.staging_id }}" {% if row.selected is not defined or row.selected %}checked{% endif %}></td>
           <td>{{ row.date }}</td>
-          <td>{{ '%.2f'|format(row.amount) }}</td>
+          <td><input type="number" step="0.01" class="amount-input" value="{{ '%.2f'|format((row.amount_override|default(None, true)) if (row.amount_override|default(None, true)) is not none else row.amount) }}"></td>
           <td>{{ row.description }}</td>
-          <td><input name="override_vendor_{{ row.row_index }}" value="{{ row.vendor or "" }}"></td>
+          <td><input class="vendor-input" name="override_vendor_{{ row.row_index }}" value="{{ row.vendor or "" }}"></td>
           <td>
             <select name="override_paid_by_{{ row.row_index }}" class="paid-by-select">
               <option value="" {% if not row.paid_by %}selected{% endif %}>-- Select --</option>
@@ -238,6 +226,7 @@
               </select>
             </label>
           </td>
+          <td><span class="edited-badge" {% if not (row.has_override|default(False, true)) and not row.override_category %}hidden{% endif %}>Edited</span></td>
           <td>
             {% if row.suggested_source == 'transfer' %}
               <span class="confidence-badge confidence-transfer badge-transfer">Transfer</span>
@@ -273,7 +262,7 @@
     <input type="hidden" name="skip_payments" value="{{ 1 if skip_payments else 0 }}">
     <p id="applyVendorMessage" class="legend-text"></p>
     <p class="legend-text">Rows with manual/bulk override are highlighted.</p>
-    <button type="submit" name="action" value="apply">Apply preview edits</button>
+    
   </form>
 
   <form method="post">
@@ -317,6 +306,25 @@
   const previewToggleForm = document.getElementById('preview-toggle-form');
   const previewToggleSelectedContainer = document.getElementById('preview-toggle-selected-row-ids');
   const confirmSelectedContainer = document.getElementById('confirm-selected-row-ids');
+  const applyPaidBySelectedButton = document.getElementById('applyPaidBySelected');
+  const applyCategorySelectedButton = document.getElementById('applyCategorySelected');
+  const bulkCategoryId = document.getElementById('bulkCategoryId');
+
+  const postRowUpdate = async (row, payload) => {
+    if (!row || !importId) return false;
+    const rowId = parseInt(row.dataset.rowId || '0', 10);
+    if (!rowId) return false;
+    const response = await fetch('/import/preview/row_update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ import_id: importId, row_id: rowId, ...payload }),
+    });
+    if (!response.ok) return false;
+    const badge = row.querySelector('.edited-badge');
+    if (badge) badge.hidden = false;
+    markRowOverridden(row, true);
+    return true;
+  };
 
   const selectedRowIds = () => Array.from(rowSelectCheckboxes)
     .filter((checkbox) => checkbox.checked && !checkbox.disabled)
@@ -490,12 +498,82 @@
   }
 
   if (fillPaidByFromDefaultButton) {
-    fillPaidByFromDefaultButton.addEventListener('click', () => {
+    fillPaidByFromDefaultButton.addEventListener('click', async () => {
       const value = importDefaultPaidBy ? importDefaultPaidBy.value : '';
       if (!value) return;
-      document.querySelectorAll('.paid-by-select').forEach((select) => {
-        if (!select.value) select.value = value;
-      });
+      let updated = 0;
+      const rows = Array.from(document.querySelectorAll('.preview-row'));
+      for (const row of rows) {
+        const select = row.querySelector('.paid-by-select');
+        if (select && !select.value) {
+          select.value = value;
+          if (await postRowUpdate(row, { paid_by: value })) updated += 1;
+        }
+      }
+      showAppliedMessage(updated);
+    });
+  }
+
+  document.querySelectorAll('.amount-input').forEach((input) => {
+    input.addEventListener('change', async (event) => {
+      const row = event.target.closest('.preview-row');
+      await postRowUpdate(row, { amount_override: event.target.value });
+    });
+  });
+
+  document.querySelectorAll('.vendor-input').forEach((input) => {
+    input.addEventListener('change', async (event) => {
+      const row = event.target.closest('.preview-row');
+      await postRowUpdate(row, { vendor: event.target.value });
+    });
+  });
+
+  document.querySelectorAll('.paid-by-select').forEach((select) => {
+    select.addEventListener('change', async (event) => {
+      const row = event.target.closest('.preview-row');
+      await postRowUpdate(row, { paid_by: event.target.value });
+    });
+  });
+
+  document.querySelectorAll('.category-select').forEach((select) => {
+    select.addEventListener('change', async (event) => {
+      const row = event.target.closest('.preview-row');
+      await postRowUpdate(row, { override_category: event.target.value });
+    });
+  });
+
+  if (applyPaidBySelectedButton) {
+    applyPaidBySelectedButton.addEventListener('click', async () => {
+      const value = importDefaultPaidBy ? importDefaultPaidBy.value : '';
+      if (!value) return;
+      let updated = 0;
+      for (const row of document.querySelectorAll('.preview-row')) {
+        const checkbox = row.querySelector('.row-select');
+        const select = row.querySelector('.paid-by-select');
+        if (!checkbox || !checkbox.checked || !select) continue;
+        select.value = value;
+        if (await postRowUpdate(row, { paid_by: value })) updated += 1;
+      }
+      showAppliedMessage(updated);
+    });
+  }
+
+  if (applyCategorySelectedButton) {
+    applyCategorySelectedButton.addEventListener('click', async () => {
+      const categorySelect = bulkCategoryId;
+      if (!categorySelect) return;
+      const selectedOption = categorySelect.options[categorySelect.selectedIndex];
+      const categoryName = selectedOption ? selectedOption.text : '';
+      let updated = 0;
+      for (const row of document.querySelectorAll('.preview-row')) {
+        const checkbox = row.querySelector('.row-select');
+        const rowCategory = row.querySelector('.category-select');
+        if (!checkbox || !checkbox.checked || !rowCategory) continue;
+        rowCategory.value = categoryName;
+        toggleApplyAllOption(rowCategory);
+        if (await postRowUpdate(row, { override_category: categoryName })) updated += 1;
+      }
+      showAppliedMessage(updated);
     });
   }
 

@@ -239,6 +239,70 @@ def test_import_preview_toggle_is_reversible_and_preserves_staged_edits(client):
     )
     assert b"Imported 51 transaction(s)." in confirm_response.data
 
+
+
+def test_confirm_import_only_selected_rows_are_inserted(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {"user_id": 1, "row_index": i, "date": "2026-09-01", "amount": -10.0 - i, "description": f"Row {i}", "vendor": f"Row {i}", "category": "Groceries", "selected": i < 2}
+        for i in range(5)
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="preview-selected-only")
+    response = client.post('/import/csv', data={"action": "confirm", "import_id": import_id}, follow_redirects=True)
+    assert response.status_code == 200
+    assert b"Imported 2 transaction(s)." in response.data
+
+
+def test_row_update_amount_override_used_on_confirm(client):
+    register(client)
+    login(client)
+    import_id = stage_import_preview(
+        client,
+        [{"user_id": 1, "row_index": 0, "date": "2026-09-02", "amount": -10.0, "description": "Coffee", "vendor": "Coffee", "category": "Groceries", "paid_by": "DK"}],
+        preview_id="preview-override-amount",
+    )
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute("SELECT id FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["id"]
+
+    update_response = client.post('/import/preview/row_update', json={"import_id": import_id, "row_id": row_id, "amount_override": "123.45"})
+    assert update_response.status_code == 200
+
+    client.post('/import/csv', data={"action": "confirm", "import_id": import_id}, follow_redirects=True)
+    with client.application.app_context():
+        db = client.application.get_db()
+        amount = db.execute("SELECT amount FROM expenses WHERE description = 'Coffee'").fetchone()["amount"]
+    assert amount == pytest.approx(123.45)
+
+
+def test_confirm_normalizes_transfer_and_payment_as_outflows(client):
+    register(client)
+    login(client)
+    rows = [
+        {"user_id": 1, "row_index": 0, "date": "2026-09-03", "amount": 180.56, "description": "E-TRANSFER SENT TO A", "vendor": "Bank", "category": "", "paid_by": "DK"},
+        {"user_id": 1, "row_index": 1, "date": "2026-09-03", "amount": 719.73, "description": "BILL PAYMENT TELUS", "vendor": "Bank", "category": "", "paid_by": "DK"},
+        {"user_id": 1, "row_index": 2, "date": "2026-09-03", "amount": 50.00, "description": "REFUND FROM STORE", "vendor": "Store", "category": "", "paid_by": "DK"},
+    ]
+    confirm_import(client, rows)
+    with client.application.app_context():
+        db = client.application.get_db()
+        inserted = db.execute("SELECT description, amount FROM expenses ORDER BY id ASC").fetchall()
+    assert inserted[0]["amount"] == pytest.approx(-180.56)
+    assert inserted[1]["amount"] == pytest.approx(-719.73)
+    assert inserted[2]["amount"] == pytest.approx(50.0)
+
+
+def test_dedupe_ignores_paid_by_and_category(client):
+    register(client)
+    login(client)
+    rows = [{"user_id": 1, "row_index": 0, "date": "2026-09-04", "amount": -20.0, "description": "Same Tx", "vendor": "Shop", "category": "Groceries", "paid_by": "DK"}]
+    first = confirm_import(client, rows)
+    assert b"Imported 1 transaction(s)." in first.data
+    rows_second = [{"user_id": 1, "row_index": 0, "date": "2026-09-04", "amount": -20.0, "description": "Same Tx", "vendor": "Shop", "category": "Restaurants", "paid_by": "YZ"}]
+    second = confirm_import(client, rows_second)
+    assert b"Imported 0 transaction(s)." in second.data
 def test_register_login_logout(client):
     response = register(client)
     assert b"Registration successful" in response.data
