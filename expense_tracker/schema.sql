@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     is_personal INTEGER NOT NULL DEFAULT 0,
     category_confidence INTEGER,
     category_source TEXT,
+    txn_hash TEXT,
     tags TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users (id),
@@ -73,6 +74,9 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_expenses_household_txn_hash
+ON expenses(household_id, txn_hash);
+
 CREATE TABLE IF NOT EXISTS category_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -84,4 +88,15 @@ CREATE TABLE IF NOT EXISTS category_rules (
     last_used_at TEXT,
     source TEXT DEFAULT 'manual',
     enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS import_staging (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    import_id TEXT NOT NULL,
+    household_id INTEGER,
+    user_id INTEGER,
+    created_at TEXT NOT NULL,
+    row_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'preview',
+    selected INTEGER NOT NULL DEFAULT 1
 );

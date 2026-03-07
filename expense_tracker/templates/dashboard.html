@@ -261,7 +261,7 @@
             {% endfor %}
           </select>
         </label>
-        <label>Description contains <input type="text" form="tx-filters-form" name="tx_q" value="{{ tx_filter_values.tx_q }}"></label>
+        <label class="tx-description-filter">Description contains <input type="text" form="tx-filters-form" name="tx_q" value="{{ tx_filter_values.tx_q }}"></label>
         <label>Confidence
           <select form="tx-filters-form" name="tx_confidence_bucket">
             {% for option in tx_confidence_options %}
@@ -284,11 +284,13 @@
             <option value="exclude" {% if tx_filter_values.tx_transfer_mode == 'exclude' %}selected{% endif %}>Exclude transfers</option>
           </select>
         </label>
-        <div class="inline-form">
+      </div>
+      <div class="tx-filters-actions">
+        <div class="tx-filters-buttons">
           <button type="submit" form="tx-filters-form">Apply filters</button>
-          <a class="button" href="{{ url_for('dashboard', month=selected_month, start=start_date, end=end_date) }}">Clear</a>
-          <small>Active filters: {{ active_tx_filter_count }}</small>
+          <a class="button button-secondary" href="{{ url_for('dashboard', month=selected_month, start=start_date, end=end_date) }}">Clear</a>
         </div>
+        <span class="tx-active-filters-badge">Active filters: {{ active_tx_filter_count }}</span>
       </div>
     </div>
 

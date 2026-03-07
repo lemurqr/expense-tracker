@@ -297,6 +297,22 @@ def normalize_description(value):
     return re.sub(r"\s+", " ", no_accents)
 
 
+
+
+def build_transaction_hash(household_id, tx_date, normalized_amount, vendor, description, source_type=""):
+    vendor_or_description = normalize_description(vendor) or normalize_description(description)
+    source_key = normalize_description(source_type)
+    signature = "|".join(
+        [
+            str(household_id or ""),
+            str(tx_date or ""),
+            f"{float(normalized_amount):.2f}" if normalized_amount is not None else "",
+            vendor_or_description,
+            source_key,
+        ]
+    )
+    return hashlib.sha256(signature.encode("utf-8")).hexdigest()
+
 def normalize_csv_category_name(value):
     return re.sub(r"\s+", " ", (value or "").strip())
 
@@ -705,12 +721,13 @@ def preview_rows_for_display(rows, show_all=False, limit=IMPORT_PREVIEW_DEFAULT_
 def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=None):
     created_at = datetime.utcnow().isoformat()
     for row in rows:
+        is_selected = bool(row.get("selected", True))
         db.execute(
             """
-            INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status)
-            VALUES (?, ?, ?, ?, ?, 'preview')
+            INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status, selected)
+            VALUES (?, ?, ?, ?, ?, 'preview', ?)
             """,
-            (import_id, household_id, user_id, created_at, json.dumps({**row, "selected": bool(row.get("selected", True))})),
+            (import_id, household_id, user_id, created_at, json.dumps({**row, "selected": is_selected}), 1 if is_selected else 0),
         )
 
 
@@ -720,6 +737,7 @@ def get_staged_preview_rows(db, import_id, household_id=None, user_id=None):
     for record in records:
         row = dict(record["row"])
         row["staging_id"] = record["id"]
+        row["selected"] = bool(record.get("selected", row.get("selected", True)))
         parsed_rows.append(row)
     return parsed_rows
 
@@ -736,7 +754,7 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
 
     staged_rows = db.execute(
         f"""
-        SELECT id, row_json FROM import_staging
+        SELECT id, row_json, selected FROM import_staging
         WHERE {' AND '.join(filters)}
         ORDER BY id ASC
         """,
@@ -748,14 +766,15 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
     parsed_rows = []
     for row in staged_rows:
         try:
-            parsed_rows.append({"id": row["id"], "row": json.loads(row["row_json"])})
+            parsed_rows.append({"id": row["id"], "selected": bool(row["selected"]), "row": json.loads(row["row_json"])})
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
     return parsed_rows
 
 
 def update_staged_preview_row(db, staging_id, row):
-    db.execute("UPDATE import_staging SET row_json = ? WHERE id = ?", (json.dumps(row), staging_id))
+    is_selected = bool(row.get("selected", True))
+    db.execute("UPDATE import_staging SET row_json = ?, selected = ? WHERE id = ?", (json.dumps(row), 1 if is_selected else 0, staging_id))
 
 
 
@@ -771,6 +790,49 @@ def parse_selected_row_ids(values):
     return list(dict.fromkeys(selected_row_ids))
 
 
+def set_staged_row_selection(db, import_id, staging_id, selected, household_id=None, user_id=None):
+    filters = ["id = ?", "import_id = ?"]
+    params = [staging_id, import_id]
+    if household_id is not None:
+        filters.append("household_id = ?")
+        params.append(household_id)
+    if user_id is not None:
+        filters.append("user_id = ?")
+        params.append(user_id)
+
+    row = db.execute(
+        f"SELECT id FROM import_staging WHERE {' AND '.join(filters)}",
+        tuple(params),
+    ).fetchone()
+    if row is None:
+        return 0
+
+    selected_value = 1 if bool(selected) else 0
+    db.execute(
+        f"UPDATE import_staging SET selected = ? WHERE {' AND '.join(filters)}",
+        (selected_value, *params),
+    )
+    return 1
+
+
+def bulk_set_staged_selection(db, import_id, selected, household_id=None, user_id=None):
+    filters = ["import_id = ?"]
+    params = [import_id]
+    if household_id is not None:
+        filters.append("household_id = ?")
+        params.append(household_id)
+    if user_id is not None:
+        filters.append("user_id = ?")
+        params.append(user_id)
+
+    selected_value = 1 if bool(selected) else 0
+    result = db.execute(
+        f"UPDATE import_staging SET selected = ? WHERE {' AND '.join(filters)}",
+        (selected_value, *params),
+    )
+    return result.rowcount
+
+
 def update_staged_selection(db, import_id, selected_row_ids, household_id=None, user_id=None):
     records = get_staged_preview_row_records(db, import_id, household_id=household_id, user_id=user_id)
     if not records:
@@ -778,10 +840,11 @@ def update_staged_selection(db, import_id, selected_row_ids, household_id=None, 
     selected_set = set(selected_row_ids)
     updated = 0
     for record in records:
-        row = record["row"]
         is_selected = record["id"] in selected_set
-        if bool(row.get("selected", True)) == is_selected:
+        if bool(record.get("selected", True)) == is_selected:
             continue
+        db.execute("UPDATE import_staging SET selected = ? WHERE id = ?", (1 if is_selected else 0, record["id"]))
+        row = record["row"]
         row["selected"] = is_selected
         update_staged_preview_row(db, record["id"], row)
         updated += 1
@@ -2715,7 +2778,7 @@ def create_app(test_config=None):
 
         for record in records:
             row = record["row"]
-            row["selected"] = record["id"] in selected_set if selected_row_ids else bool(row.get("selected", True))
+            row["selected"] = record["id"] in selected_set if selected_row_ids else bool(record.get("selected", True))
             row_index = row.get("row_index")
             if row_index is None:
                 continue
@@ -2758,6 +2821,56 @@ def create_app(test_config=None):
             redirect_args["low_confidence"] = "1"
         return redirect(url_for("import_csv", **redirect_args))
 
+    @app.post("/import/preview/selection")
+    @login_required
+    def import_preview_selection():
+        payload = request.get_json(silent=True) or {}
+        import_id = (payload.get("import_id") or "").strip()
+        try:
+            row_id = int(payload.get("row_id"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid_row_id"}), 400
+
+        if not import_id or row_id <= 0:
+            return jsonify({"ok": False, "error": "invalid_payload"}), 400
+
+        db = get_db()
+        updated = set_staged_row_selection(
+            db,
+            import_id,
+            row_id,
+            bool(payload.get("selected", True)),
+            household_id=g.household_id,
+            user_id=g.user["id"],
+        )
+        if updated <= 0:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        db.commit()
+        return jsonify({"ok": True})
+
+    @app.post("/import/preview/selection/bulk")
+    @login_required
+    def import_preview_selection_bulk():
+        payload = request.get_json(silent=True) or {}
+        import_id = (payload.get("import_id") or "").strip()
+        if not import_id:
+            return jsonify({"ok": False, "error": "invalid_payload"}), 400
+
+        scope = (payload.get("scope") or "all").strip().lower()
+        if scope != "all":
+            return jsonify({"ok": False, "error": "unsupported_scope"}), 400
+
+        db = get_db()
+        updated = bulk_set_staged_selection(
+            db,
+            import_id,
+            bool(payload.get("selected", True)),
+            household_id=g.household_id,
+            user_id=g.user["id"],
+        )
+        db.commit()
+        return jsonify({"ok": True, "updated": updated})
+
     @app.post("/import/preview/action")
     @login_required
     def import_preview_action():
@@ -2785,9 +2898,6 @@ def create_app(test_config=None):
             return redirect(url_for("import_csv", **redirect_args))
 
         db = get_db()
-        update_staged_selection(db, import_id, selected_row_ids, household_id=g.household_id, user_id=g.user["id"])
-        db.commit()
-
         placeholders = ",".join(["?"] * len(selected_row_ids))
         staged_rows = db.execute(
             f"""
@@ -2944,10 +3054,15 @@ def create_app(test_config=None):
                 if not parsed_rows:
                     flash("Preview expired. Please re-upload the file.")
                     return redirect(url_for("import_csv"))
+
                 selected_rows = [row for row in parsed_rows if bool(row.get("selected", True))]
                 imported_count = 0
                 preview_count = len(parsed_rows)
                 selected_count = len(selected_rows)
+                skipped_duplicates = 0
+                skipped_invalid = 0
+                skipped_payments_transfers = 0
+                skipped_unselected = max(preview_count - selected_count, 0)
 
                 category_rows = db.execute(
                     "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
@@ -2962,7 +3077,7 @@ def create_app(test_config=None):
                 has_paid_by_overrides = any(key.startswith("override_paid_by_") for key in request.form.keys())
                 if raw_default_paid_by is None and not has_paid_by_overrides:
                     default_paid_by = "DK"
-                skipped_count = 0
+
                 uncategorized_unmapped_count = 0
                 for index, row in enumerate(selected_rows):
                     row_index = row.get("row_index", index)
@@ -2981,7 +3096,7 @@ def create_app(test_config=None):
 
                     parsed_amount = parse_money(str(row.get("amount", "")))
                     if parsed_amount is None:
-                        skipped_count += 1
+                        skipped_invalid += 1
                         continue
                     row_source_type = row.get("source_type") or "bank"
                     row_refund_or_payment = bool(
@@ -3000,20 +3115,6 @@ def create_app(test_config=None):
                     if row.get("amount", 0) < 0 and not paid_by_override:
                         flash("Cannot import spending rows with missing Paid by. Fill missing values and confirm again.")
                         return redirect(url_for("import_csv"))
-
-                    candidates = db.execute(
-                        """
-                        SELECT description FROM expenses
-                        WHERE household_id = ? AND date = ? AND amount = ?
-                        """,
-                        (g.household_id, row["date"], row["amount"]),
-                    ).fetchall()
-                    if any(
-                        normalize_description(item["description"]) == row["normalized_description"]
-                        for item in candidates
-                    ):
-                        skipped_count += 1
-                        continue
 
                     category_id = None
                     assigned_category = ""
@@ -3055,15 +3156,22 @@ def create_app(test_config=None):
                     is_personal = assigned_category == "Personal"
                     is_transfer = is_transfer_transaction(row.get("description", ""), assigned_category)
 
-                    db.execute(
-                        """
-                        INSERT INTO expenses (
-                            user_id, household_id, date, amount, category_id, description, vendor, paid_by,
-                            is_transfer, is_personal, category_confidence, category_source, tags
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
+                    txn_hash = build_transaction_hash(
+                        g.household_id,
+                        row.get("date", ""),
+                        row.get("amount"),
+                        row.get("vendor", ""),
+                        row.get("description", ""),
+                        row_source_type,
+                    )
+
+                    result = db.insert_ignore(
+                        "expenses",
+                        [
+                            "user_id", "household_id", "date", "amount", "category_id", "description", "vendor", "paid_by",
+                            "is_transfer", "is_personal", "category_confidence", "category_source", "tags", "txn_hash",
+                        ],
+                        [
                             g.user["id"],
                             g.household_id,
                             row["date"],
@@ -3077,8 +3185,14 @@ def create_app(test_config=None):
                             categorized["confidence"],
                             categorized["source"],
                             json.dumps(row.get("tags") or derive_tags(row.get("description", ""))),
-                        ),
+                            txn_hash,
+                        ],
+                        ["household_id", "txn_hash"],
                     )
+                    if result.rowcount <= 0:
+                        skipped_duplicates += 1
+                        continue
+
                     if override and category_id and normalize_description(override) != normalize_description(
                         row.get("auto_category", "")
                     ):
@@ -3104,15 +3218,26 @@ def create_app(test_config=None):
                 has_header = request.form.get("has_header", "0") == "1"
                 save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=request.form.get("file_signature", ""))
 
-                log_audit("import", details={"imported_count": imported_count, "preview_count": preview_count, "skipped_count": skipped_count}, db=db)
+                summary = {
+                    "preview_total_rows": preview_count,
+                    "selected_rows": selected_count,
+                    "inserted_rows": imported_count,
+                    "skipped_unselected": skipped_unselected,
+                    "skipped_duplicates": skipped_duplicates,
+                    "skipped_invalid": skipped_invalid,
+                    "skipped_payments_transfers": skipped_payments_transfers,
+                }
+                log_audit("import", details=summary, db=db)
                 db.execute("DELETE FROM import_staging WHERE import_id = ?", (import_id,))
                 db.commit()
                 save_import_preview_state(g.user["id"], [], preview_id="")
                 clear_import_preview_show_all(g.user["id"], import_id)
-                unselected_count = max(preview_count - selected_count, 0)
                 flash(f"Imported {imported_count} transaction(s).")
-                flash(f"Selected rows: {selected_count} · Inserted: {imported_count} · Skipped (unselected): {unselected_count}.")
-                flash(f"Preview rows: {preview_count} · inserted: {imported_count} · skipped duplicates/invalid: {skipped_count}.")
+                flash(
+                    f"Preview rows: {preview_count} · Selected: {selected_count} · Inserted: {imported_count} · "
+                    f"Skipped unselected: {skipped_unselected} · Skipped duplicates: {skipped_duplicates} · "
+                    f"Skipped invalid: {skipped_invalid} · Skipped payments/transfers: {skipped_payments_transfers}."
+                )
                 if uncategorized_unmapped_count:
                     flash(f"{uncategorized_unmapped_count} rows imported as Uncategorized because CSV categories were not mapped.")
                 return redirect(url_for("dashboard"))
@@ -3346,11 +3471,6 @@ def create_app(test_config=None):
         import_id = (request.args.get("import_id") or "").strip()
         if import_id:
             db = get_db()
-            selected_row_ids = parse_selected_row_ids(request.args.getlist("selected_row_ids"))
-            if selected_row_ids:
-                update_staged_selection(db, import_id, selected_row_ids, household_id=g.household_id, user_id=g.user["id"])
-                db.commit()
-
             parsed_rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
             if not parsed_rows:
                 flash("Preview expired. Please re-upload the file.")

@@ -247,3 +247,18 @@ def test_migration_009_creates_household_members_unique_index(tmp_path):
     indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
     assert "uq_household_members_household_user" in indexes
     conn.close()
+
+
+def test_migration_010_adds_selection_and_txn_hash_indexes(tmp_path):
+    db_path = tmp_path / "migration_010.sqlite"
+    apply_migrations(str(db_path))
+
+    conn = sqlite3.connect(db_path)
+    staging_cols = {row[1] for row in conn.execute("PRAGMA table_info(import_staging)").fetchall()}
+    expense_cols = {row[1] for row in conn.execute("PRAGMA table_info(expenses)").fetchall()}
+    indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+
+    assert "selected" in staging_cols
+    assert "txn_hash" in expense_cols
+    assert "uq_expenses_household_txn_hash" in indexes
+    conn.close()
