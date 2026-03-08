@@ -972,7 +972,7 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
 
     client.post(
         "/expenses/new",
-        data={"date": "2026-04-01", "amount": "100", "category_id": str(grocery_id), "description": "IGA"},
+        data={"date": "2026-04-01", "amount": "-100", "category_id": str(grocery_id), "description": "IGA"},
         follow_redirects=True,
     )
     client.post(
@@ -1019,7 +1019,7 @@ def test_dashboard_shared_category_chart_shows_top_10_and_other(client):
             "/expenses/new",
             data={
                 "date": "2026-04-10",
-                "amount": str(index + 1),
+                "amount": str(-(index + 1)),
                 "category_id": str(row["id"]),
                 "description": f"Expense {index + 1}",
             },
@@ -1040,6 +1040,42 @@ def test_dashboard_shared_category_chart_shows_top_10_and_other(client):
     assert len(chart_data) == 11
     assert chart_data[-1]["label"] == "Other"
     assert all(item["value"] >= 0 for item in chart_data)
+
+
+def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_categories(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        gifts_id = db.execute("SELECT id FROM categories WHERE name = 'Gifts & Presents'").fetchone()["id"]
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-01", "amount": "-500", "category_id": str(groceries_id), "description": "Groceries expense"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-02", "amount": "100", "category_id": str(groceries_id), "description": "Groceries reimbursement"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-03", "amount": "20", "category_id": str(gifts_id), "description": "Gift reimbursement only"},
+        follow_redirects=True,
+    )
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+
+    match = re.search(r"const sharedChartData = (\[.*?\]);", text, re.DOTALL)
+    assert match is not None
+    chart_data = json.loads(match.group(1))
+
+    assert any(item["label"] == "Groceries" and item["value"] == 400.0 for item in chart_data)
+    assert not any(item["label"] == "Gifts" for item in chart_data)
 
 
 def test_refund_keeps_original_category_not_transfer(client):
@@ -1599,6 +1635,39 @@ def test_household_settlement_shared_math_sign_and_direction(client):
     assert "Net settlement (this period)" in text
 
 
+def test_household_settlement_includes_positive_shared_reimbursement(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-02-02", amount=-100, category="Groceries", paid_by="DK")
+    _insert_expense(client, date="2026-02-03", amount=40, category="Gifts", paid_by="YZ")
+
+    response = client.get("/dashboard?month=2026-02")
+    text = response.get_data(as_text=True)
+
+    assert "Total shared expenses (DK+YZ)</td><td>$60.00" in text
+    assert "DK paid (shared)</td><td>$100.00" in text
+    assert "YZ paid (shared)</td><td>$-40.00" in text
+    assert "Each share (50/50)</td><td>$30.00" in text
+    assert "Shared settlement" in text
+    assert "YZ→DK $70.00" in text
+
+
+def test_household_settlement_excludes_positive_transfer_reimbursement(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-02-02", amount=-100, category="Groceries", paid_by="DK")
+    _insert_expense(client, date="2026-02-03", amount=40, category="Gifts", paid_by="YZ", is_transfer=1)
+
+    response = client.get("/dashboard?month=2026-02")
+    text = response.get_data(as_text=True)
+
+    assert "Total shared expenses (DK+YZ)</td><td>$100.00" in text
+    assert "Each share (50/50)</td><td>$50.00" in text
+    assert "YZ→DK $50.00" in text
+
+
 def test_household_settlement_pet_rule_increases_period_delta(client):
     register(client)
     login(client)
@@ -1704,6 +1773,22 @@ def test_monthly_breakdown_totals_row_and_owes_columns(client):
     assert "2026-02" in text and "$90.00" in text
     assert "<td><strong>Total</strong></td>" in text
     assert "$230.00" in text
+
+
+def test_monthly_breakdown_nets_positive_reimbursement(client):
+    register(client)
+    login(client)
+
+    _insert_expense(client, date="2026-03-01", amount=-100, category="Groceries", paid_by="DK")
+    _insert_expense(client, date="2026-03-05", amount=40, category="Gifts", paid_by="YZ")
+
+    response = client.get("/dashboard?start=2026-03-01&end=2026-03-31")
+    text = response.get_data(as_text=True)
+
+    assert "2026-03" in text
+    assert "$60.00" in text
+    assert "$0.00" in text
+    assert "$70.00" in text
 
 
 def test_settlement_template_has_collapsible_details_ids(client):

@@ -172,6 +172,52 @@ def test_dashboard_loads_with_postgres_rounding(client):
     assert dashboard.status_code == 200
 
 
+def test_postgres_shared_settlement_nets_positive_reimbursement(client):
+    register_response = register(client, username="pgrefund", password="password")
+    assert register_response.status_code == 200
+
+    login_response = login(client, username="pgrefund", password="password")
+    assert login_response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", ("pgrefund",)).fetchone()
+        household = _ensure_household_for_user(db, user["id"])
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = ?", (user["id"], "Groceries")).fetchone()
+        gifts = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = ?", (user["id"], "Gifts & Presents")).fetchone()
+
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            ("2026-03-01", -100, groceries["id"], "Shared groceries", user["id"], household, "DK"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            ("2026-03-02", 40, gifts["id"], "Shared reimbursement", user["id"], household, "YZ"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, user_id, household_id, paid_by, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)
+            """,
+            ("2026-03-03", 40, gifts["id"], "Transfer reimbursement", user["id"], household, "YZ"),
+        )
+        db.commit()
+
+    dashboard = client.get("/dashboard?month=2026-03")
+    assert dashboard.status_code == 200
+    text = dashboard.get_data(as_text=True)
+
+    assert "Total shared expenses (DK+YZ)</td><td>$60.00" in text
+    assert "Each share (50/50)</td><td>$30.00" in text
+    assert "YZ→DK $70.00" in text
+
+
 def _latest_invite_code(db):
     return db.execute("SELECT code FROM household_invites ORDER BY id DESC LIMIT 1").fetchone()["code"]
 
