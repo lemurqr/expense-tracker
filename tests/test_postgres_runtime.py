@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from expense_tracker import create_app
+from tests.conftest import reset_postgres_tables
 
 
 @pytest.fixture(scope="module")
@@ -22,19 +23,7 @@ def app(postgres_url, monkeypatch):
     with app.app_context():
         app.init_db()
         db = app.get_db()
-        for table in [
-            "audit_logs",
-            "import_staging",
-            "expenses",
-            "category_rules",
-            "categories",
-            "household_members",
-            "household_invites",
-            "households",
-            "users",
-        ]:
-            db.execute(f"DELETE FROM {table}")
-        db.commit()
+        reset_postgres_tables(db)
     yield app
 
 
