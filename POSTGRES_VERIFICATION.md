@@ -7,6 +7,9 @@ Safety split:
 - Runtime DB name: `expense_tracker`
 - Pytest DB name: `expense_tracker_test` (never run cleanup against runtime DB)
 
+Pytest note:
+- `docker compose exec web pytest -q` will auto-target `expense_tracker_test` when `DATABASE_URL` points to Postgres and `TEST_DATABASE_URL` is not set.
+
 ```bash
 docker compose exec web python -c "from expense_tracker import create_app; create_app()"
 docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"

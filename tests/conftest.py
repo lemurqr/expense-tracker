@@ -1,6 +1,7 @@
 import os
 import sys
 from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 import pytest
 
@@ -31,6 +32,11 @@ def _postgres_db_name(database_url):
     return parsed.path.lstrip("/")
 
 
+def _postgres_url_with_db_name(database_url, db_name):
+    parsed = urlparse((database_url or "").strip())
+    return urlunparse(parsed._replace(path=f"/{db_name}"))
+
+
 def assert_not_live_database(database_url, env_var_name):
     db_name = _postgres_db_name(database_url)
     if db_name == LIVE_DB_NAME:
@@ -42,6 +48,11 @@ def assert_not_live_database(database_url, env_var_name):
 
 def get_test_postgres_url():
     url = os.environ.get("TEST_DATABASE_URL", "").strip()
+    if not url:
+        runtime_url = os.environ.get("DATABASE_URL", "").strip()
+        if runtime_url.startswith(("postgres://", "postgresql://")):
+            url = _postgres_url_with_db_name(runtime_url, TEST_DB_NAME)
+            os.environ["TEST_DATABASE_URL"] = url
     if not url:
         pytest.skip("Postgres URL not configured (set TEST_DATABASE_URL)")
     if not url.startswith(("postgres://", "postgresql://")):
@@ -55,15 +66,13 @@ def pytest_sessionstart(session):
     if test_database_url.startswith(("postgres://", "postgresql://")):
         assert_not_live_database(test_database_url, "TEST_DATABASE_URL")
 
-    runtime_database_url = os.environ.get("DATABASE_URL", "").strip()
-    if runtime_database_url.startswith(("postgres://", "postgresql://")):
-        assert_not_live_database(runtime_database_url, "DATABASE_URL")
-
 
 def reset_postgres_tables(db):
     config_name = db.config.get("database_name") if hasattr(db, "config") else None
-    if config_name == LIVE_DB_NAME:
-        raise RuntimeError("Refusing to truncate tables on live database 'expense_tracker'.")
+    if config_name != TEST_DB_NAME:
+        raise RuntimeError(
+            f"Refusing to truncate tables on database '{config_name}'. Tests may only cleanup '{TEST_DB_NAME}'."
+        )
     for table in POSTGRES_CLEANUP_TABLES:
         db.execute(f"DELETE FROM {table}")
     db.commit()
