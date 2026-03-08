@@ -40,6 +40,26 @@ def login(client, username="pguser", password="password"):
     return client.post("/login", data={"username": username, "password": password}, follow_redirects=True)
 
 
+def _ensure_household_for_user(db, user_id):
+    membership = db.execute(
+        "SELECT household_id FROM household_members WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if membership is not None:
+        return membership["household_id"]
+
+    db.execute("INSERT INTO households (name) VALUES (?)", (f"{user_id}-household",))
+    household_id = db.last_insert_id()
+    db.insert_ignore(
+        "household_members",
+        ["household_id", "user_id", "role"],
+        [household_id, user_id, "owner"],
+        ["household_id", "user_id"],
+    )
+    db.commit()
+    return household_id
+
+
 def test_postgres_runtime_paths(client):
     register_response = register(client)
     assert register_response.status_code == 200
@@ -56,6 +76,7 @@ def test_postgres_runtime_paths(client):
     with client.application.app_context():
         db = client.application.get_db()
         user = db.execute("SELECT id FROM users WHERE username = ?", ("pguser",)).fetchone()
+        household_id = _ensure_household_for_user(db, user["id"])
         category_count = db.execute("SELECT COUNT(*) AS count FROM categories WHERE user_id = ?", (user["id"],)).fetchone()["count"]
         assert category_count > 0
 
@@ -82,13 +103,13 @@ def test_postgres_runtime_paths(client):
             INSERT INTO import_staging (import_id, household_id, user_id, created_at, row_json, status)
             VALUES (?, ?, ?, ?, ?, 'preview')
             """,
-            (import_id, 1, user["id"], datetime.utcnow().isoformat(), json.dumps(row_payload)),
+            (import_id, household_id, user["id"], datetime.utcnow().isoformat(), json.dumps(row_payload)),
         )
         db.commit()
 
     confirm = client.post("/import/csv", data={"action": "confirm", "import_id": "pg-preview"}, follow_redirects=True)
     assert confirm.status_code == 200
-    assert b"Imported 1 transaction" in confirm.data
+    assert b"Imported 1 transaction(s)." in confirm.data
 
     settlement = client.get("/settlement")
     assert settlement.status_code == 200
@@ -119,9 +140,7 @@ def test_dashboard_loads_with_postgres_rounding(client):
         category = db.execute(
             "SELECT id FROM categories WHERE user_id = ? ORDER BY id ASC LIMIT 1", (user["id"],)
         ).fetchone()
-        household = db.execute(
-            "SELECT household_id FROM household_members WHERE user_id = ?", (user["id"],)
-        ).fetchone()["household_id"]
+        household = _ensure_household_for_user(db, user["id"])
 
         db.execute(
             """
@@ -161,6 +180,7 @@ def test_postgres_household_membership_and_roles(client):
     with client.application.app_context():
         db = client.application.get_db()
         owner = db.execute("SELECT id FROM users WHERE username = ?", ("dk_owner",)).fetchone()
+        _ensure_household_for_user(db, owner["id"])
         owner_membership = db.execute(
             "SELECT household_id, role FROM household_members WHERE user_id = ?",
             (owner["id"],),
@@ -281,7 +301,7 @@ def test_postgres_dashboard_transaction_filters(client):
     with client.application.app_context():
         db = client.application.get_db()
         user = db.execute("SELECT id FROM users WHERE username = ?", ("pgfilters",)).fetchone()
-        household = db.execute("SELECT household_id FROM household_members WHERE user_id = ?", (user["id"],)).fetchone()["household_id"]
+        household = _ensure_household_for_user(db, user["id"])
         categories = db.execute("SELECT id, name FROM categories WHERE user_id = ? ORDER BY id", (user["id"],)).fetchall()
         groceries = next(row for row in categories if row["name"] == "Groceries")
         restaurants = next(row for row in categories if row["name"] == "Restaurants")
