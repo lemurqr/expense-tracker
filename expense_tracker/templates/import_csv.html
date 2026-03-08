@@ -291,6 +291,53 @@
 </section>
 {% endif %}
 
+
+{% if import_results %}
+<section class="card">
+  <h3>Import results</h3>
+  <p>Inserted: <strong>{{ import_results.inserted }}</strong></p>
+  <p>Skipped: <strong>{{ import_results.skipped }}</strong></p>
+  {% if skipped_result_rows %}
+  <details>
+    <summary>View skipped rows</summary>
+    <form method="post" class="stack-form">
+      <input type="hidden" name="action" value="import_skipped_selected">
+      <input type="hidden" name="import_id" value="{{ preview_id }}">
+      <table>
+        <thead>
+          <tr>
+            <th>Select</th>
+            <th>Row ID</th>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Raw amount</th>
+            <th>Effective amount</th>
+            <th>Skipped reason</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in skipped_result_rows %}
+          <tr>
+            <td><input type="checkbox" name="selected_skipped_row_ids" value="{{ row.staging_id }}"></td>
+            <td>{{ row.staging_id }}</td>
+            <td>{{ row.date }}</td>
+            <td>{{ row.description }}</td>
+            <td>{{ '%.2f'|format(row.amount or 0) }}</td>
+            <td>{% if row.effective_amount is not none %}{{ '%.2f'|format(row.effective_amount) }}{% endif %}</td>
+            <td>{{ row.skipped_reason or '' }}</td>
+            <td>{{ row.skipped_details or '' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <button type="submit">Import selected skipped rows</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
 <script>
   const lowConfidenceToggle = document.getElementById('lowConfidenceToggle');
   const previewCard = document.getElementById('preview-card');

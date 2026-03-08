@@ -98,6 +98,10 @@ CREATE TABLE IF NOT EXISTS import_staging (
     created_at TEXT NOT NULL,
     row_json TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'preview',
+    import_status TEXT,
+    skipped_reason TEXT,
+    skipped_details TEXT,
+    effective_amount NUMERIC,
     selected INTEGER NOT NULL DEFAULT 1,
     amount_override NUMERIC,
     has_override INTEGER NOT NULL DEFAULT 0
