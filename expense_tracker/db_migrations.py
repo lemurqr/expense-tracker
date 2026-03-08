@@ -77,7 +77,7 @@ REQUIRED_TABLES = {
         "indexes": set(),
     },
     "import_staging": {
-        "columns": {"id", "import_id", "household_id", "user_id", "created_at", "row_json", "status", "selected"},
+        "columns": {"id", "import_id", "household_id", "user_id", "created_at", "row_json", "status", "selected", "amount_override", "has_override", "import_status", "skipped_reason", "skipped_details", "effective_amount"},
         "indexes": {"idx_import_staging_import_id", "idx_import_staging_created_at"},
     },
     "settlement_payments": {
@@ -691,6 +691,13 @@ def migration_011(conn):
     conn.execute("UPDATE import_staging SET has_override = 0 WHERE has_override IS NULL")
 
 
+def migration_012(conn):
+    add_column_if_missing(conn, "import_staging", "import_status TEXT")
+    add_column_if_missing(conn, "import_staging", "skipped_reason TEXT")
+    add_column_if_missing(conn, "import_staging", "skipped_details TEXT")
+    add_column_if_missing(conn, "import_staging", "effective_amount NUMERIC")
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
@@ -703,6 +710,7 @@ MIGRATIONS = [
     (9, migration_009),
     (10, migration_010),
     (11, migration_011),
+    (12, migration_012),
 ]
 
 

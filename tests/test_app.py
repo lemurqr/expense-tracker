@@ -2132,7 +2132,7 @@ def test_import_confirm_uses_staging_bulk_edits(client):
     assert edited["paid_by"] == "DK"
     assert edited["category"] == "Staged Bulk Category"
     assert untouched["paid_by"] == "YZ"
-    assert remaining_staging == 0
+    assert remaining_staging == 2
 
 
 def test_import_preview_bulk_action_requires_selection(client):
@@ -2794,7 +2794,7 @@ def test_import_confirm_works_when_session_cleared(client):
     assert count == 1
 
 
-def test_import_confirm_deletes_staging_rows_after_import(client):
+def test_import_confirm_persists_staging_rows_with_results_after_import(client):
     register(client)
     login(client)
 
@@ -2811,7 +2811,9 @@ def test_import_confirm_deletes_staging_rows_after_import(client):
     with client.application.app_context():
         db = client.application.get_db()
         count = db.execute("SELECT COUNT(*) AS c FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["c"]
-    assert count == 0
+        outcome = db.execute("SELECT import_status FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["import_status"]
+    assert count == 1
+    assert outcome == "inserted"
 
 
 def test_import_confirm_preview_expired_when_import_id_missing_or_empty(client):
@@ -3137,7 +3139,7 @@ def test_import_confirm_manual_tracker_refund_is_inserted_positive(client):
             "row_index": 0,
             "user_id": 1,
             "date": "2026-01-10",
-            "amount": -21.0,
+            "amount": 25.0,
             "description": "Refund - school credit",
             "normalized_description": "refund - school credit",
             "vendor": "school",
@@ -3155,7 +3157,37 @@ def test_import_confirm_manual_tracker_refund_is_inserted_positive(client):
         db = client.application.get_db()
         expense = db.execute("SELECT amount FROM expenses WHERE description = ?", ("Refund - school credit",)).fetchone()
     assert expense is not None
-    assert expense["amount"] == 21.0
+    assert expense["amount"] == 25.0
+
+def test_import_confirm_manual_tracker_reimbursement_is_inserted_positive(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-01-10",
+            "amount": 126.46,
+            "description": "Reimbursement from employer",
+            "normalized_description": "reimbursement from employer",
+            "vendor": "employer",
+            "category": "School & Education",
+            "source_type": "manual_tracker",
+            "is_refund_or_payment": False,
+            "paid_by": "",
+        }
+    ]
+
+    response = confirm_import(client, rows)
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute("SELECT amount FROM expenses WHERE description = ?", ("Reimbursement from employer",)).fetchone()
+    assert expense is not None
+    assert expense["amount"] == 126.46
+
 
 def test_import_confirm_inserts_only_selected_rows(client):
     register(client)
@@ -3298,3 +3330,52 @@ def test_import_confirm_skips_duplicate_when_paid_by_and_category_differ(client)
         db = client.application.get_db()
         count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = ?", ("Freshco #101",)).fetchone()["c"]
         assert count == 1
+
+
+def test_import_skipped_duplicate_can_be_overridden(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "date": "2026-11-20",
+            "amount": -42.5,
+            "description": "Freshco override dup",
+            "normalized_description": "freshco override dup",
+            "vendor": "Freshco",
+            "category": "Groceries",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "source_type": "bank",
+            "paid_by": "DK",
+        }
+    ]
+
+    import_id = stage_import_preview(client, rows, preview_id="override-dup")
+    first = client.post("/import/csv", data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"}, follow_redirects=True)
+    assert b"Imported 1 transaction(s)." in first.data
+
+    second_id = stage_import_preview(client, rows, preview_id="override-dup-2")
+    second = client.post("/import/csv", data={"action": "confirm", "import_id": second_id, "import_default_paid_by": "DK"}, follow_redirects=True)
+    assert b"Skipped duplicates: 1" in second.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        skipped_row_id = db.execute(
+            "SELECT id FROM import_staging WHERE import_id = ? AND import_status = 'skipped' AND skipped_reason = 'duplicate'",
+            (second_id,),
+        ).fetchone()["id"]
+
+    overridden = client.post(
+        "/import/csv",
+        data={"action": "import_skipped_selected", "import_id": second_id, "selected_skipped_row_ids": [str(skipped_row_id)]},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 previously skipped row(s)." in overridden.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = ?", ("Freshco override dup",)).fetchone()["c"]
+        assert count == 2
