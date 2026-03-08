@@ -1545,7 +1545,7 @@ def create_app(test_config=None):
 
     def _fetch_settlement_expense_totals(db, household_id, start_date=None, end_date=None, before_date=None):
         pet_placeholders = ", ".join(["?"] * len(PET_CATEGORIES))
-        where_parts = ["e.household_id = ?", "e.is_transfer = 0", "e.is_personal = 0", "e.amount < 0"]
+        where_parts = ["e.household_id = ?", "e.is_transfer = 0", "e.is_personal = 0"]
         params = [household_id]
         if before_date:
             where_parts.append("e.date < ?")
@@ -1564,20 +1564,20 @@ def create_app(test_config=None):
             SELECT
                 COALESCE(SUM(CASE
                     WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by = 'DK'
-                    THEN ABS(e.amount) ELSE 0 END), 0) AS dk_paid_shared,
+                    THEN -e.amount ELSE 0 END), 0) AS dk_paid_shared,
                 COALESCE(SUM(CASE
                     WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by = 'YZ'
-                    THEN ABS(e.amount) ELSE 0 END), 0) AS yz_paid_shared,
+                    THEN -e.amount ELSE 0 END), 0) AS yz_paid_shared,
                 COALESCE(SUM(CASE
                     WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by = 'DK'
-                    THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_dk,
+                    THEN -e.amount ELSE 0 END), 0) AS pet_paid_by_dk,
                 COALESCE(SUM(CASE
                     WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by = 'YZ'
-                    THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_yz,
+                    THEN -e.amount ELSE 0 END), 0) AS pet_paid_by_yz,
                 COALESCE(SUM(CASE
                     WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders})
-                    THEN ABS(e.amount) ELSE 0 END), 0) AS total_shared,
-                COALESCE(SUM(ABS(e.amount)), 0) AS total_settlement_expenses
+                    THEN -e.amount ELSE 0 END), 0) AS total_shared,
+                COALESCE(SUM(-e.amount), 0) AS total_settlement_expenses
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
             WHERE {where_sql}
@@ -1641,9 +1641,9 @@ def create_app(test_config=None):
 
     def _fetch_shared_spending_by_category(db, filters, top_n=10):
         if db.backend == "postgres":
-            rounded_total_sql = "ROUND(SUM(ABS(e.amount))::numeric, 2)"
+            rounded_total_sql = "ROUND(SUM(-e.amount)::numeric, 2)"
         else:
-            rounded_total_sql = "ROUND(SUM(ABS(e.amount)), 2)"
+            rounded_total_sql = "ROUND(SUM(-e.amount), 2)"
 
         rows = db.execute(
             """
@@ -1652,7 +1652,7 @@ def create_app(test_config=None):
             LEFT JOIN categories c ON e.category_id = c.id
             WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
             GROUP BY COALESCE(c.name, 'Uncategorized')
-            HAVING SUM(ABS(e.amount)) > 0
+            HAVING SUM(-e.amount) > 0
             ORDER BY total DESC, category ASC
             """.format(filter_sql=filters["filter_sql"], rounded_total_sql=rounded_total_sql),
             tuple(filters["params"]),
@@ -1709,15 +1709,15 @@ def create_app(test_config=None):
         row = db.execute(
             f"""
             SELECT
-                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by='DK' THEN ABS(e.amount) ELSE 0 END), 0) AS dk_paid_shared,
-                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by='YZ' THEN ABS(e.amount) ELSE 0 END), 0) AS yz_paid_shared,
-                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by='DK' THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_dk,
-                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by='YZ' THEN ABS(e.amount) ELSE 0 END), 0) AS pet_paid_by_yz,
-                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) THEN ABS(e.amount) ELSE 0 END), 0) AS total_shared,
-                COALESCE(SUM(ABS(e.amount)), 0) AS total_settlement_expenses
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by='DK' THEN -e.amount ELSE 0 END), 0) AS dk_paid_shared,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) AND e.paid_by='YZ' THEN -e.amount ELSE 0 END), 0) AS yz_paid_shared,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by='DK' THEN -e.amount ELSE 0 END), 0) AS pet_paid_by_dk,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') IN ({pet_placeholders}) AND e.paid_by='YZ' THEN -e.amount ELSE 0 END), 0) AS pet_paid_by_yz,
+                COALESCE(SUM(CASE WHEN COALESCE(c.name, '') NOT IN ({pet_placeholders}) THEN -e.amount ELSE 0 END), 0) AS total_shared,
+                COALESCE(SUM(-e.amount), 0) AS total_settlement_expenses
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.household_id = ? AND e.is_transfer = 0 AND e.is_personal = 0 AND e.amount < 0 AND e.date LIKE ?
+            WHERE e.household_id = ? AND e.is_transfer = 0 AND e.is_personal = 0 AND e.date LIKE ?
             """,
             tuple(PET_CATEGORIES * 5 + [household_id, month_prefix]),
         ).fetchone()
@@ -1763,7 +1763,6 @@ def create_app(test_config=None):
             WHERE household_id = ?
               AND is_transfer = 0
               AND is_personal = 0
-              AND amount < 0
               AND date >= ? AND date <= ?
             ORDER BY month ASC
             """,
@@ -1775,7 +1774,6 @@ def create_app(test_config=None):
             WHERE household_id = ?
               AND is_transfer = 0
               AND is_personal = 0
-              AND amount < 0
               AND date LIKE ?
             ORDER BY month ASC
             """,
