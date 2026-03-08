@@ -195,7 +195,9 @@ pytest
 Postgres safety model for tests:
 - App runtime DB: `expense_tracker`
 - Test DB only: `expense_tracker_test`
-- `pytest` fails fast if either `TEST_DATABASE_URL` or `DATABASE_URL` points at `expense_tracker`.
+- `pytest` fails fast if `TEST_DATABASE_URL` points at `expense_tracker`.
+- If `TEST_DATABASE_URL` is unset but `DATABASE_URL` is Postgres, pytest rewrites it to the test DB name automatically (`.../expense_tracker_test`).
+- Test cleanup/truncation is hard-limited to `expense_tracker_test` only.
 
 Run Postgres regression tests (requires a running Postgres and a dedicated test database URL):
 ```bash
@@ -207,7 +209,7 @@ Docker Compose example environment split:
 # Runtime app container uses live/dev app database
 DATABASE_URL=postgresql://user:pass@db:5432/expense_tracker
 
-# Pytest must use separate test database
+# Optional explicit override for pytest (otherwise it is auto-derived from DATABASE_URL)
 TEST_DATABASE_URL=postgresql://user:pass@db:5432/expense_tracker_test
 ```
 
