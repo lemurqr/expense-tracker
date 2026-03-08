@@ -1166,7 +1166,10 @@ def create_app(test_config=None):
 
     os.makedirs(app.instance_path, exist_ok=True)
     app.config.setdefault("DB_INIT_ERROR", None)
-    db_config = parse_database_config(app.config.get("DATABASE"))
+    db_config = parse_database_config(
+        app.config.get("DATABASE"),
+        prefer_test_database_url=bool(app.config.get("TESTING")),
+    )
     app.config["DB_BACKEND"] = db_config["backend"]
     app.config["DB_DATABASE_NAME"] = db_config["database_name"]
     app.config["DB_CONFIG"] = db_config

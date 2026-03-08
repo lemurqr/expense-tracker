@@ -2986,6 +2986,7 @@ def test_postgres_login_default_categories_idempotent(monkeypatch):
     database_url = get_test_postgres_url()
 
     monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("TEST_DATABASE_URL", database_url)
     app = create_app({"TESTING": True, "SECRET_KEY": "test"})
 
     with app.app_context():
