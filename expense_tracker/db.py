@@ -230,11 +230,20 @@ def rewrite_sql(backend, sql, params):
     return rewritten_sql, rewritten_params
 
 
-def parse_database_config(database_path=None):
-    db_url = os.environ.get("DATABASE_URL", "").strip()
+def parse_database_config(database_path=None, prefer_test_database_url=False):
+    db_url = ""
+    if prefer_test_database_url:
+        db_url = os.environ.get("TEST_DATABASE_URL", "").strip()
+    if not db_url:
+        db_url = os.environ.get("DATABASE_URL", "").strip()
     if is_postgres_url(db_url):
         parsed = urlparse(db_url)
         db_name = parsed.path.lstrip("/") or "postgres"
+        if prefer_test_database_url and db_name == "expense_tracker":
+            raise RuntimeError(
+                "Unsafe test database configuration: tests cannot run against the live 'expense_tracker' database. "
+                "Set TEST_DATABASE_URL to the dedicated test database."
+            )
         return {
             "backend": "postgres",
             "database_url": db_url,

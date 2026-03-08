@@ -63,6 +63,11 @@ def get_test_postgres_url():
 
 def pytest_sessionstart(session):
     test_database_url = os.environ.get("TEST_DATABASE_URL", "").strip()
+    if not test_database_url:
+        runtime_url = os.environ.get("DATABASE_URL", "").strip()
+        if runtime_url.startswith(("postgres://", "postgresql://")):
+            test_database_url = _postgres_url_with_db_name(runtime_url, TEST_DB_NAME)
+            os.environ["TEST_DATABASE_URL"] = test_database_url
     if test_database_url.startswith(("postgres://", "postgresql://")):
         assert_not_live_database(test_database_url, "TEST_DATABASE_URL")
 

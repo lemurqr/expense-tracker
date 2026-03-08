@@ -19,6 +19,7 @@ def postgres_url():
 @pytest.fixture()
 def app(postgres_url, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", postgres_url)
+    monkeypatch.setenv("TEST_DATABASE_URL", postgres_url)
     app = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": "/tmp/ignored.sqlite"})
     with app.app_context():
         app.init_db()
