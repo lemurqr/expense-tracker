@@ -192,9 +192,23 @@ Login with:
 pytest
 ```
 
-Run Postgres regression tests (requires a running Postgres and `DATABASE_URL` or `TEST_DATABASE_URL`):
+Postgres safety model for tests:
+- App runtime DB: `expense_tracker`
+- Test DB only: `expense_tracker_test`
+- `pytest` fails fast if either `TEST_DATABASE_URL` or `DATABASE_URL` points at `expense_tracker`.
+
+Run Postgres regression tests (requires a running Postgres and a dedicated test database URL):
 ```bash
-TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/expense_tracker pytest tests/test_postgres_runtime.py
+TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/expense_tracker_test pytest tests/test_postgres_runtime.py
+```
+
+Docker Compose example environment split:
+```bash
+# Runtime app container uses live/dev app database
+DATABASE_URL=postgresql://user:pass@db:5432/expense_tracker
+
+# Pytest must use separate test database
+TEST_DATABASE_URL=postgresql://user:pass@db:5432/expense_tracker_test
 ```
 
 ## Deployment
