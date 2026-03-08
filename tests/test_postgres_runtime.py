@@ -111,8 +111,9 @@ def test_postgres_runtime_paths(client):
     assert confirm.status_code == 200
     assert b"Imported 1 transaction(s)." in confirm.data
 
-    settlement = client.get("/settlement")
-    assert settlement.status_code == 200
+    dashboard = client.get("/dashboard")
+    assert dashboard.status_code == 200
+    assert b"Net settlement (this period)" in dashboard.data
 
     with client.application.app_context():
         db = client.application.get_db()
