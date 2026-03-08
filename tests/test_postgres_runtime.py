@@ -1,19 +1,19 @@
 import json
-import os
 from datetime import datetime
 
 import pytest
 
 from expense_tracker import create_app
-from tests.conftest import reset_postgres_tables
+from tests.conftest import (
+    LIVE_DB_NAME,
+    get_test_postgres_url,
+    reset_postgres_tables,
+)
 
 
 @pytest.fixture(scope="module")
 def postgres_url():
-    url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if not url or not (url.startswith("postgres://") or url.startswith("postgresql://")):
-        pytest.skip("Postgres URL not configured (set TEST_DATABASE_URL)")
-    return url
+    return get_test_postgres_url()
 
 
 @pytest.fixture()
@@ -23,6 +23,7 @@ def app(postgres_url, monkeypatch):
     with app.app_context():
         app.init_db()
         db = app.get_db()
+        assert db.config["database_name"] != LIVE_DB_NAME, "Tests must never use live database expense_tracker"
         reset_postgres_tables(db)
     yield app
 

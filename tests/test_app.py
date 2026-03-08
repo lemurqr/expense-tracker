@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from tests.conftest import LIVE_DB_NAME, get_test_postgres_url
+
 from expense_tracker import (
     create_app,
     infer_category,
@@ -2981,15 +2983,15 @@ def test_import_confirm_uses_mapped_category_and_never_creates_categories(client
 
 
 def test_postgres_login_default_categories_idempotent(monkeypatch):
-    database_url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
-    if not database_url.startswith(("postgres://", "postgresql://")):
-        pytest.skip("Postgres regression test requires TEST_DATABASE_URL (or DATABASE_URL) pointing to postgres")
+    database_url = get_test_postgres_url()
 
     monkeypatch.setenv("DATABASE_URL", database_url)
     app = create_app({"TESTING": True, "SECRET_KEY": "test"})
 
     with app.app_context():
         app.init_db()
+        db = app.get_db()
+        assert db.config["database_name"] != LIVE_DB_NAME, "Tests must never use live database expense_tracker"
 
     client = app.test_client()
     username = f"pg_user_{datetime.utcnow().timestamp()}"
