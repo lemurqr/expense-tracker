@@ -743,6 +743,56 @@ def test_parse_csv_transactions_manual_tracker_positive_amount_becomes_negative(
     assert parsed[0]["amount_classification"] == "expense"
 
 
+
+
+def test_detect_header_and_mapping_identifies_manual_tracker_total_exp_amount_column():
+    rows = [
+        ["Date", "Description", "Yuliana Exp", "Denys Exp", "Payable to Denys", "Split %", "Total exp..."],
+        ["2026-01-10", "School Fee", "200.00", "519.73", "519.73", "50%", "719.73"],
+    ]
+
+    has_header, mapping, header_row_index = detect_header_and_mapping(rows)
+
+    assert has_header is True
+    assert header_row_index == 0
+    assert mapping["amount"] == "6"
+
+
+def test_manual_tracker_total_exp_mapping_imports_rows_without_missing_amount(client):
+    register(client)
+    login(client)
+
+    fixture = Path(__file__).parent / "fixtures" / "manual_tracker_total_exp.csv"
+    with fixture.open("rb") as f:
+        preview_response = client.post(
+            "/import/csv",
+            data={"action": "preview", "csv_file": (f, "manual_tracker_total_exp.csv")},
+            content_type="multipart/form-data",
+        )
+
+    assert preview_response.status_code == 200
+    text = preview_response.get_data(as_text=True)
+    assert "School Fee" in text
+    assert "Groceries" in text
+    assert "missing amount: 0" in text
+
+    import_id = text.split('name="import_id" value="')[1].split('"', 1)[0]
+    confirm = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert b"Imported 2 transaction(s)." in confirm.data
+
+
+def test_detect_header_and_mapping_does_not_auto_pick_split_or_payable_or_person_columns_as_amount():
+    rows = [["Date", "Description", "Yuliana Exp", "Denys Exp", "Payable to Denys", "Split %"]]
+
+    has_header, mapping, _ = detect_header_and_mapping(rows)
+
+    assert has_header is True
+    assert mapping["amount"] == ""
+
 def test_detect_cibc_headerless_mapping_uses_two_amount_columns_not_single_amount():
     rows = [
         ["2026-01-10", "Groceries", "52.10", "", "memo"],

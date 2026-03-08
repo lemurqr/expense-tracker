@@ -191,6 +191,39 @@ def normalize_header_name(value):
     return " ".join((value or "").strip().lower().split())
 
 
+def normalize_header_match_key(value):
+    cleaned = re.sub(r"[^a-z0-9]+", " ", (value or "").strip().lower())
+    return " ".join(cleaned.split())
+
+
+AMOUNT_HEADER_CANDIDATES = {
+    "amount",
+    "total exp",
+    "total expense",
+    "total expenses",
+    "expense total",
+    "total",
+}
+
+AMOUNT_HEADER_EXCLUSIONS = {
+    "yuliana exp",
+    "denys exp",
+}
+
+
+def is_amount_like_header(value):
+    normalized = normalize_header_match_key(value)
+    if not normalized:
+        return False
+    if normalized in AMOUNT_HEADER_EXCLUSIONS:
+        return False
+    if normalized.startswith("payable to "):
+        return False
+    if "split" in normalized:
+        return False
+    return normalized in AMOUNT_HEADER_CANDIDATES
+
+
 def parse_money(value):
     text = (value or "").strip()
     if not text:
@@ -536,7 +569,7 @@ def detect_header_and_mapping(rows):
         candidate = [normalize_header_name(cell) for cell in rows[idx]]
         cells = {cell for cell in candidate if cell}
         has_date = "date" in cells or "transaction date" in cells or "date processed" in cells
-        has_amount = "amount" in cells
+        has_amount = any(is_amount_like_header(cell) for cell in cells)
         has_desc_or_merchant = "description" in cells or "merchant" in cells
         if has_date and has_amount and has_desc_or_merchant:
             header_row_index = idx
@@ -551,7 +584,12 @@ def detect_header_and_mapping(rows):
 
     mapping["date"] = normalized_lookup.get("date", "") or normalized_lookup.get("transaction date", "") or normalized_lookup.get("date processed", "")
     mapping["description"] = normalized_lookup.get("description", "") or normalized_lookup.get("merchant", "")
-    mapping["amount"] = normalized_lookup.get("amount", "")
+    amount_idx = ""
+    for i, col in enumerate(first_row):
+        if is_amount_like_header(col):
+            amount_idx = str(i)
+            break
+    mapping["amount"] = amount_idx
     mapping["debit"] = normalized_lookup.get("debit", "")
     mapping["credit"] = normalized_lookup.get("credit", "")
     mapping["vendor"] = normalized_lookup.get("merchant", "") or normalized_lookup.get("vendor", "") or normalized_lookup.get("description", "")
