@@ -3333,9 +3333,42 @@ def create_app(test_config=None):
                     "SELECT id, name FROM categories WHERE user_id = ?", (g.user["id"],)
                 ).fetchall()
                 categories_by_id = {row["id"]: row["name"] for row in category_rows}
-                category_lookup = {normalize_description(row["name"]): row["id"] for row in category_rows}
+                category_rows_by_name = {normalize_description(row["name"]): row for row in category_rows}
+                category_id_lookup = {normalize_description(row["name"]): row["id"] for row in category_rows}
                 available_category_names = [row["name"] for row in category_rows]
                 learned_rule_keys = set()
+
+                rows_updated_from_form = False
+                for index, record in enumerate(records):
+                    row = record["row"]
+                    row_index = row.get("row_index", index)
+
+                    category_key = f"override_category_{row_index}"
+                    if category_key not in request.form:
+                        continue
+
+                    category_override = (request.form.get(category_key, "") or "").strip()
+                    if category_override:
+                        matched = category_rows_by_name.get(normalize_description(category_override))
+                        if matched:
+                            row["category"] = matched["name"]
+                            row["category_name"] = matched["name"]
+                            row["override_category"] = matched["name"]
+                            row["category_id"] = matched["id"]
+                            row["mapped_category_id"] = matched["id"]
+                            if row.get("csv_category_name"):
+                                row["csv_category_match_status"] = "mapped"
+                        else:
+                            row["override_category"] = category_override
+                            row["category"] = category_override
+                    else:
+                        row.pop("override_category", None)
+
+                    update_staged_preview_row(db, record["id"], row)
+                    rows_updated_from_form = True
+
+                if rows_updated_from_form:
+                    db.commit()
 
                 raw_default_paid_by = request.form.get("import_default_paid_by")
                 default_paid_by = normalize_paid_by(raw_default_paid_by or "")
@@ -3404,7 +3437,7 @@ def create_app(test_config=None):
                     if override:
                         assigned_category = pick_existing_category(override, available_category_names)
                         if assigned_category:
-                            category_id = category_lookup.get(normalize_description(assigned_category))
+                            category_id = category_id_lookup.get(normalize_description(assigned_category))
                             categorized = {"confidence": 100, "source": "import_override"}
                     if not category_id:
                         staged_category_id = row.get("mapped_category_id") if row.get("mapped_category_id") is not None else row.get("category_id")
@@ -3432,7 +3465,7 @@ def create_app(test_config=None):
                         assigned_category = categorized_full["category"]
                         categorized = categorized_full
                         if assigned_category:
-                            category_id = category_lookup.get(normalize_description(assigned_category))
+                            category_id = category_id_lookup.get(normalize_description(assigned_category))
 
                     is_personal = assigned_category == "Personal"
                     is_transfer = is_transfer_transaction(row.get("description", ""), assigned_category)
