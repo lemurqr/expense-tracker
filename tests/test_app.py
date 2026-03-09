@@ -3427,6 +3427,144 @@ def test_import_confirm_inserts_only_selected_rows(client):
         assert count == 2
 
 
+def test_import_confirm_persists_single_row_category_override_without_apply_all(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {"row_index": 0, "date": "2026-11-01", "amount": -12.5, "description": "One-off merchant", "normalized_description": "one-off merchant", "vendor": "One-off", "category": "", "confidence": 25, "confidence_label": "Low", "suggested_source": "unknown"},
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="single-row-override")
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK", "override_category_0": "Groceries"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Groceries'").fetchone()["id"]
+        staged_row = json.loads(db.execute("SELECT row_json FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["row_json"])
+        expense = db.execute("SELECT category_id FROM expenses WHERE description = 'One-off merchant'").fetchone()
+
+    assert staged_row["override_category"] == "Groceries"
+    assert expense is not None
+    assert expense["category_id"] == groceries
+
+
+def test_import_confirm_persists_single_row_category_override_with_only_one_selected_row(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {"row_index": 0, "date": "2026-11-01", "amount": -14.25, "description": "Selected row", "normalized_description": "selected row", "vendor": "Vendor A", "category": "", "confidence": 25, "confidence_label": "Low", "suggested_source": "unknown"},
+        {"row_index": 1, "date": "2026-11-02", "amount": -8.0, "description": "Unselected row", "normalized_description": "unselected row", "vendor": "Vendor B", "category": "", "confidence": 25, "confidence_label": "Low", "suggested_source": "unknown"},
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="single-selected-override")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        selected_id = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1", (import_id,)).fetchone()["id"]
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Groceries'").fetchone()["id"]
+
+    response = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "import_id": import_id,
+            "import_default_paid_by": "DK",
+            "selected_row_ids": [str(selected_id)],
+            "override_category_0": "Groceries",
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        selected_expense = db.execute("SELECT category_id FROM expenses WHERE description = 'Selected row'").fetchone()
+        unselected_expense = db.execute("SELECT id FROM expenses WHERE description = 'Unselected row'").fetchone()
+
+    assert selected_expense is not None
+    assert selected_expense["category_id"] == groceries
+    assert unselected_expense is None
+
+
+def test_import_confirm_uses_persisted_single_row_override_after_preview_toggles(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {"row_index": 0, "date": "2026-12-01", "amount": -15.0, "description": "Toggle target", "normalized_description": "toggle target", "vendor": "Toggle Vendor", "category": "", "confidence": 40, "confidence_label": "Low", "suggested_source": "unknown"},
+        {"row_index": 1, "date": "2026-12-02", "amount": -5.0, "description": "High confidence row", "normalized_description": "high confidence row", "vendor": "Toggle Vendor", "category": "", "confidence": 90, "confidence_label": "High", "suggested_source": "rule"},
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="override-after-toggle")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1", (import_id,)).fetchone()["id"]
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Groceries'").fetchone()["id"]
+
+    update_resp = client.post(
+        "/import/preview/row_update",
+        json={"import_id": import_id, "row_id": row_id, "override_category": "Groceries"},
+    )
+    assert update_resp.status_code == 200
+
+    assert client.get(f"/import/csv?import_id={import_id}&show_all=1").status_code == 200
+    assert client.get(f"/import/csv?import_id={import_id}&show_all=1&low_confidence=1").status_code == 200
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute("SELECT category_id FROM expenses WHERE description = 'Toggle target'").fetchone()
+    assert expense is not None
+    assert expense["category_id"] == groceries
+
+
+def test_import_apply_all_matching_still_updates_and_imports_all_matching_rows(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {"row_index": 0, "date": "2026-12-10", "amount": -11.0, "description": "Coffee 1", "normalized_description": "coffee 1", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "confidence_label": "Low", "suggested_source": "unknown"},
+        {"row_index": 1, "date": "2026-12-11", "amount": -12.0, "description": "Coffee 2", "normalized_description": "coffee 2", "vendor": "Coffee Shop", "vendor_key": "coffee shop", "category": "", "confidence": 25, "confidence_label": "Low", "suggested_source": "unknown"},
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="apply-all-still-works")
+
+    apply_resp = client.post(
+        "/import/csv/apply_override",
+        json={"match_type": "vendor", "match_key": "coffee shop", "category_name": "Restaurants", "import_id": import_id},
+    )
+    assert apply_resp.status_code == 200
+    assert apply_resp.get_json()["updated_count"] == 2
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        restaurants = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Restaurants'").fetchone()["id"]
+        imported = db.execute(
+            "SELECT description, category_id FROM expenses WHERE description IN ('Coffee 1', 'Coffee 2') ORDER BY description"
+        ).fetchall()
+
+    assert [row["description"] for row in imported] == ["Coffee 1", "Coffee 2"]
+    assert all(row["category_id"] == restaurants for row in imported)
+
+
 def test_import_preview_toggle_queries_keep_selection_flags(client):
     register(client)
     login(client)
