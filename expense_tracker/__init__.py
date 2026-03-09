@@ -3361,7 +3361,7 @@ def create_app(test_config=None):
                         continue
 
                     selected_count += 1
-                    override = request.form.get(f"override_category_{row_index}", "") or row.get("override_category", "")
+                    override = (row.get("override_category", "") or "").strip()
                     paid_by_override = normalize_paid_by(
                         request.form.get(f"override_paid_by_{row_index}", "") or row.get("paid_by", "") or default_paid_by
                     )

@@ -2220,6 +2220,129 @@ def test_import_confirm_uses_staging_bulk_edits(client):
     assert remaining_staging == 2
 
 
+def test_import_confirm_uses_row_level_category_override_without_apply_all_matching(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-12-05",
+            "amount": -14.0,
+            "description": "Single row category override",
+            "normalized_description": "single row category override",
+            "vendor": "Local Store",
+            "category": "",
+            "confidence": 25,
+            "confidence_label": "Low",
+            "suggested_source": "unknown",
+            "paid_by": "DK",
+        }
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="row-override-no-apply-all")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute("SELECT id FROM import_staging WHERE import_id = ?", (import_id,)).fetchone()["id"]
+
+    update_response = client.post(
+        "/import/preview/row_update",
+        json={"import_id": import_id, "row_id": row_id, "override_category": "Groceries"},
+    )
+    assert update_response.status_code == 200
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in confirm_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute(
+            """
+            SELECT c.name as category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description = 'Single row category override'
+            """
+        ).fetchone()
+
+    assert expense["category"] == "Groceries"
+
+
+def test_row_level_category_override_survives_preview_filter_toggle_and_confirm(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-12-06",
+            "amount": -9.0,
+            "description": "Filter toggle override row",
+            "normalized_description": "filter toggle override row",
+            "vendor": "Market",
+            "category": "",
+            "confidence": 25,
+            "confidence_label": "Low",
+            "suggested_source": "unknown",
+            "paid_by": "DK",
+        },
+        {
+            "row_index": 1,
+            "user_id": 1,
+            "date": "2026-12-06",
+            "amount": -12.0,
+            "description": "High confidence row",
+            "normalized_description": "high confidence row",
+            "vendor": "Cafe",
+            "category": "Restaurants",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "paid_by": "YZ",
+        },
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="row-override-filter-toggle")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1", (import_id,)).fetchone()["id"]
+
+    update_response = client.post(
+        "/import/preview/row_update",
+        json={"import_id": import_id, "row_id": row_id, "override_category": "Groceries"},
+    )
+    assert update_response.status_code == 200
+
+    preview_response = client.get(f"/import/csv?import_id={import_id}&low_confidence=1", follow_redirects=True)
+    assert preview_response.status_code == 200
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id},
+        follow_redirects=True,
+    )
+    assert b"Imported 2 transaction(s)." in confirm_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute(
+            """
+            SELECT c.name as category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description = 'Filter toggle override row'
+            """
+        ).fetchone()
+
+    assert expense["category"] == "Groceries"
+
+
 def test_import_preview_bulk_action_requires_selection(client):
     register(client)
     login(client)
