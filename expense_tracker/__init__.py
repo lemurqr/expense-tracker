@@ -890,6 +890,23 @@ def update_staged_preview_row(db, staging_id, row):
     )
 
 
+def apply_staged_category_override(row, category_name, category_id=None):
+    selected_category_name = (category_name or "").strip()
+    row["category"] = selected_category_name
+    if selected_category_name:
+        row["override_category"] = selected_category_name
+        row["category_name"] = selected_category_name
+        row["category_id"] = category_id
+        row["mapped_category_id"] = category_id
+        if row.get("csv_category_name"):
+            row["csv_category_match_status"] = "mapped"
+    else:
+        row.pop("override_category", None)
+        row.pop("category_name", None)
+        row.pop("category_id", None)
+        row.pop("mapped_category_id", None)
+
+
 def set_staged_row_outcome(db, staging_id, import_status, skipped_reason="", skipped_details="", effective_amount=None):
     db.execute(
         "UPDATE import_staging SET import_status = ?, skipped_reason = ?, skipped_details = ?, effective_amount = ? WHERE id = ?",
@@ -3104,10 +3121,7 @@ def create_app(test_config=None):
             else:
                 row.pop("paid_by", None)
         if "override_category" in payload:
-            category_override = (payload.get("override_category") or "").strip()
-            row["override_category"] = category_override
-            if category_override:
-                row["category"] = category_override
+            apply_staged_category_override(row, payload.get("override_category") or "")
 
         if "date" in payload:
             date_value = (payload.get("date") or "").strip()
@@ -3131,6 +3145,54 @@ def create_app(test_config=None):
         update_staged_preview_row(db, row_id, row)
         db.commit()
         return jsonify({"ok": True, "row": row})
+
+    @app.post("/import/preview/category_selected")
+    @login_required
+    def import_preview_category_selected():
+        payload = request.get_json(silent=True) or {}
+        import_id = (payload.get("import_id") or "").strip()
+        if not import_id:
+            return jsonify({"ok": False, "error": "invalid_payload"}), 400
+
+        category_id_raw = (payload.get("category_id") or "").strip()
+        selected_category_name = ""
+        selected_category_id = None
+
+        db = get_db()
+        if category_id_raw:
+            try:
+                selected_category_id = int(category_id_raw)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "invalid_category"}), 400
+
+            category = db.execute(
+                "SELECT id, name FROM categories WHERE id = ? AND user_id = ?",
+                (selected_category_id, g.user["id"]),
+            ).fetchone()
+            if not category:
+                return jsonify({"ok": False, "error": "category_not_found"}), 404
+            selected_category_name = category["name"]
+
+        staged_rows = db.execute(
+            """
+            SELECT id, row_json FROM import_staging
+            WHERE import_id = ? AND household_id = ? AND user_id = ? AND selected = 1
+            ORDER BY id
+            """,
+            (import_id, g.household_id, g.user["id"]),
+        ).fetchall()
+        if not staged_rows:
+            return jsonify({"ok": False, "error": "no_selected_rows"}), 400
+
+        updated = 0
+        for staged_row in staged_rows:
+            row = json.loads(staged_row["row_json"])
+            apply_staged_category_override(row, selected_category_name, selected_category_id)
+            update_staged_preview_row(db, staged_row["id"], row)
+            updated += 1
+
+        db.commit()
+        return jsonify({"ok": True, "updated": updated, "category": selected_category_name})
 
     @app.post("/import/preview/action")
     @login_required
@@ -3210,19 +3272,7 @@ def create_app(test_config=None):
 
                 for staged_row in staged_rows:
                     row = json.loads(staged_row["row_json"])
-                    row["category"] = selected_category_name
-                    if selected_category_name:
-                        row["override_category"] = selected_category_name
-                        row["category_name"] = selected_category_name
-                        row["category_id"] = selected_category_id
-                        row["mapped_category_id"] = selected_category_id
-                        if row.get("csv_category_name"):
-                            row["csv_category_match_status"] = "mapped"
-                    else:
-                        row.pop("override_category", None)
-                        row.pop("category_name", None)
-                        row.pop("category_id", None)
-                        row.pop("mapped_category_id", None)
+                    apply_staged_category_override(row, selected_category_name, selected_category_id)
                     update_staged_preview_row(db, staged_row["id"], row)
 
                 db.commit()

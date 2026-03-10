@@ -2126,6 +2126,63 @@ def test_import_preview_bulk_apply_category_overwrites_selected_rows(client):
     assert staged_rows[3]["category"] == "Bulk Category Override"
 
 
+
+
+def test_import_preview_category_selected_persists_for_all_selected_and_confirm(client):
+    register(client)
+    login(client)
+
+    client.post("/categories", data={"name": "Selected Bulk Category"}, follow_redirects=True)
+    with client.application.app_context():
+        db = client.application.get_db()
+        category_id = db.execute(
+            "SELECT id FROM categories WHERE user_id = 1 AND name = 'Selected Bulk Category'"
+        ).fetchone()["id"]
+
+    rows = [
+        {"row_index": 0, "user_id": 1, "date": "2026-12-08", "amount": -11.0, "description": "Selected A", "normalized_description": "selected a", "vendor": "Bulk", "category": "", "confidence": 20, "confidence_label": "Low", "suggested_source": "unknown", "paid_by": "DK"},
+        {"row_index": 1, "user_id": 1, "date": "2026-12-08", "amount": -12.0, "description": "Selected B", "normalized_description": "selected b", "vendor": "Bulk", "category": "", "confidence": 20, "confidence_label": "Low", "suggested_source": "unknown", "paid_by": "DK"},
+        {"row_index": 2, "user_id": 1, "date": "2026-12-08", "amount": -13.0, "description": "Selected C", "normalized_description": "selected c", "vendor": "Bulk", "category": "", "confidence": 20, "confidence_label": "Low", "suggested_source": "unknown", "paid_by": "DK"},
+        {"row_index": 3, "user_id": 1, "date": "2026-12-08", "amount": -14.0, "description": "Unselected D", "normalized_description": "unselected d", "vendor": "Bulk", "category": "", "confidence": 20, "confidence_label": "Low", "suggested_source": "unknown", "paid_by": "DK"},
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="selected-category-end-to-end")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()
+        staged_ids = [row["id"] for row in staged]
+
+    client.post("/import/preview/selection", json={"import_id": import_id, "row_id": staged_ids[3], "selected": False})
+
+    apply_response = client.post(
+        "/import/preview/category_selected",
+        json={"import_id": import_id, "category_id": str(category_id)},
+    )
+    assert apply_response.status_code == 200
+    assert apply_response.get_json()["updated"] == 3
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id},
+        follow_redirects=True,
+    )
+    assert b"Imported 3 transaction(s)." in confirm_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        imported = db.execute(
+            """
+            SELECT e.description, c.name AS category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description IN ('Selected A', 'Selected B', 'Selected C', 'Unselected D')
+            ORDER BY e.description
+            """
+        ).fetchall()
+
+    assert [row["description"] for row in imported] == ["Selected A", "Selected B", "Selected C"]
+    assert all(row["category"] == "Selected Bulk Category" for row in imported)
+
 def test_import_confirm_uses_staging_bulk_edits(client):
     register(client)
     login(client)
