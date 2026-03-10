@@ -3360,7 +3360,11 @@ def create_app(test_config=None):
                 db = get_db()
                 if action == "confirm":
                     selected_row_ids = parse_selected_row_ids(request.form.getlist("selected_row_ids"))
-                    if selected_row_ids:
+                    selected_row_ids_submitted = (
+                        request.form.get("selected_row_ids_submitted") == "1"
+                        or "selected_row_ids" in request.form
+                    )
+                    if selected_row_ids_submitted:
                         update_staged_selection(db, import_id, selected_row_ids, household_id=g.household_id, user_id=g.user["id"])
                         db.commit()
                     reset_staged_row_outcomes(db, import_id, household_id=g.household_id, user_id=g.user["id"])

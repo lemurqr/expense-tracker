@@ -2183,6 +2183,82 @@ def test_import_preview_category_selected_persists_for_all_selected_and_confirm(
     assert [row["description"] for row in imported] == ["Selected A", "Selected B", "Selected C"]
     assert all(row["category"] == "Selected Bulk Category" for row in imported)
 
+
+def test_import_confirm_uses_first_submit_selected_ids_and_category_overrides(client):
+    register(client)
+    login(client)
+
+    client.post("/categories", data={"name": "Immediate Confirm Category"}, follow_redirects=True)
+
+    rows = [
+        {"row_index": 0, "user_id": 1, "date": "2026-12-20", "amount": -11.0, "description": "Immediate row A", "normalized_description": "immediate row a", "vendor": "Now", "category": "", "confidence": 20, "confidence_label": "Low", "suggested_source": "unknown", "paid_by": "DK"},
+        {"row_index": 1, "user_id": 1, "date": "2026-12-20", "amount": -12.0, "description": "Immediate row B", "normalized_description": "immediate row b", "vendor": "Now", "category": "", "confidence": 20, "confidence_label": "Low", "suggested_source": "unknown", "paid_by": "DK"},
+        {"row_index": 2, "user_id": 1, "date": "2026-12-20", "amount": -13.0, "description": "Immediate row C", "normalized_description": "immediate row c", "vendor": "Now", "category": "", "confidence": 20, "confidence_label": "Low", "suggested_source": "unknown", "paid_by": "DK"},
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="confirm-first-submit")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged_ids = [row["id"] for row in db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
+
+    client.post("/import/preview/selection/bulk", json={"import_id": import_id, "selected": False, "scope": "all"})
+
+    response = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "import_id": import_id,
+            "selected_row_ids": [str(staged_ids[0]), str(staged_ids[2])],
+            "override_category_0": "Immediate Confirm Category",
+            "override_category_1": "",
+            "override_category_2": "Immediate Confirm Category",
+        },
+        follow_redirects=True,
+    )
+    assert b"Imported 2 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        imported = db.execute(
+            """
+            SELECT e.description, c.name AS category
+            FROM expenses e
+            LEFT JOIN categories c ON c.id = e.category_id
+            WHERE e.description IN ('Immediate row A', 'Immediate row B', 'Immediate row C')
+            ORDER BY e.description
+            """
+        ).fetchall()
+
+    assert [row["description"] for row in imported] == ["Immediate row A", "Immediate row C"]
+    assert all(row["category"] == "Immediate Confirm Category" for row in imported)
+
+
+def test_import_confirm_first_attempt_succeeds_without_retry_after_selection_change(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {"row_index": 0, "user_id": 1, "date": "2026-12-21", "amount": -21.0, "description": "One-click row A", "normalized_description": "one-click row a", "vendor": "One", "category": "Groceries", "confidence": 90, "confidence_label": "High", "suggested_source": "rule", "paid_by": "DK", "selected": False},
+        {"row_index": 1, "user_id": 1, "date": "2026-12-21", "amount": -22.0, "description": "One-click row B", "normalized_description": "one-click row b", "vendor": "One", "category": "Groceries", "confidence": 90, "confidence_label": "High", "suggested_source": "rule", "paid_by": "DK", "selected": False},
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="confirm-no-retry")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged_ids = [row["id"] for row in db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id", (import_id,)).fetchall()]
+
+    response = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "import_id": import_id,
+            "selected_row_ids": [str(staged_ids[0]), str(staged_ids[1])],
+        },
+        follow_redirects=True,
+    )
+
+    assert b"Imported 2 transaction(s)." in response.data
+
 def test_import_confirm_uses_staging_bulk_edits(client):
     register(client)
     login(client)
