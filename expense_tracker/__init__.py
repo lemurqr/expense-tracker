@@ -3797,8 +3797,9 @@ def create_app(test_config=None):
             stage_import_preview_rows(db, import_id, parsed_rows, household_id=g.household_id, user_id=g.user["id"])
             db.commit()
             save_import_preview_state(g.user["id"], [], preview_id=import_id)
-            preview_rows, displayed_rows_count, total_rows_count = preview_rows_for_display(parsed_rows, show_all=show_all)
-            unknown_category_rows = build_unknown_category_rows(parsed_rows)
+            staged_rows = get_staged_preview_rows(db, import_id, household_id=g.household_id, user_id=g.user["id"])
+            preview_rows, displayed_rows_count, total_rows_count = preview_rows_for_display(staged_rows, show_all=show_all)
+            unknown_category_rows = build_unknown_category_rows(staged_rows)
             def mapped_column_name(field):
                 value = mapping.get(field, "")
                 if value == "":

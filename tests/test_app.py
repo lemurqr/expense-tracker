@@ -72,6 +72,20 @@ def confirm_import(client, rows, **form_data):
     return client.post("/import/csv", data=payload, follow_redirects=True)
 
 
+def extract_import_id_from_html(html):
+    hidden_match = re.search(r'name="import_id" value="([^"]+)"', html)
+    if hidden_match:
+        return hidden_match.group(1)
+    card_match = re.search(r'data-import-id="([^"]+)"', html)
+    if card_match:
+        return card_match.group(1)
+    raise AssertionError("Could not find import_id in preview HTML")
+
+
+def extract_selected_row_ids_from_html(html):
+    return re.findall(r'name="selected_row_ids" value="(\d+)"', html)
+
+
 def test_db_health_reports_backend_and_schema_version(client):
     response = client.get("/health/db")
     assert response.status_code == 200
@@ -169,6 +183,138 @@ def test_import_preview_show_all_toggle_and_confirm_imports_all_rows(client):
     )
     assert b"Imported 51 transaction(s)." in confirm_response.data
 
+
+
+def test_import_preview_selection_works_without_show_all_toggle(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(30):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-12-28",
+                "amount": -10.0 - idx,
+                "description": f"No-toggle row {idx}",
+                "normalized_description": f"no-toggle row {idx}",
+                "vendor": f"Vendor {idx}",
+                "category": "",
+                "confidence": 40,
+                "confidence_label": "Low",
+                "suggested_source": "unknown",
+                "paid_by": "DK",
+            }
+        )
+
+    csv_preview = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "map_date": "0",
+            "map_description": "1",
+            "map_debit": "2",
+            "import_default_paid_by": "DK",
+            "csv_file": (
+                io.BytesIO(
+                    ("Date,Description,Debit,Credit\n" + "\n".join([f"2026-12-28,No-toggle row {i},{10+i:.2f}," for i in range(30)])).encode("utf-8")
+                ),
+                "no-toggle.csv",
+            ),
+        },
+        content_type="multipart/form-data",
+    )
+
+    assert csv_preview.status_code == 200
+    html = csv_preview.get_data(as_text=True)
+    import_id = extract_import_id_from_html(html)
+    selected_ids = extract_selected_row_ids_from_html(html)
+    assert len(selected_ids) == 25
+
+    selected_two = [selected_ids[0], selected_ids[1]]
+    confirm_response = client.post(
+        "/import/csv",
+        data={
+            "action": "confirm",
+            "import_id": import_id,
+            "selected_row_ids_submitted": "1",
+            "selected_row_ids": selected_two,
+            "import_default_paid_by": "DK",
+        },
+        follow_redirects=True,
+    )
+
+    assert b"Imported 2 transaction(s)." in confirm_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        imported_count = db.execute(
+            "SELECT COUNT(*) AS c FROM expenses WHERE description LIKE 'No-toggle row %'"
+        ).fetchone()["c"]
+
+    assert imported_count == 2
+
+
+def test_import_preview_selection_stays_correct_after_show_all_toggle(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(30):
+        rows.append(
+            {
+                "row_index": idx,
+                "user_id": 1,
+                "date": "2026-12-29",
+                "amount": -20.0 - idx,
+                "description": f"Toggle-select row {idx}",
+                "normalized_description": f"toggle-select row {idx}",
+                "vendor": f"Vendor {idx}",
+                "category": "",
+                "confidence": 40,
+                "confidence_label": "Low",
+                "suggested_source": "unknown",
+                "paid_by": "DK",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="toggle-selection-import")
+
+    show_all_preview = client.get(f"/import/csv?import_id={import_id}&show_all=1")
+    assert show_all_preview.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        staged_ids = [
+            row["id"]
+            for row in db.execute(
+                "SELECT id FROM import_staging WHERE import_id = ? ORDER BY id ASC", (import_id,)
+            ).fetchall()
+        ]
+
+    client.post("/import/preview/selection/bulk", json={"import_id": import_id, "selected": False, "scope": "all"})
+    client.post("/import/preview/selection", json={"import_id": import_id, "row_id": staged_ids[0], "selected": True})
+    client.post("/import/preview/selection", json={"import_id": import_id, "row_id": staged_ids[1], "selected": True})
+
+    limited_preview = client.get(f"/import/csv?import_id={import_id}&show_all=0")
+    assert limited_preview.status_code == 200
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+
+    assert b"Imported 2 transaction(s)." in confirm_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        imported = db.execute(
+            "SELECT description FROM expenses WHERE description LIKE 'Toggle-select row %' ORDER BY description"
+        ).fetchall()
+
+    assert [row["description"] for row in imported] == ["Toggle-select row 0", "Toggle-select row 1"]
 
 
 def test_import_preview_toggle_is_reversible_and_preserves_staged_edits(client):
