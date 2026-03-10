@@ -265,7 +265,7 @@
     
   </form>
 
-  <form method="post">
+  <form method="post" id="confirmImportForm">
     <input type="hidden" name="action" value="confirm">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all_rows" value="{{ 1 if show_all_rows else 0 }}">
@@ -282,8 +282,11 @@
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
     <input type="hidden" name="skip_payments" value="{{ 1 if skip_payments else 0 }}">
+    <input type="hidden" name="selected_row_ids_submitted" value="1">
     <div id="confirm-selected-row-ids"></div>
-    <button type="submit">Confirm Import</button>
+    <div id="confirm-row-overrides"></div>
+    <button type="submit" id="confirmImportButton">Confirm Import</button>
+    <small id="confirmSaveState" class="legend-text" aria-live="polite"></small>
   </form>
   {% else %}
     <p>No importable rows found with current mapping.{% if parse_diagnostics %} Seen {{ parse_diagnostics.total_rows_seen }} row(s); debit={{ parse_diagnostics.rows_with_debit }}, credit={{ parse_diagnostics.rows_with_credit }}, missing amount={{ parse_diagnostics.skipped_missing_amount }}, invalid parse={{ parse_diagnostics.skipped_invalid_amount_parse }}, both debit+credit={{ parse_diagnostics.skipped_both_debit_and_credit }}.{% endif %}</p>
@@ -356,16 +359,54 @@
   const applyPaidBySelectedButton = document.getElementById('applyPaidBySelected');
   const applyCategorySelectedButton = document.getElementById('applyCategorySelected');
   const bulkCategoryId = document.getElementById('bulkCategoryId');
+  const confirmImportForm = document.getElementById('confirmImportForm');
+  const confirmImportButton = document.getElementById('confirmImportButton');
+  const confirmSaveState = document.getElementById('confirmSaveState');
+  const confirmRowOverridesContainer = document.getElementById('confirm-row-overrides');
+
+  let pendingSaveCount = 0;
+  const pendingSaveWaiters = [];
+
+  const setPendingSaveState = () => {
+    if (confirmImportButton) confirmImportButton.disabled = pendingSaveCount > 0;
+    if (!confirmSaveState) return;
+    confirmSaveState.textContent = pendingSaveCount > 0 ? 'Saving changes...' : 'All changes saved';
+  };
+
+  const notifyPendingSaveWaiters = () => {
+    if (pendingSaveCount !== 0) return;
+    while (pendingSaveWaiters.length) {
+      const resolve = pendingSaveWaiters.shift();
+      resolve();
+    }
+  };
+
+  const waitForPendingSaves = () => {
+    if (pendingSaveCount === 0) return Promise.resolve();
+    return new Promise((resolve) => pendingSaveWaiters.push(resolve));
+  };
+
+  const runTrackedSave = async (callback) => {
+    pendingSaveCount += 1;
+    setPendingSaveState();
+    try {
+      return await callback();
+    } finally {
+      pendingSaveCount = Math.max(0, pendingSaveCount - 1);
+      setPendingSaveState();
+      notifyPendingSaveWaiters();
+    }
+  };
 
   const postRowUpdate = async (row, payload) => {
     if (!row || !importId) return false;
     const rowId = parseInt(row.dataset.rowId || '0', 10);
     if (!rowId) return false;
-    const response = await fetch('/import/preview/row_update', {
+    const response = await runTrackedSave(() => fetch('/import/preview/row_update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ import_id: importId, row_id: rowId, ...payload }),
-    });
+    }));
     if (!response.ok) return false;
     const badge = row.querySelector('.edited-badge');
     if (badge) badge.hidden = false;
@@ -389,6 +430,21 @@
     });
   };
 
+  const syncCategoryOverridesForConfirm = () => {
+    if (!confirmRowOverridesContainer) return;
+    confirmRowOverridesContainer.innerHTML = '';
+    document.querySelectorAll('.preview-row').forEach((row) => {
+      const categorySelect = row.querySelector('.category-select');
+      const rowIndex = row.dataset.rowIndex;
+      if (!categorySelect || !rowIndex) return;
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = `override_category_${rowIndex}`;
+      input.value = categorySelect.value || '';
+      confirmRowOverridesContainer.appendChild(input);
+    });
+  };
+
   const visibleRowSelectCheckboxes = () => Array.from(document.querySelectorAll('.preview-row'))
     .filter((row) => row.style.display !== 'none')
     .map((row) => row.querySelector('.row-select'))
@@ -408,20 +464,20 @@
 
   const persistRowSelection = async (rowId, selected) => {
     if (!importId) return;
-    await fetch('/import/preview/selection', {
+    await runTrackedSave(() => fetch('/import/preview/selection', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ import_id: importId, row_id: parseInt(rowId, 10), selected }),
-    });
+    }));
   };
 
   const persistBulkSelection = async (selected) => {
     if (!importId) return;
-    await fetch('/import/preview/selection/bulk', {
+    await runTrackedSave(() => fetch('/import/preview/selection/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ import_id: importId, selected, scope: 'all' }),
-    });
+    }));
   };
 
   const badgeClassFor = (source, confidence) => {
@@ -478,11 +534,11 @@
       const matchKey = matchType === 'description' ? (row.dataset.descriptionRuleKey || '') : (row.dataset.vendorRuleKey || row.dataset.vendorKey || '');
       const importIdInput = document.querySelector('input[name="import_id"]');
       const payload = { match_type: matchType, match_key: matchKey, category_name: select.value, import_id: importIdInput ? importIdInput.value : '' };
-      const response = await fetch('/import/csv/apply_override', {
+      const response = await runTrackedSave(() => fetch('/import/csv/apply_override', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      });
+      }));
 
       if (!response.ok) {
         event.target.checked = false;
@@ -523,24 +579,24 @@
 
   rowSelectCheckboxes.forEach((checkbox) => {
     checkbox.addEventListener('change', async (event) => {
-      await persistRowSelection(event.target.value, event.target.checked);
       updateSelectionUI();
+      await persistRowSelection(event.target.value, event.target.checked);
     });
   });
 
   if (selectAllRowsButton) {
     selectAllRowsButton.addEventListener('click', async () => {
       rowSelectCheckboxes.forEach((checkbox) => { if (!checkbox.disabled) checkbox.checked = true; });
-      await persistBulkSelection(true);
       updateSelectionUI();
+      await persistBulkSelection(true);
     });
   }
 
   if (deselectAllRowsButton) {
     deselectAllRowsButton.addEventListener('click', async () => {
       rowSelectCheckboxes.forEach((checkbox) => { if (!checkbox.disabled) checkbox.checked = false; });
-      await persistBulkSelection(false);
       updateSelectionUI();
+      await persistBulkSelection(false);
     });
   }
 
@@ -610,11 +666,11 @@
       const categorySelect = bulkCategoryId;
       if (!categorySelect || !importId) return;
       const categoryId = categorySelect.value || '';
-      const response = await fetch('/import/preview/category_selected', {
+      const response = await runTrackedSave(() => fetch('/import/preview/category_selected', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ import_id: importId, category_id: categoryId }),
-      });
+      }));
       if (!response.ok) return;
       const result = await response.json();
       const categoryName = result.category || '';
@@ -657,5 +713,19 @@
       syncSelectedRowHiddenInputs(previewToggleSelectedContainer);
     });
   }
+
+  if (confirmImportForm) {
+    confirmImportForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      updateSelectionUI();
+      syncCategoryOverridesForConfirm();
+      await waitForPendingSaves();
+      updateSelectionUI();
+      syncCategoryOverridesForConfirm();
+      confirmImportForm.submit();
+    });
+  }
+
+  setPendingSaveState();
 </script>
 {% endblock %}
