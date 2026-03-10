@@ -608,19 +608,27 @@
   if (applyCategorySelectedButton) {
     applyCategorySelectedButton.addEventListener('click', async () => {
       const categorySelect = bulkCategoryId;
-      if (!categorySelect) return;
-      const selectedOption = categorySelect.options[categorySelect.selectedIndex];
-      const categoryName = selectedOption ? selectedOption.text : '';
-      let updated = 0;
-      for (const row of document.querySelectorAll('.preview-row')) {
+      if (!categorySelect || !importId) return;
+      const categoryId = categorySelect.value || '';
+      const response = await fetch('/import/preview/category_selected', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ import_id: importId, category_id: categoryId }),
+      });
+      if (!response.ok) return;
+      const result = await response.json();
+      const categoryName = result.category || '';
+      document.querySelectorAll('.preview-row').forEach((row) => {
         const checkbox = row.querySelector('.row-select');
         const rowCategory = row.querySelector('.category-select');
-        if (!checkbox || !checkbox.checked || !rowCategory) continue;
+        if (!checkbox || !checkbox.checked || !rowCategory) return;
         rowCategory.value = categoryName;
         toggleApplyAllOption(rowCategory);
-        if (await postRowUpdate(row, { override_category: categoryName })) updated += 1;
-      }
-      showAppliedMessage(updated);
+        const badge = row.querySelector('.edited-badge');
+        if (badge) badge.hidden = false;
+        markRowOverridden(row, true);
+      });
+      showAppliedMessage(result.updated || 0);
     });
   }
 
