@@ -1686,6 +1686,102 @@ def create_app(test_config=None):
             chart_rows.append({"label": "Other", "value": other_total})
         return chart_rows
 
+    def _resolve_analytics_month(filters):
+        selected = (filters.get("selected_month") or "").strip()
+        if selected:
+            return selected
+        if filters.get("end_date"):
+            return str(filters["end_date"])[:7]
+        if filters.get("start_date"):
+            return str(filters["start_date"])[:7]
+        return date.today().strftime("%Y-%m")
+
+    def _month_bounds(month_value):
+        month_start = datetime.strptime(month_value, "%Y-%m").date().replace(day=1)
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return month_start, next_month - timedelta(days=1)
+
+    def _fetch_shared_category_totals_for_period(db, household_id, start_date, end_date):
+        if db.backend == "postgres":
+            rounded_total_sql = "ROUND(SUM(-e.amount)::numeric, 2)"
+        else:
+            rounded_total_sql = "ROUND(SUM(-e.amount), 2)"
+
+        rows = db.execute(
+            """
+            SELECT
+                c.id AS category_id,
+                COALESCE(c.name, 'Uncategorized') AS category,
+                {rounded_total_sql} AS total
+            FROM expenses e
+            LEFT JOIN categories c ON e.category_id = c.id
+            WHERE e.household_id = ?
+              AND e.is_transfer = 0
+              AND e.is_personal = 0
+              AND e.date >= ?
+              AND e.date <= ?
+            GROUP BY c.id, COALESCE(c.name, 'Uncategorized')
+            """.format(rounded_total_sql=rounded_total_sql),
+            (household_id, start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+        return {
+            (row["category_id"] if row["category_id"] is not None else 0): {
+                "id": row["category_id"],
+                "label": row["category"],
+                "value": round(float(row["total"] or 0), 2),
+            }
+            for row in rows
+        }
+
+    def _build_shared_category_analytics(db, filters):
+        analytics_month = _resolve_analytics_month(filters)
+        current_start, current_end = _month_bounds(analytics_month)
+        last_end = current_start - timedelta(days=1)
+        last_start = last_end.replace(day=1)
+        ytd_start = current_start.replace(month=1, day=1)
+
+        current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, current_start, current_end)
+        last_rows = _fetch_shared_category_totals_for_period(db, g.household_id, last_start, last_end)
+        ytd_rows = _fetch_shared_category_totals_for_period(db, g.household_id, ytd_start, current_end)
+
+        category_keys = set(current_rows.keys()) | set(last_rows.keys()) | set(ytd_rows.keys())
+        table_rows = []
+        for key in category_keys:
+            current_value = round(float(current_rows.get(key, {}).get("value", 0.0)), 2)
+            last_value = round(float(last_rows.get(key, {}).get("value", 0.0)), 2)
+            ytd_value = round(float(ytd_rows.get(key, {}).get("value", 0.0)), 2)
+            if abs(current_value) < 0.005 and abs(last_value) < 0.005 and abs(ytd_value) < 0.005:
+                continue
+            label = (
+                current_rows.get(key, {}).get("label")
+                or last_rows.get(key, {}).get("label")
+                or ytd_rows.get(key, {}).get("label")
+                or "Uncategorized"
+            )
+            table_rows.append(
+                {
+                    "id": key,
+                    "label": label,
+                    "current_month": current_value,
+                    "last_month": last_value,
+                    "year_to_date": ytd_value,
+                    "subcategories": [],
+                }
+            )
+
+        table_rows.sort(key=lambda row: (-row["current_month"], -row["year_to_date"], row["label"]))
+        pie_rows = [
+            {"label": row["label"], "value": round(row["current_month"], 2)}
+            for row in sorted(table_rows, key=lambda row: (-row["current_month"], row["label"]))
+            if row["current_month"] > 0
+        ]
+        return {
+            "month": analytics_month,
+            "pie": pie_rows,
+            "list": [row for row in table_rows if row["current_month"] > 0],
+            "table": table_rows,
+        }
+
     def calculate_settlement_ledger(db, household_id, filters):
         period = _fetch_settlement_expense_totals(
             db, household_id, start_date=filters["start_date"], end_date=filters["end_date"]
@@ -2255,7 +2351,7 @@ def create_app(test_config=None):
             tuple(filters["params"] + filters["tx_params"]),
         ).fetchall()
 
-        shared_category_chart = _fetch_shared_spending_by_category(db, filters)
+        shared_category_analytics = _build_shared_category_analytics(db, filters)
 
         settlement = calculate_settlement_ledger(db, g.household_id, filters)
         monthly_breakdown, monthly_totals = build_monthly_breakdown(
@@ -2302,7 +2398,7 @@ def create_app(test_config=None):
         return render_template(
             "dashboard.html",
             expenses=expenses,
-            shared_category_chart=shared_category_chart,
+            shared_category_analytics=shared_category_analytics,
             settlement=settlement,
             repayments=repayments,
             selected_month=filters["selected_month"],
@@ -2828,7 +2924,117 @@ def create_app(test_config=None):
         items = db.execute(
             "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
         ).fetchall()
-        return render_template("categories.html", categories=items)
+        subcategory_rows = db.execute(
+            """
+            SELECT sc.id, sc.category_id, sc.name
+            FROM subcategories sc
+            JOIN categories c ON c.id = sc.category_id
+            WHERE sc.user_id = ? AND c.user_id = ?
+            ORDER BY sc.name ASC
+            """,
+            (g.user["id"], g.user["id"]),
+        ).fetchall()
+        subcategories_by_category = {}
+        for row in subcategory_rows:
+            subcategories_by_category.setdefault(row["category_id"], []).append(row)
+
+        return render_template(
+            "categories.html",
+            categories=items,
+            subcategories_by_category=subcategories_by_category,
+        )
+
+    @app.post("/categories/<int:category_id>/subcategories")
+    @login_required
+    def create_subcategory(category_id):
+        db = get_db()
+        category = db.execute(
+            "SELECT id FROM categories WHERE id = ? AND user_id = ?",
+            (category_id, g.user["id"]),
+        ).fetchone()
+        if category is None:
+            flash("Category not found.")
+            return redirect(url_for("categories"))
+
+        name = (request.form.get("name") or "").strip()
+        if not name:
+            flash("Subcategory name is required.")
+            return redirect(url_for("categories"))
+
+        try:
+            db.execute(
+                "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+                (g.user["id"], category_id, name, datetime.utcnow().isoformat()),
+            )
+            db.commit()
+            flash("Subcategory added.")
+        except DB_INTEGRITY_ERRORS:
+            flash("Subcategory already exists for this category.")
+
+        return redirect(url_for("categories"))
+
+    @app.post("/subcategories/<int:subcategory_id>/edit")
+    @login_required
+    def edit_subcategory(subcategory_id):
+        db = get_db()
+        subcategory = db.execute(
+            """
+            SELECT sc.id, sc.category_id
+            FROM subcategories sc
+            JOIN categories c ON c.id = sc.category_id
+            WHERE sc.id = ? AND sc.user_id = ? AND c.user_id = ?
+            """,
+            (subcategory_id, g.user["id"], g.user["id"]),
+        ).fetchone()
+        if subcategory is None:
+            flash("Subcategory not found.")
+            return redirect(url_for("categories"))
+
+        name = (request.form.get("name") or "").strip()
+        if not name:
+            flash("Subcategory name is required.")
+            return redirect(url_for("categories"))
+
+        try:
+            db.execute(
+                "UPDATE subcategories SET name = ? WHERE id = ? AND user_id = ?",
+                (name, subcategory_id, g.user["id"]),
+            )
+            db.commit()
+            flash("Subcategory updated.")
+        except DB_INTEGRITY_ERRORS:
+            flash("Subcategory already exists for this category.")
+        return redirect(url_for("categories"))
+
+    @app.post("/subcategories/<int:subcategory_id>/delete")
+    @login_required
+    def delete_subcategory(subcategory_id):
+        db = get_db()
+        subcategory = db.execute(
+            """
+            SELECT sc.id
+            FROM subcategories sc
+            JOIN categories c ON c.id = sc.category_id
+            WHERE sc.id = ? AND sc.user_id = ? AND c.user_id = ?
+            """,
+            (subcategory_id, g.user["id"], g.user["id"]),
+        ).fetchone()
+        if subcategory is None:
+            flash("Subcategory not found.")
+            return redirect(url_for("categories"))
+
+        linked_expenses = db.execute(
+            "SELECT COUNT(*) AS c FROM expenses WHERE subcategory_id = ? AND user_id = ?",
+            (subcategory_id, g.user["id"]),
+        ).fetchone()["c"]
+        if linked_expenses:
+            flash("Cannot delete subcategory while expenses still reference it.")
+            return redirect(url_for("categories"))
+
+        db.execute("DELETE FROM subcategories WHERE id = ? AND user_id = ?", (subcategory_id, g.user["id"]))
+        db.commit()
+        flash("Subcategory deleted.")
+        return redirect(url_for("categories"))
 
     @app.route("/categories/<int:category_id>/edit", methods=("GET", "POST"))
     @login_required
@@ -2864,7 +3070,15 @@ def create_app(test_config=None):
     def delete_category(category_id):
         db = get_db()
         db.execute(
+            "UPDATE expenses SET subcategory_id = NULL WHERE category_id = ? AND user_id = ?",
+            (category_id, g.user["id"]),
+        )
+        db.execute(
             "UPDATE expenses SET category_id = NULL WHERE category_id = ? AND user_id = ?",
+            (category_id, g.user["id"]),
+        )
+        db.execute(
+            "DELETE FROM subcategories WHERE category_id = ? AND user_id = ?",
             (category_id, g.user["id"]),
         )
         db.execute("DELETE FROM categories WHERE id = ? AND user_id = ?", (category_id, g.user["id"]))

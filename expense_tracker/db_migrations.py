@@ -16,6 +16,10 @@ REQUIRED_TABLES = {
         "columns": {"id", "user_id", "name"},
         "indexes": set(),
     },
+    "subcategories": {
+        "columns": {"id", "user_id", "category_id", "name", "created_at"},
+        "indexes": {"uq_subcategories_user_category_name"},
+    },
     "expenses": {
         "columns": {
             "id",
@@ -23,6 +27,7 @@ REQUIRED_TABLES = {
             "date",
             "amount",
             "category_id",
+            "subcategory_id",
             "description",
             "vendor",
             "vendor_normalized",
@@ -698,6 +703,35 @@ def migration_012(conn):
     add_column_if_missing(conn, "import_staging", "effective_amount NUMERIC")
 
 
+def migration_013(conn):
+    ensure_table(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS subcategories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, category_id, name),
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (category_id) REFERENCES categories (id)
+        )
+        """,
+    )
+    create_index_if_missing(
+        conn,
+        "uq_subcategories_user_category_name",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_subcategories_user_category_name ON subcategories(user_id, category_id, name)",
+    )
+    create_index_if_missing(
+        conn,
+        "idx_subcategories_category_id",
+        "CREATE INDEX IF NOT EXISTS idx_subcategories_category_id ON subcategories(category_id)",
+    )
+    add_column_if_missing(conn, "expenses", "subcategory_id INTEGER")
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
@@ -711,6 +745,7 @@ MIGRATIONS = [
     (10, migration_010),
     (11, migration_011),
     (12, migration_012),
+    (13, migration_013),
 ]
 
 

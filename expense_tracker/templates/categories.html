@@ -6,14 +6,40 @@
     <input name="name" placeholder="New category" required>
     <button type="submit">Add</button>
   </form>
-  <ul>
+  <ul class="category-list">
     {% for category in categories %}
-    <li>
-      {{ category.name }}
-      <a href="{{ url_for('edit_category', category_id=category.id) }}">Edit</a>
-      <form method="post" action="{{ url_for('delete_category', category_id=category.id) }}" class="inline-form">
-        <button type="submit">Delete</button>
-      </form>
+    <li class="category-list-item">
+      <div class="category-row-head">
+        <strong>{{ category.name }}</strong>
+        <span>
+          <a href="{{ url_for('edit_category', category_id=category.id) }}">Edit</a>
+          <form method="post" action="{{ url_for('delete_category', category_id=category.id) }}" class="inline-form">
+            <button type="submit">Delete</button>
+          </form>
+        </span>
+      </div>
+
+      <div class="subcategory-manager">
+        <form method="post" action="{{ url_for('create_subcategory', category_id=category.id) }}" class="inline-form">
+          <input name="name" placeholder="Add subcategory">
+          <button type="submit">Add subcategory</button>
+        </form>
+        <ul>
+          {% for subcategory in subcategories_by_category.get(category.id, []) %}
+          <li>
+            <form method="post" action="{{ url_for('edit_subcategory', subcategory_id=subcategory.id) }}" class="inline-form">
+              <input name="name" value="{{ subcategory.name }}" required>
+              <button type="submit">Rename</button>
+            </form>
+            <form method="post" action="{{ url_for('delete_subcategory', subcategory_id=subcategory.id) }}" class="inline-form">
+              <button type="submit">Delete</button>
+            </form>
+          </li>
+          {% else %}
+          <li><small>No subcategories.</small></li>
+          {% endfor %}
+        </ul>
+      </div>
     </li>
     {% else %}
     <li>No categories available.</li>
