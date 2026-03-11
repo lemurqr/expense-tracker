@@ -83,6 +83,11 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .category-summary-list { list-style: none; margin: .4rem 0 .8rem; padding: 0; }
 .category-summary-list li { display: flex; justify-content: space-between; border-bottom: 1px solid #edf1f7; padding: .3rem 0; }
 
+
+.settlement-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 .9rem; }
+.settlement-tab { background: #f8faff; color: #334155; border: 1px solid #d6e1f5; border-radius: 999px; padding: .4rem .75rem; font-size: .88rem; font-weight: 600; cursor: pointer; }
+.settlement-tab.active { background: #274690; color: #fff; border-color: #274690; }
+.settlement-tab-panel { margin-top: .25rem; }
 .category-list { list-style: none; padding: 0; }
 .category-list-item { border: 1px solid #e6e9f2; border-radius: 8px; padding: .75rem; margin-top: .55rem; }
 .category-row-head { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
