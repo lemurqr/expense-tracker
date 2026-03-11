@@ -1774,8 +1774,8 @@ def create_app(test_config=None):
             row for row in sorted(table_rows, key=lambda row: (-row["current_month"], row["label"]))
             if row["current_month"] > 0
         ]
-        top_rows = positive_current_rows[:7]
-        other_total = round(sum(row["current_month"] for row in positive_current_rows[7:]), 2)
+        top_rows = positive_current_rows[:5]
+        other_total = round(sum(row["current_month"] for row in positive_current_rows[5:]), 2)
         pie_rows = [{"label": row["label"], "value": round(row["current_month"], 2)} for row in top_rows]
         if other_total > 0:
             pie_rows.append({"label": "Other", "value": other_total})

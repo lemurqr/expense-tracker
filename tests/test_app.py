@@ -1144,8 +1144,8 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
     assert "Total spending (includes Personal, excludes Transfers):" not in text
     assert "Shared spending (excludes Personal + Transfers):" not in text
     assert "Monthly Summary" not in text
-    assert 'id="record-repayment-section"' in text
-    assert "'record-repayment-section'" in text
+    assert 'id="record-repayment-panel"' in text
+    assert "data-settlement-tab=\"record-repayment-panel\"" in text
 
 
 def test_dashboard_shared_category_chart_shows_categories_in_pie_data(client):
@@ -1186,10 +1186,10 @@ def test_dashboard_shared_category_chart_shows_categories_in_pie_data(client):
 
     analytics = json.loads(match.group(1))
     chart_data = analytics["pie"]
-    assert len(chart_data) == 8
+    assert len(chart_data) == 6
     assert all(item["value"] > 0 for item in chart_data)
     assert chart_data[-1]["label"] == "Other"
-    assert chart_data[-1]["value"] == 15.0
+    assert chart_data[-1]["value"] == 28.0
 
 
 def test_dashboard_shared_category_chart_hides_zero_current_month_categories(client):
@@ -2062,15 +2062,20 @@ def test_monthly_breakdown_nets_positive_reimbursement(client):
     assert "$70.00" in text
 
 
-def test_settlement_template_has_collapsible_details_ids(client):
+def test_settlement_template_has_tab_labels(client):
     register(client)
     login(client)
 
     response = client.get("/dashboard?month=2026-02")
     text = response.get_data(as_text=True)
 
-    assert '<details id="shared-expenses-section" open>' in text
-    assert '<details id="monthly-breakdown-section">' in text
+    assert 'Shared Expenses' in text
+    assert 'Balance &amp; Repayments' in text
+    assert 'Record Repayment' in text
+    assert 'Monthly Breakdown' in text
+    assert 'data-settlement-tab="shared-expenses-panel"' in text
+    assert 'data-settlement-tab="monthly-breakdown-panel"' in text
+    assert 'id="shared-expenses-section"' not in text
 
 
 def test_dashboard_transactions_template_has_collapsible_bulk_and_filters(client):

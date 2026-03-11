@@ -89,8 +89,14 @@
 <section class="card">
   <h3>Shared Expenses and Settlements</h3>
 
-  <details id="shared-expenses-section" open>
-    <summary><strong>Shared Expenses</strong></summary>
+  <div class="settlement-tabs" role="tablist" aria-label="Shared expenses and settlements tabs">
+    <button type="button" class="settlement-tab active" role="tab" aria-selected="true" aria-controls="shared-expenses-panel" id="shared-expenses-tab" data-settlement-tab="shared-expenses-panel">Shared Expenses</button>
+    <button type="button" class="settlement-tab" role="tab" aria-selected="false" aria-controls="balance-repayments-panel" id="balance-repayments-tab" data-settlement-tab="balance-repayments-panel">Balance &amp; Repayments</button>
+    <button type="button" class="settlement-tab" role="tab" aria-selected="false" aria-controls="record-repayment-panel" id="record-repayment-tab" data-settlement-tab="record-repayment-panel">Record Repayment</button>
+    <button type="button" class="settlement-tab" role="tab" aria-selected="false" aria-controls="monthly-breakdown-panel" id="monthly-breakdown-tab" data-settlement-tab="monthly-breakdown-panel">Monthly Breakdown</button>
+  </div>
+
+  <div id="shared-expenses-panel" class="settlement-tab-panel" role="tabpanel" aria-labelledby="shared-expenses-tab">
     <table>
       <thead><tr><th>Metric</th><th>Value</th></tr></thead>
       <tbody>
@@ -126,10 +132,9 @@
         </tr>
       </tbody>
     </table>
-  </details>
+  </div>
 
-  <details id="balance-repayments-section" open>
-    <summary><strong>Balance & Repayments</strong></summary>
+  <div id="balance-repayments-panel" class="settlement-tab-panel" role="tabpanel" aria-labelledby="balance-repayments-tab" hidden>
     <table>
       <thead><tr><th>Line</th><th>Description</th><th>Amount</th></tr></thead>
       <tbody>
@@ -142,10 +147,9 @@
         <tr><td>7</td><td>Current outstanding: YZ owes</td><td>${{ '%.2f'|format(settlement.yz_owes_now) }}</td></tr>
       </tbody>
     </table>
-  </details>
+  </div>
 
-  <details id="record-repayment-section">
-    <summary><strong>Record repayment</strong></summary>
+  <div id="record-repayment-panel" class="settlement-tab-panel" role="tabpanel" aria-labelledby="record-repayment-tab" hidden>
     <form method="post" action="{{ url_for('create_settlement_payment') }}" class="inline-form">
       <input type="hidden" name="month" value="{{ selected_month }}">
       <input type="hidden" name="start" value="{{ start_date or '' }}">
@@ -226,10 +230,9 @@
         {% endfor %}
       </tbody>
     </table>
-  </details>
+  </div>
 
-  <details id="monthly-breakdown-section">
-    <summary><strong>Monthly Breakdown</strong></summary>
+  <div id="monthly-breakdown-panel" class="settlement-tab-panel" role="tabpanel" aria-labelledby="monthly-breakdown-tab" hidden>
     <table>
       <thead>
         <tr>
@@ -270,7 +273,7 @@
         </tr>
       </tbody>
     </table>
-  </details>
+  </div>
 </section>
 
 <section class="card">
@@ -467,6 +470,8 @@
         const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
         const values = sharedChartData.map((row) => Number(row.value));
         const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
+        const piePalette = ['#1d4ed8', '#0f766e', '#b45309', '#9333ea', '#be123c'];
+        const pieColors = labels.map((label, index) => label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
         if (window.Chart) {
           new window.Chart(chartCanvas, {
             type: 'pie',
@@ -475,7 +480,7 @@
               datasets: [{
                 label: 'Shared spending',
                 data: values,
-                backgroundColor: ['#4f46e5','#6366f1','#7c83ff','#60a5fa','#22c55e','#eab308','#f97316','#ef4444']
+                backgroundColor: pieColors
               }]
             },
             options: {
@@ -566,22 +571,6 @@
           key: 'collapse:transactions-filters',
           defaultOpen: Number(document.getElementById('transactions-filters')?.dataset.activeFilters || '0') > 0,
         },
-        {
-          id: 'shared-expenses-section',
-          key: 'collapse:shared-expenses-section',
-        },
-        {
-          id: 'balance-repayments-section',
-          key: 'collapse:balance-repayments-section',
-        },
-        {
-          id: 'record-repayment-section',
-          key: 'collapse:record-repayment-section',
-        },
-        {
-          id: 'monthly-breakdown-section',
-          key: 'collapse:monthly-breakdown-section',
-        },
       ];
 
       collapsibleSections.forEach(({ id, key, defaultOpen }) => {
@@ -597,6 +586,24 @@
         }
         el.addEventListener('toggle', function () {
           localStorage.setItem(key, el.open ? 'open' : 'closed');
+        });
+      });
+
+      const settlementTabButtons = Array.from(document.querySelectorAll('[data-settlement-tab]'));
+      const settlementTabPanels = Array.from(document.querySelectorAll('.settlement-tab-panel'));
+      function activateSettlementTab(panelId) {
+        settlementTabButtons.forEach((button) => {
+          const isActive = button.dataset.settlementTab === panelId;
+          button.classList.toggle('active', isActive);
+          button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+        settlementTabPanels.forEach((panel) => {
+          panel.hidden = panel.id !== panelId;
+        });
+      }
+      settlementTabButtons.forEach((button) => {
+        button.addEventListener('click', function () {
+          activateSettlementTab(button.dataset.settlementTab);
         });
       });
     })();
