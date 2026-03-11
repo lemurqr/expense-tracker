@@ -1140,7 +1140,10 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
     assert "Spend details" in text
     assert "Shared Expenses and Settlements" in text
     assert "legend: {" in text
-    assert "No shared expenses in selected period." not in text
+    assert 'data-spend-mode="period"' in text
+    assert 'data-spend-mode="ytd"' in text
+    assert 'id="category-analytics-view"' not in text
+    assert "Pie Chart" not in text
     assert "Total spending (includes Personal, excludes Transfers):" not in text
     assert "Shared spending (excludes Personal + Transfers):" not in text
     assert "Monthly Summary" not in text
@@ -1185,8 +1188,9 @@ def test_dashboard_shared_category_chart_shows_categories_in_pie_data(client):
     assert match is not None
 
     analytics = json.loads(match.group(1))
-    chart_data = analytics["pie"]
+    chart_data = analytics["pie_period"]
     assert len(chart_data) == 6
+    assert analytics["pie_ytd"]
     assert all(item["value"] > 0 for item in chart_data)
     assert chart_data[-1]["label"] == "Other"
     assert chart_data[-1]["value"] == 28.0
@@ -1215,7 +1219,7 @@ def test_dashboard_shared_category_chart_hides_zero_current_month_categories(cli
     response = client.get("/dashboard?month=2026-04")
     text = response.get_data(as_text=True)
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
-    chart_labels = [row["label"] for row in analytics["pie"]]
+    chart_labels = [row["label"] for row in analytics["pie_period"]]
 
     assert "Groceries" in chart_labels
     assert "Gifts & Presents" not in chart_labels
@@ -1252,7 +1256,7 @@ def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_cate
     match = re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL)
     assert match is not None
     analytics = json.loads(match.group(1))
-    chart_data = analytics["pie"]
+    chart_data = analytics["pie_period"]
 
     assert any(item["label"] == "Groceries" and item["value"] == 400.0 for item in chart_data)
     assert not any(item["label"] == "Gifts" for item in chart_data)
