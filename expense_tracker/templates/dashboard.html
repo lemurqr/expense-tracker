@@ -465,7 +465,7 @@
         const maxLabelLength = 22;
         const labels = sharedChartData.map((row) => row.label);
         const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
-        const values = sharedChartData.map((row) => row.value);
+        const values = sharedChartData.map((row) => Number(row.value));
         const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
         if (window.Chart) {
           new window.Chart(chartCanvas, {
@@ -475,7 +475,7 @@
               datasets: [{
                 label: 'Shared spending',
                 data: values,
-                backgroundColor: ['#4f46e5','#6366f1','#7c83ff','#60a5fa','#22c55e','#eab308','#f97316','#ef4444','#a855f7','#06b6d4','#14b8a6','#64748b']
+                backgroundColor: ['#4f46e5','#6366f1','#7c83ff','#60a5fa','#22c55e','#eab308','#f97316','#ef4444']
               }]
             },
             options: {
@@ -490,7 +490,17 @@
                 }
               },
               plugins: {
-                legend: { display: false },
+                legend: {
+                  display: true,
+                  position: 'bottom',
+                  labels: {
+                    boxWidth: 12,
+                    boxHeight: 12,
+                    padding: 10,
+                    usePointStyle: true,
+                    pointStyle: 'circle'
+                  }
+                },
                 tooltip: {
                   callbacks: {
                     title: function (context) {
@@ -498,7 +508,7 @@
                       return labels[index] || '';
                     },
                     label: function (context) {
-                      return formatCurrency(context.parsed.x ?? context.parsed.y ?? 0);
+                      return formatCurrency(values[context.dataIndex] ?? 0);
                     }
                   }
                 }

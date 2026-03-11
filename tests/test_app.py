@@ -1139,6 +1139,7 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
     assert 'id="shared-category-pie-chart"' in text
     assert "Spend details" in text
     assert "Shared Expenses and Settlements" in text
+    assert "legend: {" in text
     assert "No shared expenses in selected period." not in text
     assert "Total spending (includes Personal, excludes Transfers):" not in text
     assert "Shared spending (excludes Personal + Transfers):" not in text
@@ -1178,14 +1179,46 @@ def test_dashboard_shared_category_chart_shows_categories_in_pie_data(client):
     assert response.status_code == 200
     assert 'id="shared-category-pie-chart"' in text
     assert "Shared Expenses and Settlements" in text
+    assert "legend: {" in text
 
     match = re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL)
     assert match is not None
 
     analytics = json.loads(match.group(1))
     chart_data = analytics["pie"]
-    assert len(chart_data) >= 10
-    assert all(item["value"] >= 0 for item in chart_data)
+    assert len(chart_data) == 8
+    assert all(item["value"] > 0 for item in chart_data)
+    assert chart_data[-1]["label"] == "Other"
+    assert chart_data[-1]["value"] == 15.0
+
+
+def test_dashboard_shared_category_chart_hides_zero_current_month_categories(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        gifts_id = db.execute("SELECT id FROM categories WHERE name = 'Gifts & Presents'").fetchone()["id"]
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-03-10", "amount": "-75", "category_id": str(gifts_id), "description": "Last month only"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-10", "amount": "-25", "category_id": str(groceries_id), "description": "Current month"},
+        follow_redirects=True,
+    )
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
+    chart_labels = [row["label"] for row in analytics["pie"]]
+
+    assert "Groceries" in chart_labels
+    assert "Gifts & Presents" not in chart_labels
 
 
 def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_categories(client):
