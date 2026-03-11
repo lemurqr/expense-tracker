@@ -19,34 +19,20 @@
 <section class="card spend-details-card">
   <div class="spend-details-header">
     <h3>Spend details</h3>
-    <div class="inline-form">
-      <label>View
-        <select id="category-analytics-view">
-          <option value="pie" selected>Pie Chart</option>
-          <option value="list">List</option>
-        </select>
-      </label>
+    <div class="spend-mode-toggle" role="group" aria-label="Spend details mode">
+      <button type="button" class="spend-mode-button active" data-spend-mode="period" aria-pressed="true">Period</button>
+      <button type="button" class="spend-mode-button" data-spend-mode="ytd" aria-pressed="false">YTD</button>
     </div>
   </div>
-  <p class="card-subtitle">Shared categories for {{ shared_category_analytics.month }}</p>
+  <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.month }}</p>
 
-  {% if shared_category_analytics.pie %}
+  {% if shared_category_analytics.pie_period %}
   <div class="chart-wrap" id="category-analytics-pie-wrap" aria-label="Shared spending by category chart container">
     <canvas id="shared-category-pie-chart" aria-label="Shared spending by category pie chart"></canvas>
   </div>
   {% else %}
-  <p id="category-analytics-pie-wrap">No shared expenses in selected month.</p>
+  <p id="category-analytics-pie-wrap">No shared expenses in selected period.</p>
   {% endif %}
-
-  <div id="category-analytics-list-wrap" class="category-list-wrap" hidden>
-    <ul class="category-summary-list">
-      {% for item in shared_category_analytics.list %}
-      <li><span>{{ item.label }}</span><strong>${{ '%.2f'|format(item.current_month) }}</strong></li>
-      {% else %}
-      <li><span>No positive category spend</span><strong>$0.00</strong></li>
-      {% endfor %}
-    </ul>
-  </div>
 
   <div class="spend-table-controls">
     <button type="button" id="expand-all-categories" class="button button-secondary">Expand All</button>
@@ -462,18 +448,78 @@
       syncSelection();
 
       const sharedCategoryAnalytics = {{ shared_category_analytics|tojson }};
-      const sharedChartData = sharedCategoryAnalytics.pie || [];
+      const spendModeButtons = Array.from(document.querySelectorAll('[data-spend-mode]'));
+      const spendDetailsSubtitle = document.getElementById('spend-details-subtitle');
       const chartCanvas = document.getElementById('shared-category-pie-chart');
-      if (chartCanvas && sharedChartData.length > 0) {
-        const maxLabelLength = 22;
-        const labels = sharedChartData.map((row) => row.label);
+      let spendMode = 'period';
+      let sharedChart = null;
+
+      const piePalette = ['#1d4ed8', '#0f766e', '#b45309', '#9333ea', '#be123c'];
+      const maxLabelLength = 22;
+      const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
+      const emptyPieCopy = {
+        period: 'No shared expenses in selected period.',
+        ytd: `No shared year-to-date expenses through ${sharedCategoryAnalytics.month}.`
+      };
+
+      function getModeRows(mode) {
+        return mode === 'ytd'
+          ? (sharedCategoryAnalytics.pie_ytd || [])
+          : (sharedCategoryAnalytics.pie_period || []);
+      }
+
+      function updateSpendSubtitle(mode) {
+        if (!spendDetailsSubtitle) return;
+        spendDetailsSubtitle.textContent = mode === 'ytd'
+          ? `Shared categories year-to-date through ${sharedCategoryAnalytics.month}`
+          : `Shared categories for ${sharedCategoryAnalytics.month}`;
+      }
+
+      function ensureEmptyPieMessage(mode) {
+        const pieWrap = document.getElementById('category-analytics-pie-wrap');
+        if (!pieWrap || pieWrap.tagName !== 'P') return;
+        pieWrap.textContent = emptyPieCopy[mode];
+      }
+
+      function applySpendMode(mode) {
+        spendMode = mode;
+        spendModeButtons.forEach((button) => {
+          const active = button.dataset.spendMode === mode;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+        updateSpendSubtitle(mode);
+        ensureEmptyPieMessage(mode);
+
+        const rows = getModeRows(mode);
+        if (!sharedChart || !chartCanvas) return;
+        const labels = rows.map((row) => row.label);
         const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
-        const values = sharedChartData.map((row) => Number(row.value));
-        const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
-        const piePalette = ['#1d4ed8', '#0f766e', '#b45309', '#9333ea', '#be123c'];
+        const values = rows.map((row) => Number(row.value));
         const pieColors = labels.map((label, index) => label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
-        if (window.Chart) {
-          new window.Chart(chartCanvas, {
+
+        sharedChart.data.labels = shortLabels;
+        sharedChart.data.datasets[0].data = values;
+        sharedChart.data.datasets[0].backgroundColor = pieColors;
+        sharedChart.options.plugins.tooltip.callbacks.title = function (context) {
+          const index = context[0]?.dataIndex ?? 0;
+          return labels[index] || '';
+        };
+        sharedChart.options.plugins.tooltip.callbacks.label = function (context) {
+          return formatCurrency(values[context.dataIndex] ?? 0);
+        };
+        sharedChart.update();
+      }
+
+      if (chartCanvas && window.Chart) {
+        const initialRows = getModeRows('period');
+        if (initialRows.length > 0) {
+          const labels = initialRows.map((row) => row.label);
+          const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
+          const values = initialRows.map((row) => Number(row.value));
+          const pieColors = labels.map((label, index) => label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
+
+          sharedChart = new window.Chart(chartCanvas, {
             type: 'pie',
             data: {
               labels: shortLabels,
@@ -487,12 +533,7 @@
               responsive: true,
               maintainAspectRatio: false,
               layout: {
-                padding: {
-                  left: 10,
-                  right: 6,
-                  top: 4,
-                  bottom: 4
-                }
+                padding: { left: 10, right: 6, top: 4, bottom: 4 }
               },
               plugins: {
                 legend: {
@@ -524,16 +565,12 @@
         }
       }
 
-      const analyticsView = document.getElementById('category-analytics-view');
-      const pieWrap = document.getElementById('category-analytics-pie-wrap');
-      const listWrap = document.getElementById('category-analytics-list-wrap');
-      if (analyticsView && pieWrap && listWrap) {
-        analyticsView.addEventListener('change', function () {
-          const showPie = analyticsView.value === 'pie';
-          pieWrap.hidden = !showPie;
-          listWrap.hidden = showPie;
+      spendModeButtons.forEach((button) => {
+        button.addEventListener('click', function () {
+          applySpendMode(button.dataset.spendMode);
         });
-      }
+      });
+      applySpendMode('period');
 
       const toggleButtons = Array.from(document.querySelectorAll('[data-row-toggle]'));
       function setCategoryExpanded(id, expanded) {

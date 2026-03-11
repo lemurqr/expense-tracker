@@ -1774,15 +1774,23 @@ def create_app(test_config=None):
             row for row in sorted(table_rows, key=lambda row: (-row["current_month"], row["label"]))
             if row["current_month"] > 0
         ]
-        top_rows = positive_current_rows[:5]
-        other_total = round(sum(row["current_month"] for row in positive_current_rows[5:]), 2)
-        pie_rows = [{"label": row["label"], "value": round(row["current_month"], 2)} for row in top_rows]
-        if other_total > 0:
-            pie_rows.append({"label": "Other", "value": other_total})
+        positive_ytd_rows = [
+            row for row in sorted(table_rows, key=lambda row: (-row["year_to_date"], row["label"]))
+            if row["year_to_date"] > 0
+        ]
+
+        def build_pie_rows(rows, value_key):
+            top_rows = rows[:5]
+            other_total = round(sum(row[value_key] for row in rows[5:]), 2)
+            pie_rows = [{"label": row["label"], "value": round(row[value_key], 2)} for row in top_rows]
+            if other_total > 0:
+                pie_rows.append({"label": "Other", "value": other_total})
+            return pie_rows
+
         return {
             "month": analytics_month,
-            "pie": pie_rows,
-            "list": [row for row in table_rows if row["current_month"] > 0],
+            "pie_period": build_pie_rows(positive_current_rows, "current_month"),
+            "pie_ytd": build_pie_rows(positive_ytd_rows, "year_to_date"),
             "table": table_rows,
         }
 
