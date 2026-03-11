@@ -567,7 +567,7 @@ def test_dashboard_date_range_filter_and_totals(client):
     assert b"Inside A" in response.data
     assert b"Inside B" in response.data
     assert b"Outside" not in response.data
-    assert b'id="shared-category-chart"' in response.data
+    assert b'id="shared-category-pie-chart"' in response.data
 
 
 def test_export_csv_respects_date_range(client):
@@ -1136,8 +1136,8 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert 'id="shared-category-chart"' in text
-    assert "Shared spending by category" in text
+    assert 'id="shared-category-pie-chart"' in text
+    assert "Spend details" in text
     assert "Shared Expenses and Settlements" in text
     assert "No shared expenses in selected period." not in text
     assert "Total spending (includes Personal, excludes Transfers):" not in text
@@ -1147,7 +1147,7 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
     assert "'record-repayment-section'" in text
 
 
-def test_dashboard_shared_category_chart_shows_top_10_and_other(client):
+def test_dashboard_shared_category_chart_shows_categories_in_pie_data(client):
     register(client)
     login(client)
 
@@ -1176,15 +1176,15 @@ def test_dashboard_shared_category_chart_shows_top_10_and_other(client):
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert 'id="shared-category-chart"' in text
+    assert 'id="shared-category-pie-chart"' in text
     assert "Shared Expenses and Settlements" in text
 
-    match = re.search(r"const sharedChartData = (\[.*?\]);", text, re.DOTALL)
+    match = re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL)
     assert match is not None
 
-    chart_data = json.loads(match.group(1))
-    assert len(chart_data) == 11
-    assert chart_data[-1]["label"] == "Other"
+    analytics = json.loads(match.group(1))
+    chart_data = analytics["pie"]
+    assert len(chart_data) >= 10
     assert all(item["value"] >= 0 for item in chart_data)
 
 
@@ -1216,12 +1216,104 @@ def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_cate
     response = client.get("/dashboard?month=2026-04")
     text = response.get_data(as_text=True)
 
-    match = re.search(r"const sharedChartData = (\[.*?\]);", text, re.DOTALL)
+    match = re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL)
     assert match is not None
-    chart_data = json.loads(match.group(1))
+    analytics = json.loads(match.group(1))
+    chart_data = analytics["pie"]
 
     assert any(item["label"] == "Groceries" and item["value"] == 400.0 for item in chart_data)
     assert not any(item["label"] == "Gifts" for item in chart_data)
+
+
+def test_dashboard_spend_details_period_columns_current_last_ytd(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+
+    client.post("/expenses/new", data={"date": "2026-03-15", "amount": "-20", "category_id": str(groceries_id), "description": "Mar"}, follow_redirects=True)
+    client.post("/expenses/new", data={"date": "2026-04-10", "amount": "-100", "category_id": str(groceries_id), "description": "Apr"}, follow_redirects=True)
+    client.post("/expenses/new", data={"date": "2026-04-11", "amount": "40", "category_id": str(groceries_id), "description": "Apr refund"}, follow_redirects=True)
+    client.post("/expenses/new", data={"date": "2026-05-01", "amount": "-30", "category_id": str(groceries_id), "description": "May"}, follow_redirects=True)
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+    match = re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL)
+    analytics = json.loads(match.group(1))
+    groceries_row = next(row for row in analytics["table"] if row["label"] == "Groceries")
+
+    assert groceries_row["current_month"] == 60.0
+    assert groceries_row["last_month"] == 20.0
+    assert groceries_row["year_to_date"] == 80.0
+
+
+def test_dashboard_spend_details_excludes_transfers(client):
+    register(client)
+    login(client)
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        transfers_id = db.execute("SELECT id FROM categories WHERE name = 'Transfers'").fetchone()["id"]
+
+    client.post("/expenses/new", data={"date": "2026-04-10", "amount": "-100", "category_id": str(groceries_id), "description": "Food"}, follow_redirects=True)
+    client.post("/expenses/new", data={"date": "2026-04-11", "amount": "-1000", "category_id": str(transfers_id), "description": "Move"}, follow_redirects=True)
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
+    assert any(row["label"] == "Groceries" for row in analytics["table"])
+    assert not any(row["label"] == "Transfers" for row in analytics["table"])
+
+
+def test_subcategory_rollup_and_category_page_subcategory_crud(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-05", "amount": "-50", "category_id": str(groceries_id), "description": "Produce expense"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-04-06", "amount": "-25", "category_id": str(groceries_id), "description": "No subcategory"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, groceries_id, "Produce", datetime.utcnow().isoformat()),
+        )
+        subcat_id = db.execute("SELECT id FROM subcategories WHERE name = 'Produce'").fetchone()["id"]
+        db.execute(
+            "UPDATE expenses SET subcategory_id = ? WHERE user_id = ? AND description = ?",
+            (subcat_id, user_id, "Produce expense"),
+        )
+        db.commit()
+
+    dashboard = client.get("/dashboard?month=2026-04")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", dashboard.get_data(as_text=True), re.DOTALL).group(1))
+    groceries_row = next(row for row in analytics["table"] if row["label"] == "Groceries")
+    assert groceries_row["current_month"] == 75.0
+
+    categories_page = client.get("/categories")
+    assert categories_page.status_code == 200
+    assert b"Produce" in categories_page.data
+
+    rename = client.post(f"/subcategories/{subcat_id}/edit", data={"name": "Fruit"}, follow_redirects=True)
+    assert b"Subcategory updated." in rename.data
+
+    blocked_delete = client.post(f"/subcategories/{subcat_id}/delete", follow_redirects=True)
+    assert b"Cannot delete subcategory while expenses still reference it." in blocked_delete.data
 
 
 def test_refund_keeps_original_category_not_transfer(client):

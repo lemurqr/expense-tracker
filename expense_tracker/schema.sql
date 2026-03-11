@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS categories (
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
+
+CREATE TABLE IF NOT EXISTS subcategories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, category_id, name),
+    FOREIGN KEY (user_id) REFERENCES users (id),
+    FOREIGN KEY (category_id) REFERENCES categories (id)
+);
+
 CREATE TABLE IF NOT EXISTS expenses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -46,6 +58,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     date TEXT NOT NULL,
     amount REAL NOT NULL,
     category_id INTEGER,
+    subcategory_id INTEGER,
     description TEXT,
     vendor TEXT,
     paid_by TEXT,
@@ -58,7 +71,8 @@ CREATE TABLE IF NOT EXISTS expenses (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users (id),
     FOREIGN KEY (household_id) REFERENCES households (id),
-    FOREIGN KEY (category_id) REFERENCES categories (id)
+    FOREIGN KEY (category_id) REFERENCES categories (id),
+    FOREIGN KEY (subcategory_id) REFERENCES subcategories (id)
 );
 
 CREATE TABLE IF NOT EXISTS audit_logs (

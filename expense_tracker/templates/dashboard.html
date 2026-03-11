@@ -16,16 +16,74 @@
   <p><small>Period: {{ period_label }}</small></p>
 </section>
 
-<section class="card">
-  <h3>Shared spending by category</h3>
-  <p class="card-subtitle">Top 10 (shared only)</p>
-  {% if shared_category_chart %}
-  <div class="chart-wrap" aria-label="Shared spending by category chart container">
-    <canvas id="shared-category-chart" aria-label="Shared spending by category chart"></canvas>
+<section class="card spend-details-card">
+  <div class="spend-details-header">
+    <h3>Spend details</h3>
+    <div class="inline-form">
+      <label>View
+        <select id="category-analytics-view">
+          <option value="pie" selected>Pie Chart</option>
+          <option value="list">List</option>
+        </select>
+      </label>
+    </div>
+  </div>
+  <p class="card-subtitle">Shared categories for {{ shared_category_analytics.month }}</p>
+
+  {% if shared_category_analytics.pie %}
+  <div class="chart-wrap" id="category-analytics-pie-wrap" aria-label="Shared spending by category chart container">
+    <canvas id="shared-category-pie-chart" aria-label="Shared spending by category pie chart"></canvas>
   </div>
   {% else %}
-  <p>No shared expenses in selected period.</p>
+  <p id="category-analytics-pie-wrap">No shared expenses in selected month.</p>
   {% endif %}
+
+  <div id="category-analytics-list-wrap" class="category-list-wrap" hidden>
+    <ul class="category-summary-list">
+      {% for item in shared_category_analytics.list %}
+      <li><span>{{ item.label }}</span><strong>${{ '%.2f'|format(item.current_month) }}</strong></li>
+      {% else %}
+      <li><span>No positive category spend</span><strong>$0.00</strong></li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="spend-table-controls">
+    <button type="button" id="expand-all-categories" class="button button-secondary">Expand All</button>
+    <button type="button" id="collapse-all-categories" class="button button-secondary">Collapse All</button>
+  </div>
+
+  <table class="spend-details-table">
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th>Current Month</th>
+        <th>Last Month</th>
+        <th>Year-to-Date</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in shared_category_analytics.table %}
+      <tr class="category-row" data-category-row="{{ row.id }}">
+        <td>
+          <button type="button" class="row-toggle" data-row-toggle="{{ row.id }}" aria-expanded="false" title="Expand category details">▸</button>
+          <strong>{{ row.label }}</strong>
+        </td>
+        <td>${{ '%.2f'|format(row.current_month) }}</td>
+        <td>${{ '%.2f'|format(row.last_month) }}</td>
+        <td>${{ '%.2f'|format(row.year_to_date) }}</td>
+      </tr>
+      <tr class="subcategory-row" data-subcategory-group="{{ row.id }}" hidden>
+        <td class="subcategory-cell">No subcategories yet</td>
+        <td>$0.00</td>
+        <td>$0.00</td>
+        <td>$0.00</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4">No shared category activity for this period.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>
 
 <section class="card">
@@ -400,8 +458,9 @@
       }
       syncSelection();
 
-      const sharedChartData = {{ shared_category_chart|tojson }};
-      const chartCanvas = document.getElementById('shared-category-chart');
+      const sharedCategoryAnalytics = {{ shared_category_analytics|tojson }};
+      const sharedChartData = sharedCategoryAnalytics.pie || [];
+      const chartCanvas = document.getElementById('shared-category-pie-chart');
       if (chartCanvas && sharedChartData.length > 0) {
         const maxLabelLength = 22;
         const labels = sharedChartData.map((row) => row.label);
@@ -410,15 +469,13 @@
         const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
         if (window.Chart) {
           new window.Chart(chartCanvas, {
-            type: 'bar',
+            type: 'pie',
             data: {
               labels: shortLabels,
               datasets: [{
                 label: 'Shared spending',
                 data: values,
-                backgroundColor: '#4f46e5',
-                barThickness: 14,
-                maxBarThickness: 18
+                backgroundColor: ['#4f46e5','#6366f1','#7c83ff','#60a5fa','#22c55e','#eab308','#f97316','#ef4444','#a855f7','#06b6d4','#14b8a6','#64748b']
               }]
             },
             options: {
@@ -446,29 +503,47 @@
                   }
                 }
               },
-              indexAxis: 'y',
-              scales: {
-                y: {
-                  ticks: {
-                    autoSkip: false,
-                    font: {
-                      size: 12
-                    }
-                  }
-                },
-                x: {
-                  beginAtZero: true,
-                  ticks: {
-                    callback: function (value) {
-                      return formatCurrency(value);
-                    }
-                  }
-                }
-              }
+              scales: {}
             }
           });
         }
       }
+
+      const analyticsView = document.getElementById('category-analytics-view');
+      const pieWrap = document.getElementById('category-analytics-pie-wrap');
+      const listWrap = document.getElementById('category-analytics-list-wrap');
+      if (analyticsView && pieWrap && listWrap) {
+        analyticsView.addEventListener('change', function () {
+          const showPie = analyticsView.value === 'pie';
+          pieWrap.hidden = !showPie;
+          listWrap.hidden = showPie;
+        });
+      }
+
+      const toggleButtons = Array.from(document.querySelectorAll('[data-row-toggle]'));
+      function setCategoryExpanded(id, expanded) {
+        const button = document.querySelector(`[data-row-toggle="${id}"]`);
+        const subRows = Array.from(document.querySelectorAll(`[data-subcategory-group="${id}"]`));
+        if (!button || subRows.length === 0) return;
+        button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        button.textContent = expanded ? '▾' : '▸';
+        subRows.forEach((row) => { row.hidden = !expanded; });
+      }
+      toggleButtons.forEach((button) => {
+        button.addEventListener('click', function () {
+          const id = button.dataset.rowToggle;
+          const expanded = button.getAttribute('aria-expanded') === 'true';
+          setCategoryExpanded(id, !expanded);
+        });
+      });
+      const expandAllButton = document.getElementById('expand-all-categories');
+      const collapseAllButton = document.getElementById('collapse-all-categories');
+      if (expandAllButton) expandAllButton.addEventListener('click', function () {
+        toggleButtons.forEach((button) => setCategoryExpanded(button.dataset.rowToggle, true));
+      });
+      if (collapseAllButton) collapseAllButton.addEventListener('click', function () {
+        toggleButtons.forEach((button) => setCategoryExpanded(button.dataset.rowToggle, false));
+      });
 
       const collapsibleSections = [
         {
