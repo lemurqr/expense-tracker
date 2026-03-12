@@ -3658,8 +3658,8 @@ def test_import_confirm_uses_mapped_category_and_never_creates_categories(client
 def test_postgres_login_default_categories_idempotent(monkeypatch):
     database_url = get_test_postgres_url()
 
-    monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("TEST_DATABASE_URL", database_url)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     app = create_app({"TESTING": True, "SECRET_KEY": "test"})
 
     with app.app_context():

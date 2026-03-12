@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from expense_tracker.db import parse_database_config
@@ -12,14 +10,11 @@ from tests.conftest import (
 )
 
 
-def test_get_test_postgres_url_uses_dedicated_test_db_when_only_runtime_url_is_set(monkeypatch):
+def test_get_test_postgres_url_requires_test_database_url(monkeypatch):
     monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
-    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@db:5432/expense_tracker")
 
-    test_url = get_test_postgres_url()
-
-    assert test_url.endswith(f"/{TEST_DB_NAME}")
-    assert os.environ["TEST_DATABASE_URL"] == test_url
+    with pytest.raises(RuntimeError, match="TEST_DATABASE_URL must be set"):
+        get_test_postgres_url()
 
 
 def test_assert_not_live_database_raises_for_runtime_database_name():
@@ -34,6 +29,13 @@ def test_postgres_url_with_db_name_replaces_path_only():
     )
 
     assert rewritten == "postgresql://user:pass@db:5432/expense_tracker_test?sslmode=disable"
+
+
+def test_get_test_postgres_url_rejects_non_test_database_name(monkeypatch):
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://user:pass@db:5432/other_db")
+
+    with pytest.raises(RuntimeError, match="must point to 'expense_tracker_test'"):
+        get_test_postgres_url()
 
 
 def test_parse_database_config_prefers_test_database_url(monkeypatch):
