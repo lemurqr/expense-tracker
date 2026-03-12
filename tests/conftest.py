@@ -1,13 +1,15 @@
 import os
 import sys
 from urllib.parse import urlparse
-from urllib.parse import urlunparse
 
 import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+from expense_tracker.db import connect_db, parse_database_config
+from expense_tracker.db_migrations import apply_migrations
 
 
 POSTGRES_CLEANUP_TABLES = [
@@ -34,7 +36,7 @@ def _postgres_db_name(database_url):
 
 def _postgres_url_with_db_name(database_url, db_name):
     parsed = urlparse((database_url or "").strip())
-    return urlunparse(parsed._replace(path=f"/{db_name}"))
+    return parsed._replace(path=f"/{db_name}").geturl()
 
 
 def assert_not_live_database(database_url, env_var_name):
@@ -49,27 +51,19 @@ def assert_not_live_database(database_url, env_var_name):
 def get_test_postgres_url():
     url = os.environ.get("TEST_DATABASE_URL", "").strip()
     if not url:
-        runtime_url = os.environ.get("DATABASE_URL", "").strip()
-        if runtime_url.startswith(("postgres://", "postgresql://")):
-            url = _postgres_url_with_db_name(runtime_url, TEST_DB_NAME)
-            os.environ["TEST_DATABASE_URL"] = url
-    if not url:
-        pytest.skip("Postgres URL not configured (set TEST_DATABASE_URL)")
+        raise RuntimeError("Unsafe test database configuration: TEST_DATABASE_URL must be set for tests.")
     if not url.startswith(("postgres://", "postgresql://")):
-        pytest.skip("TEST_DATABASE_URL must be a postgres:// or postgresql:// URL")
+        raise RuntimeError("Unsafe test database configuration: TEST_DATABASE_URL must use postgres:// or postgresql://.")
     assert_not_live_database(url, "TEST_DATABASE_URL")
+    if _postgres_db_name(url) != TEST_DB_NAME:
+        raise RuntimeError(
+            f"Unsafe test database configuration: TEST_DATABASE_URL must point to '{TEST_DB_NAME}'."
+        )
     return url
 
 
 def pytest_sessionstart(session):
-    test_database_url = os.environ.get("TEST_DATABASE_URL", "").strip()
-    if not test_database_url:
-        runtime_url = os.environ.get("DATABASE_URL", "").strip()
-        if runtime_url.startswith(("postgres://", "postgresql://")):
-            test_database_url = _postgres_url_with_db_name(runtime_url, TEST_DB_NAME)
-            os.environ["TEST_DATABASE_URL"] = test_database_url
-    if test_database_url.startswith(("postgres://", "postgresql://")):
-        assert_not_live_database(test_database_url, "TEST_DATABASE_URL")
+    get_test_postgres_url()
 
 
 def reset_postgres_tables(db):
@@ -81,3 +75,17 @@ def reset_postgres_tables(db):
     for table in POSTGRES_CLEANUP_TABLES:
         db.execute(f"DELETE FROM {table}")
     db.commit()
+
+
+@pytest.fixture(scope="session")
+def postgres_test_database_url():
+    return get_test_postgres_url()
+
+
+@pytest.fixture()
+def postgres_test_database(postgres_test_database_url):
+    config = parse_database_config(prefer_test_database_url=True)
+    apply_migrations(config)
+    with connect_db(config) as db:
+        reset_postgres_tables(db)
+    yield postgres_test_database_url
