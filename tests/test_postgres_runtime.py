@@ -4,28 +4,18 @@ from datetime import datetime
 import pytest
 
 from expense_tracker import create_app
-from tests.conftest import (
-    LIVE_DB_NAME,
-    get_test_postgres_url,
-    reset_postgres_tables,
-)
-
-
-@pytest.fixture(scope="module")
-def postgres_url():
-    return get_test_postgres_url()
+from tests.conftest import LIVE_DB_NAME
 
 
 @pytest.fixture()
-def app(postgres_url, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", postgres_url)
-    monkeypatch.setenv("TEST_DATABASE_URL", postgres_url)
+def app(postgres_test_database, monkeypatch):
+    monkeypatch.setenv("TEST_DATABASE_URL", postgres_test_database)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     app = create_app({"TESTING": True, "SECRET_KEY": "test", "DATABASE": "/tmp/ignored.sqlite"})
     with app.app_context():
         app.init_db()
         db = app.get_db()
         assert db.config["database_name"] != LIVE_DB_NAME, "Tests must never use live database expense_tracker"
-        reset_postgres_tables(db)
     yield app
 
 
