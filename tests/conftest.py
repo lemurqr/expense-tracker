@@ -39,13 +39,24 @@ def _postgres_url_with_db_name(database_url, db_name):
     return parsed._replace(path=f"/{db_name}").geturl()
 
 
-def assert_not_live_database(database_url, env_var_name):
-    db_name = _postgres_db_name(database_url)
+def assert_test_database_name(db_name, source_name):
+    if not db_name:
+        raise RuntimeError(
+            f"Unsafe test database configuration: {source_name} is missing a database name."
+        )
     if db_name == LIVE_DB_NAME:
         raise RuntimeError(
-            f"Unsafe test database configuration: {env_var_name} points to live database '{LIVE_DB_NAME}'. "
+            f"Unsafe test database configuration: {source_name} points to live database '{LIVE_DB_NAME}'. "
             f"Use '{TEST_DB_NAME}' instead."
         )
+    if db_name != TEST_DB_NAME:
+        raise RuntimeError(
+            f"Unsafe test database configuration: {source_name} must point to '{TEST_DB_NAME}'."
+        )
+
+
+def assert_not_live_database(database_url, env_var_name):
+    assert_test_database_name(_postgres_db_name(database_url), env_var_name)
 
 
 def get_test_postgres_url():
@@ -54,6 +65,7 @@ def get_test_postgres_url():
         raise RuntimeError("Unsafe test database configuration: TEST_DATABASE_URL must be set for tests.")
     if not url.startswith(("postgres://", "postgresql://")):
         raise RuntimeError("Unsafe test database configuration: TEST_DATABASE_URL must use postgres:// or postgresql://.")
+    assert_test_database_name(_postgres_db_name(url), "TEST_DATABASE_URL")
     assert_not_live_database(url, "TEST_DATABASE_URL")
     if _postgres_db_name(url) != TEST_DB_NAME:
         raise RuntimeError(
@@ -66,6 +78,8 @@ def pytest_sessionstart(session):
     get_test_postgres_url()
 
 
+def reset_postgres_tables(db, database_name):
+    assert_test_database_name(database_name, "TEST_DATABASE_URL")
 def reset_postgres_tables(db):
     config_name = db.config.get("database_name") if hasattr(db, "config") else None
     if config_name != TEST_DB_NAME:
@@ -85,6 +99,10 @@ def postgres_test_database_url():
 @pytest.fixture()
 def postgres_test_database(postgres_test_database_url):
     config = parse_database_config(prefer_test_database_url=True)
+    assert_test_database_name(config.get("database_name"), "TEST_DATABASE_URL")
+    apply_migrations(config)
+    with connect_db(config) as db:
+        reset_postgres_tables(db, config.get("database_name"))
     apply_migrations(config)
     with connect_db(config) as db:
         reset_postgres_tables(db)
