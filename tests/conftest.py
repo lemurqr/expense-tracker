@@ -66,6 +66,11 @@ def get_test_postgres_url():
     if not url.startswith(("postgres://", "postgresql://")):
         raise RuntimeError("Unsafe test database configuration: TEST_DATABASE_URL must use postgres:// or postgresql://.")
     assert_test_database_name(_postgres_db_name(url), "TEST_DATABASE_URL")
+    assert_not_live_database(url, "TEST_DATABASE_URL")
+    if _postgres_db_name(url) != TEST_DB_NAME:
+        raise RuntimeError(
+            f"Unsafe test database configuration: TEST_DATABASE_URL must point to '{TEST_DB_NAME}'."
+        )
     return url
 
 
@@ -75,6 +80,12 @@ def pytest_sessionstart(session):
 
 def reset_postgres_tables(db, database_name):
     assert_test_database_name(database_name, "TEST_DATABASE_URL")
+def reset_postgres_tables(db):
+    config_name = db.config.get("database_name") if hasattr(db, "config") else None
+    if config_name != TEST_DB_NAME:
+        raise RuntimeError(
+            f"Refusing to truncate tables on database '{config_name}'. Tests may only cleanup '{TEST_DB_NAME}'."
+        )
     for table in POSTGRES_CLEANUP_TABLES:
         db.execute(f"DELETE FROM {table}")
     db.commit()
@@ -92,4 +103,7 @@ def postgres_test_database(postgres_test_database_url):
     apply_migrations(config)
     with connect_db(config) as db:
         reset_postgres_tables(db, config.get("database_name"))
+    apply_migrations(config)
+    with connect_db(config) as db:
+        reset_postgres_tables(db)
     yield postgres_test_database_url
