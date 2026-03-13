@@ -1341,6 +1341,10 @@ def test_subcategory_rollup_and_category_page_subcategory_crud(client):
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", dashboard.get_data(as_text=True), re.DOTALL).group(1))
     groceries_row = next(row for row in analytics["table"] if row["label"] == "Groceries")
     assert groceries_row["current_month"] == 75.0
+    assert [item["label"] for item in groceries_row["subcategories"]] == ["Produce"]
+    assert groceries_row["subcategories"][0]["current_month"] == 50.0
+    assert groceries_row["subcategories"][0]["last_month"] == 0.0
+    assert groceries_row["subcategories"][0]["year_to_date"] == 50.0
 
     categories_page = client.get("/categories")
     assert categories_page.status_code == 200
@@ -2198,6 +2202,63 @@ def test_dashboard_transactions_template_has_collapsible_bulk_and_filters(client
 
     assert '<details id="transactions-bulk-actions"' in text
     assert '<details id="transactions-filters"' in text
+
+
+def test_dashboard_transactions_template_has_split_vendor_and_description_filters(client):
+    register(client)
+    login(client)
+
+    response = client.get("/dashboard?month=2026-02")
+    text = response.get_data(as_text=True)
+
+    assert 'name="tx_vendor_q"' in text
+    assert 'name="tx_description_q"' in text
+    assert 'Vendor contains' in text
+    assert 'Description contains' in text
+    assert 'Vendor/Description contains' not in text
+
+
+def test_dashboard_vendor_and_description_filters_can_be_combined(client):
+    register(client)
+    login(client)
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-01", "amount": "-10", "category_id": str(groceries_id), "vendor": "Amazon", "description": "Gift card"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-02", "amount": "-20", "category_id": str(groceries_id), "vendor": "Amazon", "description": "Groceries"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-03", "amount": "-30", "category_id": str(groceries_id), "vendor": "Target", "description": "Gift card"},
+        follow_redirects=True,
+    )
+
+    vendor_only = client.get("/dashboard?month=2026-02&tx_vendor_q=amazon")
+    vendor_text = vendor_only.get_data(as_text=True)
+    assert "Gift card" in vendor_text
+    assert "Groceries" in vendor_text
+    assert "Target" not in vendor_text
+
+    description_only = client.get("/dashboard?month=2026-02&tx_description_q=gift")
+    description_text = description_only.get_data(as_text=True)
+    assert "Gift card" in description_text
+    assert "Target" in description_text
+    assert "Groceries" not in description_text
+
+    combined = client.get("/dashboard?month=2026-02&tx_vendor_q=amazon&tx_description_q=gift")
+    combined_text = combined.get_data(as_text=True)
+    assert "Amazon" in combined_text
+    assert "Gift card" in combined_text
+    assert "Groceries" not in combined_text
+    assert "Target" not in combined_text
 
 
 def test_import_preview_applies_default_paid_by_when_column_missing(client):

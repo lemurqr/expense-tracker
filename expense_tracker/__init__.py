@@ -1349,6 +1349,8 @@ def create_app(test_config=None):
         tx_amount_max = (args.get("tx_amount_max") or "").strip()
         tx_paid_by = (args.get("tx_paid_by") or "").strip().upper()
         tx_category_id = (args.get("tx_category_id") or "").strip()
+        tx_vendor_q = (args.get("tx_vendor_q") or "").strip()
+        tx_description_q = (args.get("tx_description_q") or "").strip()
         tx_q = (args.get("tx_q") or "").strip()
         tx_confidence_bucket = (args.get("tx_confidence_bucket") or "").strip().lower()
         tx_source = (args.get("tx_source") or "").strip()
@@ -1468,7 +1470,15 @@ def create_app(test_config=None):
                     tx_sql_parts.append("e.category_id = ?")
                     tx_params.append(tx_category_id_int)
 
-        if tx_q:
+        if tx_vendor_q:
+            tx_sql_parts.append("LOWER(COALESCE(e.vendor, '')) LIKE ?")
+            tx_params.append(f"%{tx_vendor_q.lower()}%")
+
+        if tx_description_q:
+            tx_sql_parts.append("LOWER(COALESCE(e.description, '')) LIKE ?")
+            tx_params.append(f"%{tx_description_q.lower()}%")
+
+        if tx_q and not tx_vendor_q and not tx_description_q:
             tx_sql_parts.append("(LOWER(COALESCE(e.vendor, '')) LIKE ? OR LOWER(COALESCE(e.description, '')) LIKE ?)")
             tx_params.extend([f"%{tx_q.lower()}%", f"%{tx_q.lower()}%"])
 
@@ -1503,7 +1513,8 @@ def create_app(test_config=None):
             "tx_amount_max": tx_amount_max,
             "tx_paid_by": tx_paid_by if tx_paid_by in {"DK", "YZ", "BLANK"} else "",
             "tx_category_id": tx_category_id,
-            "tx_q": tx_q,
+            "tx_vendor_q": tx_vendor_q,
+            "tx_description_q": tx_description_q,
             "tx_confidence_bucket": tx_confidence_bucket,
             "tx_source": tx_source,
             "tx_transfer_mode": tx_transfer_mode,
@@ -1542,7 +1553,8 @@ def create_app(test_config=None):
             "tx_amount_max",
             "tx_paid_by",
             "tx_category_id",
-            "tx_q",
+            "tx_vendor_q",
+            "tx_description_q",
             "tx_confidence_bucket",
             "tx_source",
             "tx_transfer_mode",
@@ -1738,17 +1750,17 @@ def create_app(test_config=None):
             """
             SELECT
                 c.id AS category_id,
-                COALESCE(sc.name, 'No subcategory') AS subcategory,
+                sc.name AS subcategory,
                 {rounded_total_sql} AS total
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
+            JOIN subcategories sc ON e.subcategory_id = sc.id
             WHERE e.household_id = ?
               AND e.is_transfer = 0
               AND e.is_personal = 0
               AND e.date >= ?
               AND e.date <= ?
-            GROUP BY c.id, COALESCE(sc.name, 'No subcategory')
+            GROUP BY c.id, sc.id, sc.name
             """.format(rounded_total_sql=rounded_total_sql),
             (household_id, start_date.isoformat(), end_date.isoformat()),
         ).fetchall()
@@ -1797,6 +1809,29 @@ def create_app(test_config=None):
                 or ytd_rows.get(key, {}).get("label")
                 or "Uncategorized"
             )
+            subcategory_totals = {}
+            for period_key, period_rows in (
+                ("current_month", current_rows),
+                ("last_month", last_rows),
+                ("year_to_date", ytd_rows),
+            ):
+                for subcategory in period_rows.get(key, {}).get("subcategories", []):
+                    subcategory_totals.setdefault(
+                        subcategory["label"],
+                        {"label": subcategory["label"], "current_month": 0.0, "last_month": 0.0, "year_to_date": 0.0},
+                    )[period_key] = round(float(subcategory.get("value", 0.0)), 2)
+
+            subcategory_rows = [
+                subcategory
+                for subcategory in sorted(
+                    subcategory_totals.values(),
+                    key=lambda item: (-item["current_month"], -item["year_to_date"], item["label"]),
+                )
+                if abs(subcategory["current_month"]) >= 0.005
+                or abs(subcategory["last_month"]) >= 0.005
+                or abs(subcategory["year_to_date"]) >= 0.005
+            ]
+
             table_rows.append(
                 {
                     "id": key,
@@ -1804,7 +1839,7 @@ def create_app(test_config=None):
                     "current_month": current_value,
                     "last_month": last_value,
                     "year_to_date": ytd_value,
-                    "subcategories": [],
+                    "subcategories": subcategory_rows,
                 }
             )
 
@@ -1822,8 +1857,18 @@ def create_app(test_config=None):
             def build_subcategory_breakdown(subcategories, max_rows=5):
                 if not subcategories:
                     return []
-                limited = subcategories[:max_rows]
-                remaining_total = round(sum(item["value"] for item in subcategories[max_rows:]), 2)
+                valued_rows = []
+                for item in subcategories:
+                    if "value" in item:
+                        value = round(float(item.get("value") or 0), 2)
+                    else:
+                        value = round(float(item.get(value_key) or 0), 2)
+                    if value > 0:
+                        valued_rows.append({"label": item["label"], "value": value})
+                if not valued_rows:
+                    return []
+                limited = valued_rows[:max_rows]
+                remaining_total = round(sum(item["value"] for item in valued_rows[max_rows:]), 2)
                 result = [
                     {"label": item["label"], "value": round(item["value"], 2)}
                     for item in limited
