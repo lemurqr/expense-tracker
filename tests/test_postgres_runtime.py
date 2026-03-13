@@ -113,12 +113,11 @@ def test_postgres_runtime_paths(client):
         expense = db.execute("SELECT id FROM expenses ORDER BY id DESC LIMIT 1").fetchone()
 
     bulk_delete = client.post(
-        "/expenses/bulk-delete",
-        data=json.dumps({"ids": [expense["id"]]}),
-        content_type="application/json",
+        "/expenses/bulk",
+        data={"action": "delete", "selected_ids": [str(expense["id"])]},
+        follow_redirects=True,
     )
     assert bulk_delete.status_code == 200
-    assert bulk_delete.get_json()["ok"] is True
 
 
 def test_dashboard_loads_with_postgres_rounding(client):
