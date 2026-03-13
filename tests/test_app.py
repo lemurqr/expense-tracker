@@ -1353,6 +1353,112 @@ def test_subcategory_rollup_and_category_page_subcategory_crud(client):
     assert b"Cannot delete subcategory while expenses still reference it." in blocked_delete.data
 
 
+
+
+def test_expense_forms_render_when_subcategories_exist(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, groceries_id, "Produce", datetime.utcnow().isoformat()),
+        )
+        subcategory_id = db.execute(
+            "SELECT id FROM subcategories WHERE user_id = ? AND category_id = ? AND name = ?",
+            (user_id, groceries_id, "Produce"),
+        ).fetchone()["id"]
+        household_id = db.execute("SELECT household_id FROM household_members WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()["household_id"]
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, description, vendor, paid_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, household_id, "2026-06-01", -10, groceries_id, subcategory_id, "Seed expense", "Vendor", ""),
+        )
+        expense_id = db.last_insert_id()
+        db.commit()
+
+    add_form = client.get("/expenses/new")
+    assert add_form.status_code == 200
+    assert b"Subcategory" in add_form.data
+
+    edit_form = client.get(f"/expenses/{expense_id}/edit")
+    assert edit_form.status_code == 200
+    assert b"Subcategory" in edit_form.data
+
+
+def test_expense_form_subcategory_selection_and_dashboard_display(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, groceries_id, "Produce", datetime.utcnow().isoformat()),
+        )
+        subcategory_id = db.execute(
+            "SELECT id FROM subcategories WHERE user_id = ? AND category_id = ? AND name = ?",
+            (user_id, groceries_id, "Produce"),
+        ).fetchone()["id"]
+        db.commit()
+
+    new_form = client.get("/expenses/new")
+    assert b"Subcategory" in new_form.data
+
+    created = client.post(
+        "/expenses/new",
+        data={
+            "date": "2026-06-02",
+            "amount": "-33.50",
+            "category_id": str(groceries_id),
+            "subcategory_id": str(subcategory_id),
+            "description": "Farmer market",
+        },
+        follow_redirects=True,
+    )
+    assert created.status_code == 200
+    assert b"Groceries \xe2\x80\xba Produce" in created.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        saved = db.execute(
+            "SELECT id, category_id, subcategory_id, updated_at FROM expenses WHERE description = ?",
+            ("Farmer market",),
+        ).fetchone()
+
+    assert saved["category_id"] == groceries_id
+    assert saved["subcategory_id"] == subcategory_id
+
+    edit_form = client.get(f"/expenses/{saved['id']}/edit")
+    assert b"Subcategory" in edit_form.data
+    assert b"Produce" in edit_form.data
+
+    client.post(
+        f"/expenses/{saved['id']}/edit",
+        data={
+            "date": "2026-06-02",
+            "amount": "-33.50",
+            "category_id": str(groceries_id),
+            "subcategory_id": "",
+            "description": "Farmer market",
+            "updated_at": saved["updated_at"],
+        },
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        edited = db.execute(
+            "SELECT subcategory_id FROM expenses WHERE id = ?",
+            (saved["id"],),
+        ).fetchone()
+    assert edited["subcategory_id"] is None
+
+
 def test_refund_keeps_original_category_not_transfer(client):
     register(client)
     login(client)
