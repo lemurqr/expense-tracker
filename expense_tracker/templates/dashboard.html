@@ -506,7 +506,28 @@
           return labels[index] || '';
         };
         sharedChart.options.plugins.tooltip.callbacks.label = function (context) {
-          return formatCurrency(values[context.dataIndex] ?? 0);
+          const value = values[context.dataIndex] ?? 0;
+          const total = values.reduce((sum, current) => sum + current, 0);
+          const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
+          return [formatCurrency(value), `${percent}% of total`];
+        };
+        sharedChart.options.plugins.tooltip.callbacks.afterLabel = function (context) {
+          const row = rows[context.dataIndex] || {};
+          const lines = [];
+          const subcategories = row.subcategories || [];
+          const includedCategories = row.included_categories || [];
+
+          if (subcategories.length > 0) {
+            lines.push('Subcategories:');
+            subcategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
+          } else if (includedCategories.length > 0) {
+            lines.push('Includes categories:');
+            includedCategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
+          } else {
+            lines.push('Subcategories:');
+            lines.push('• No subcategory: ' + formatCurrency(row.value || 0));
+          }
+          return lines;
         };
         sharedChart.update();
       }
@@ -554,7 +575,28 @@
                       return labels[index] || '';
                     },
                     label: function (context) {
-                      return formatCurrency(values[context.dataIndex] ?? 0);
+                      const value = values[context.dataIndex] ?? 0;
+                      const total = values.reduce((sum, current) => sum + current, 0);
+                      const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
+                      return [formatCurrency(value), `${percent}% of total`];
+                    },
+                    afterLabel: function (context) {
+                      const row = initialRows[context.dataIndex] || {};
+                      const lines = [];
+                      const subcategories = row.subcategories || [];
+                      const includedCategories = row.included_categories || [];
+
+                      if (subcategories.length > 0) {
+                        lines.push('Subcategories:');
+                        subcategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
+                      } else if (includedCategories.length > 0) {
+                        lines.push('Includes categories:');
+                        includedCategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
+                      } else {
+                        lines.push('Subcategories:');
+                        lines.push('• No subcategory: ' + formatCurrency(row.value || 0));
+                      }
+                      return lines;
                     }
                   }
                 }
