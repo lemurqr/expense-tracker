@@ -27,8 +27,11 @@
         <option value="">No subcategory</option>
       </select>
     </label>
+    <label>Vendor
+      <input name="vendor" value="{{ expense.vendor if expense else '' }}" required>
+    </label>
     <label>Description
-      <input name="description" value="{{ expense.description if expense else '' }}">
+      <input name="description" value="{{ expense.description if expense else '' }}" placeholder="Optional note/context">
     </label>
     <label>Paid by
       <select name="paid_by">
