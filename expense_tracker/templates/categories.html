@@ -3,15 +3,9 @@
 <section class="card">
   <h2>Categories</h2>
   <div class="category-finder" aria-label="Category finder">
-    <label for="category-search">Find category</label>
-    <input
-      id="category-search"
-      type="search"
-      placeholder="Filter dropdown..."
-      autocomplete="off"
-    >
-    <select id="category-jump" aria-label="Jump to category">
-      <option value="">Jump to category...</option>
+    <label for="category-select">Select category</label>
+    <select id="category-select" aria-label="Select category">
+      <option value="">All categories</option>
       {% for category in categories %}
       <option value="category-{{ category.id }}">{{ category.name }}</option>
       {% endfor %}
@@ -80,44 +74,18 @@
 
 <script>
   (function () {
-    var finderInput = document.getElementById('category-search');
-    var jumpSelect = document.getElementById('category-jump');
-    var allOptions = [];
-
-    if (jumpSelect) {
-      allOptions = Array.from(jumpSelect.options).slice(1).map(function (option) {
-        return { value: option.value, label: option.textContent };
-      });
-
-      jumpSelect.addEventListener('change', function () {
-        if (!jumpSelect.value) {
-          return;
-        }
-        var target = document.getElementById(jumpSelect.value);
-        if (target) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      });
-    }
-
-    if (finderInput && jumpSelect) {
-      finderInput.addEventListener('input', function () {
-        var query = finderInput.value.trim().toLowerCase();
-        var matching = allOptions.filter(function (option) {
-          return option.label.toLowerCase().indexOf(query) !== -1;
-        });
-
-        jumpSelect.innerHTML = '<option value="">Jump to category...</option>';
-        matching.forEach(function (option) {
-          var newOption = document.createElement('option');
-          newOption.value = option.value;
-          newOption.textContent = option.label;
-          jumpSelect.appendChild(newOption);
-        });
-      });
-    }
-
+    var categorySelect = document.getElementById('category-select');
+    var categoryCards = Array.from(document.querySelectorAll('.category-list-item'));
     var openCategoryId = null;
+
+    if (categorySelect) {
+      categorySelect.addEventListener('change', function () {
+        var selectedId = categorySelect.value;
+        categoryCards.forEach(function (card) {
+          card.hidden = Boolean(selectedId) && card.id !== selectedId;
+        });
+      });
+    }
 
     function closeForm(categoryId) {
       var form = document.getElementById('subcategory-form-' + categoryId);
@@ -128,6 +96,10 @@
       form.hidden = true;
       toggle.hidden = false;
       toggle.setAttribute('aria-expanded', 'false');
+      var input = form.querySelector('input[name="name"]');
+      if (input) {
+        input.value = '';
+      }
       openCategoryId = null;
     }
 
