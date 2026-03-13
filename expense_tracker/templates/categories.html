@@ -2,13 +2,28 @@
 {% block content %}
 <section class="card">
   <h2>Categories</h2>
+  <div class="category-finder" aria-label="Category finder">
+    <label for="category-search">Find category</label>
+    <input
+      id="category-search"
+      type="search"
+      placeholder="Filter dropdown..."
+      autocomplete="off"
+    >
+    <select id="category-jump" aria-label="Jump to category">
+      <option value="">Jump to category...</option>
+      {% for category in categories %}
+      <option value="category-{{ category.id }}">{{ category.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
   <form method="post" class="inline-form">
     <input name="name" placeholder="New category" required>
     <button type="submit">Add</button>
   </form>
   <ul class="category-list">
     {% for category in categories %}
-    <li class="category-list-item">
+    <li class="category-list-item" id="category-{{ category.id }}">
       <div class="category-row-head">
         <strong>{{ category.name }}</strong>
         <span>
@@ -20,9 +35,25 @@
       </div>
 
       <div class="subcategory-manager">
-        <form method="post" action="{{ url_for('create_subcategory', category_id=category.id) }}" class="inline-form">
-          <input name="name" placeholder="Add subcategory">
-          <button type="submit">Add subcategory</button>
+        <button
+          type="button"
+          class="button button-secondary subcategory-toggle"
+          data-category-id="{{ category.id }}"
+          aria-expanded="false"
+          aria-controls="subcategory-form-{{ category.id }}"
+        >
+          + Add subcategory
+        </button>
+        <form
+          method="post"
+          action="{{ url_for('create_subcategory', category_id=category.id) }}"
+          class="inline-form subcategory-inline-form"
+          id="subcategory-form-{{ category.id }}"
+          hidden
+        >
+          <input name="name" placeholder="Subcategory name" required>
+          <button type="submit">Add</button>
+          <button type="button" class="button button-secondary subcategory-cancel" data-category-id="{{ category.id }}">Cancel</button>
         </form>
         <ul>
           {% for subcategory in subcategories_by_category.get(category.id, []) %}
@@ -46,4 +77,89 @@
     {% endfor %}
   </ul>
 </section>
+
+<script>
+  (function () {
+    var finderInput = document.getElementById('category-search');
+    var jumpSelect = document.getElementById('category-jump');
+    var allOptions = [];
+
+    if (jumpSelect) {
+      allOptions = Array.from(jumpSelect.options).slice(1).map(function (option) {
+        return { value: option.value, label: option.textContent };
+      });
+
+      jumpSelect.addEventListener('change', function () {
+        if (!jumpSelect.value) {
+          return;
+        }
+        var target = document.getElementById(jumpSelect.value);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    }
+
+    if (finderInput && jumpSelect) {
+      finderInput.addEventListener('input', function () {
+        var query = finderInput.value.trim().toLowerCase();
+        var matching = allOptions.filter(function (option) {
+          return option.label.toLowerCase().indexOf(query) !== -1;
+        });
+
+        jumpSelect.innerHTML = '<option value="">Jump to category...</option>';
+        matching.forEach(function (option) {
+          var newOption = document.createElement('option');
+          newOption.value = option.value;
+          newOption.textContent = option.label;
+          jumpSelect.appendChild(newOption);
+        });
+      });
+    }
+
+    var openCategoryId = null;
+
+    function closeForm(categoryId) {
+      var form = document.getElementById('subcategory-form-' + categoryId);
+      var toggle = document.querySelector('.subcategory-toggle[data-category-id="' + categoryId + '"]');
+      if (!form || !toggle) {
+        return;
+      }
+      form.hidden = true;
+      toggle.hidden = false;
+      toggle.setAttribute('aria-expanded', 'false');
+      openCategoryId = null;
+    }
+
+    document.querySelectorAll('.subcategory-toggle').forEach(function (toggleButton) {
+      toggleButton.addEventListener('click', function () {
+        var categoryId = toggleButton.getAttribute('data-category-id');
+        var form = document.getElementById('subcategory-form-' + categoryId);
+        if (!form) {
+          return;
+        }
+
+        if (openCategoryId && openCategoryId !== categoryId) {
+          closeForm(openCategoryId);
+        }
+
+        form.hidden = false;
+        toggleButton.hidden = true;
+        toggleButton.setAttribute('aria-expanded', 'true');
+        openCategoryId = categoryId;
+
+        var input = form.querySelector('input[name="name"]');
+        if (input) {
+          input.focus();
+        }
+      });
+    });
+
+    document.querySelectorAll('.subcategory-cancel').forEach(function (cancelButton) {
+      cancelButton.addEventListener('click', function () {
+        closeForm(cancelButton.getAttribute('data-category-id'));
+      });
+    });
+  })();
+</script>
 {% endblock %}
