@@ -29,26 +29,29 @@
       </div>
 
       <div class="subcategory-manager">
-        <button
-          type="button"
-          class="button button-secondary subcategory-toggle"
-          data-category-id="{{ category.id }}"
-          aria-expanded="false"
-          aria-controls="subcategory-form-{{ category.id }}"
-        >
-          + Add subcategory
-        </button>
-        <form
-          method="post"
-          action="{{ url_for('create_subcategory', category_id=category.id) }}"
-          class="inline-form subcategory-inline-form"
-          id="subcategory-form-{{ category.id }}"
-          hidden
-        >
-          <input name="name" placeholder="Subcategory name" required>
-          <button type="submit" class="subcategory-action-button">Add</button>
-          <button type="button" class="button button-secondary subcategory-cancel subcategory-action-button" data-category-id="{{ category.id }}">Cancel</button>
-        </form>
+        <div class="subcategory-trigger-wrap" id="subcategory-trigger-{{ category.id }}">
+          <button
+            type="button"
+            class="button button-secondary subcategory-toggle"
+            data-category-id="{{ category.id }}"
+            aria-expanded="false"
+            aria-controls="subcategory-form-wrap-{{ category.id }}"
+          >
+            + Add subcategory
+          </button>
+        </div>
+        <div class="subcategory-form-wrap" id="subcategory-form-wrap-{{ category.id }}" hidden>
+          <form
+            method="post"
+            action="{{ url_for('create_subcategory', category_id=category.id) }}"
+            class="inline-form subcategory-inline-form"
+            id="subcategory-form-{{ category.id }}"
+          >
+            <input name="name" placeholder="Subcategory name" required>
+            <button type="submit" class="subcategory-action-button">Add</button>
+            <button type="button" class="button button-secondary subcategory-cancel subcategory-action-button" data-category-id="{{ category.id }}">Cancel</button>
+          </form>
+        </div>
         <ul>
           {% for subcategory in subcategories_by_category.get(category.id, []) %}
           <li>
@@ -88,13 +91,15 @@
     }
 
     function closeForm(categoryId) {
+      var formWrap = document.getElementById('subcategory-form-wrap-' + categoryId);
       var form = document.getElementById('subcategory-form-' + categoryId);
+      var triggerWrap = document.getElementById('subcategory-trigger-' + categoryId);
       var toggle = document.querySelector('.subcategory-toggle[data-category-id="' + categoryId + '"]');
-      if (!form || !toggle) {
+      if (!formWrap || !form || !triggerWrap || !toggle) {
         return;
       }
-      form.hidden = true;
-      toggle.hidden = false;
+      formWrap.hidden = true;
+      triggerWrap.hidden = false;
       toggle.setAttribute('aria-expanded', 'false');
       var input = form.querySelector('input[name="name"]');
       if (input) {
@@ -117,15 +122,17 @@
     document.querySelectorAll('.subcategory-toggle').forEach(function (toggleButton) {
       toggleButton.addEventListener('click', function () {
         var categoryId = toggleButton.getAttribute('data-category-id');
+        var formWrap = document.getElementById('subcategory-form-wrap-' + categoryId);
         var form = document.getElementById('subcategory-form-' + categoryId);
-        if (!form) {
+        var triggerWrap = document.getElementById('subcategory-trigger-' + categoryId);
+        if (!formWrap || !form || !triggerWrap) {
           return;
         }
 
         closeAllForms(categoryId);
 
-        form.hidden = false;
-        toggleButton.hidden = true;
+        formWrap.hidden = false;
+        triggerWrap.hidden = true;
         toggleButton.setAttribute('aria-expanded', 'true');
         openCategoryId = categoryId;
 
