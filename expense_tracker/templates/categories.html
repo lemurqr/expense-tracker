@@ -19,8 +19,21 @@
     {% for category in categories %}
     <li class="category-list-item" id="category-{{ category.id }}">
       <div class="category-row-head">
-        <strong>{{ category.name }}</strong>
-        <span>
+        <div class="category-heading-group">
+          <strong>{{ category.name }}</strong>
+          <div class="subcategory-trigger-wrap" id="subcategory-trigger-{{ category.id }}">
+            <button
+              type="button"
+              class="button button-secondary subcategory-toggle subcategory-toggle-compact"
+              data-category-id="{{ category.id }}"
+              aria-expanded="false"
+              aria-controls="subcategory-form-wrap-{{ category.id }}"
+            >
+              + Add subcategory
+            </button>
+          </div>
+        </div>
+        <span class="category-top-actions">
           <a href="{{ url_for('edit_category', category_id=category.id) }}">Edit</a>
           <form method="post" action="{{ url_for('delete_category', category_id=category.id) }}" class="inline-form">
             <button type="submit">Delete</button>
@@ -29,17 +42,6 @@
       </div>
 
       <div class="subcategory-manager">
-        <div class="subcategory-trigger-wrap" id="subcategory-trigger-{{ category.id }}">
-          <button
-            type="button"
-            class="button button-secondary subcategory-toggle"
-            data-category-id="{{ category.id }}"
-            aria-expanded="false"
-            aria-controls="subcategory-form-wrap-{{ category.id }}"
-          >
-            + Add subcategory
-          </button>
-        </div>
         <div class="subcategory-form-wrap" id="subcategory-form-wrap-{{ category.id }}" hidden>
           <form
             method="post"
