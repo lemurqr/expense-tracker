@@ -15,7 +15,8 @@ def app(postgres_test_database, monkeypatch):
     with app.app_context():
         app.init_db()
         db = app.get_db()
-        assert db.config["database_name"] != LIVE_DB_NAME, "Tests must never use live database expense_tracker"
+        current_database = db.execute("SELECT current_database() AS name").fetchone()["name"]
+        assert current_database != LIVE_DB_NAME, "Tests must never use live database expense_tracker"
     yield app
 
 
