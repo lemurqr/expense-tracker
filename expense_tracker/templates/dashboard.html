@@ -387,7 +387,7 @@
         <td>{{ expense.date }}</td>
         <td>${{ '%.2f'|format(expense.amount) }}</td>
         <td>{{ expense.paid_by or '—' }}</td>
-        <td>{{ expense.category or 'Uncategorized' }}</td>
+        <td>{% if expense.subcategory %}{{ expense.category or 'Uncategorized' }} &#8250; {{ expense.subcategory }}{% else %}{{ expense.category or 'Uncategorized' }}{% endif %}</td>
         <td>{{ expense.description }}</td>
         <td>{% if expense.category_source == 'transfer' %}<span class="confidence-badge confidence-transfer">Transfer</span>{% elif expense.category_confidence is not none %}{% if expense.category_confidence >= 80 %}<span class="confidence-badge confidence-high">{{ expense.category_confidence }}</span>{% elif expense.category_confidence >= 50 %}<span class="confidence-badge confidence-medium">{{ expense.category_confidence }}</span>{% else %}<span class="confidence-badge confidence-low">{{ expense.category_confidence }}</span>{% endif %}{% else %}<span class="confidence-badge confidence-low">N/A</span>{% endif %}</td>
         <td><small>{{ expense.category_source or 'unknown' }}</small></td>
