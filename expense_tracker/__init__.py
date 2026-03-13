@@ -2422,10 +2422,12 @@ def create_app(test_config=None):
 
         expenses = db.execute(
             """
-            SELECT e.id, e.date, e.amount, e.description, c.name as category, e.updated_at,
+            SELECT e.id, e.date, e.amount, e.description, c.name as category,
+                   sc.name AS subcategory, e.updated_at,
                    e.category_confidence, e.category_source, e.paid_by
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
+            LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
             WHERE {filter_sql} AND {tx_filter_sql}
             ORDER BY e.date DESC, e.id DESC
             """.format(filter_sql=filters["filter_sql"], tx_filter_sql=filters["tx_filter_sql"]),
@@ -2591,12 +2593,26 @@ def create_app(test_config=None):
         categories = db.execute(
             "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
         ).fetchall()
+        subcategory_rows = db.execute(
+            """
+            SELECT sc.id, sc.category_id, sc.name
+            FROM subcategories sc
+            JOIN categories c ON c.id = sc.category_id
+            WHERE sc.user_id = ? AND c.user_id = ?
+            ORDER BY sc.name ASC
+            """,
+            (g.user["id"], g.user["id"]),
+        ).fetchall()
+        subcategories_by_category = {}
+        for row in subcategory_rows:
+            subcategories_by_category.setdefault(row["category_id"], []).append(row)
 
         if request.method == "POST":
             expense_date = request.form["date"]
             amount = request.form["amount"]
             paid_by = normalize_paid_by(request.form.get("paid_by", ""))
             category_id = request.form.get("category_id") or None
+            submitted_subcategory_id = request.form.get("subcategory_id") or None
             description = request.form.get("description", "").strip()
             category_name = db.execute(
                 "SELECT name FROM categories WHERE id = ? AND user_id = ?",
@@ -2615,6 +2631,20 @@ def create_app(test_config=None):
                     if found:
                         category_id = found["id"]
 
+            subcategory_id = None
+            if category_id and submitted_subcategory_id:
+                subcategory = db.execute(
+                    """
+                    SELECT sc.id
+                    FROM subcategories sc
+                    JOIN categories c ON c.id = sc.category_id
+                    WHERE sc.id = ? AND sc.category_id = ? AND sc.user_id = ? AND c.user_id = ?
+                    """,
+                    (submitted_subcategory_id, category_id, g.user["id"], g.user["id"]),
+                ).fetchone()
+                if subcategory is not None:
+                    subcategory_id = subcategory["id"]
+
             categorization = categorize_transaction(
                 g.user["id"], description, derive_vendor(description), resolved_category, [row["name"] for row in categories], db
             )
@@ -2625,19 +2655,29 @@ def create_app(test_config=None):
                 amount_value = float(amount)
             except ValueError:
                 flash("Amount must be a valid number.")
-                return render_template("expense_form.html", categories=categories, expense=None)
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=None,
+                )
 
             if paid_by not in {"", "DK", "YZ"}:
                 flash("Paid by must be DK or YZ.")
-                return render_template("expense_form.html", categories=categories, expense=None)
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=None,
+                )
 
             db.execute(
                 """
                 INSERT INTO expenses (
-                    user_id, household_id, date, amount, category_id, description, vendor, paid_by,
+                    user_id, household_id, date, amount, category_id, subcategory_id, description, vendor, paid_by,
                     is_transfer, is_personal, category_confidence, category_source, tags
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     g.user["id"],
@@ -2645,6 +2685,7 @@ def create_app(test_config=None):
                     expense_date,
                     amount_value,
                     category_id,
+                    subcategory_id,
                     description,
                     derive_vendor(description),
                     paid_by,
@@ -2661,7 +2702,12 @@ def create_app(test_config=None):
             flash("Expense added.")
             return redirect(url_for("dashboard"))
 
-        return render_template("expense_form.html", categories=categories, expense=None)
+        return render_template(
+            "expense_form.html",
+            categories=categories,
+            subcategories_by_category=subcategories_by_category,
+            expense=None,
+        )
 
     def get_user_expense(expense_id):
         expense = get_household_expense(expense_id)
@@ -2731,12 +2777,26 @@ def create_app(test_config=None):
         categories = db.execute(
             "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
         ).fetchall()
+        subcategory_rows = db.execute(
+            """
+            SELECT sc.id, sc.category_id, sc.name
+            FROM subcategories sc
+            JOIN categories c ON c.id = sc.category_id
+            WHERE sc.user_id = ? AND c.user_id = ?
+            ORDER BY sc.name ASC
+            """,
+            (g.user["id"], g.user["id"]),
+        ).fetchall()
+        subcategories_by_category = {}
+        for row in subcategory_rows:
+            subcategories_by_category.setdefault(row["category_id"], []).append(row)
 
         if request.method == "POST":
             expense_date = request.form["date"]
             amount = request.form["amount"]
             paid_by = normalize_paid_by(request.form.get("paid_by", ""))
             category_id = request.form.get("category_id") or None
+            submitted_subcategory_id = request.form.get("subcategory_id") or None
             description = request.form.get("description", "").strip()
             submitted_updated_at = (request.form.get("updated_at") or "").strip()
             effective_updated_at = submitted_updated_at or (expense["updated_at"] or "")
@@ -2759,6 +2819,20 @@ def create_app(test_config=None):
                 if found:
                     category_id = found["id"]
 
+            subcategory_id = None
+            if category_id and submitted_subcategory_id:
+                subcategory = db.execute(
+                    """
+                    SELECT sc.id
+                    FROM subcategories sc
+                    JOIN categories c ON c.id = sc.category_id
+                    WHERE sc.id = ? AND sc.category_id = ? AND sc.user_id = ? AND c.user_id = ?
+                    """,
+                    (submitted_subcategory_id, category_id, g.user["id"], g.user["id"]),
+                ).fetchone()
+                if subcategory is not None:
+                    subcategory_id = subcategory["id"]
+
             categorization = categorize_transaction(
                 g.user["id"], description, derive_vendor(description), resolved_category, available_category_names, db
             )
@@ -2769,16 +2843,28 @@ def create_app(test_config=None):
                 amount_value = float(amount)
             except ValueError:
                 flash("Amount must be a valid number.")
-                return render_template("expense_form.html", categories=categories, expense=expense, filter_params=redirect_params)
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=expense,
+                    filter_params=redirect_params,
+                )
 
             if paid_by not in {"", "DK", "YZ"}:
                 flash("Paid by must be DK or YZ.")
-                return render_template("expense_form.html", categories=categories, expense=expense, filter_params=redirect_params)
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=expense,
+                    filter_params=redirect_params,
+                )
 
             result = db.execute(
                 """
                 UPDATE expenses
-                SET date = ?, amount = ?, category_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?,
+                SET date = ?, amount = ?, category_id = ?, subcategory_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?,
                     category_confidence = ?, category_source = ?, tags = ?, paid_by = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND household_id = ? AND COALESCE(updated_at, '') = ?
                 """,
@@ -2786,6 +2872,7 @@ def create_app(test_config=None):
                     expense_date,
                     amount_value,
                     category_id,
+                    subcategory_id,
                     description,
                     derive_vendor(description),
                     1 if is_transfer_transaction(description, resolved_category) else 0,
@@ -2810,7 +2897,13 @@ def create_app(test_config=None):
             flash("Expense updated.")
             return redirect(url_for("dashboard", **redirect_params))
 
-        return render_template("expense_form.html", categories=categories, expense=expense, filter_params=current_filter_redirect_params(request.args))
+        return render_template(
+            "expense_form.html",
+            categories=categories,
+            subcategories_by_category=subcategories_by_category,
+            expense=expense,
+            filter_params=current_filter_redirect_params(request.args),
+        )
 
     def delete_household_expenses(db, expense_ids):
         ids = []
