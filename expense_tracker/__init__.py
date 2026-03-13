@@ -1469,8 +1469,8 @@ def create_app(test_config=None):
                     tx_params.append(tx_category_id_int)
 
         if tx_q:
-            tx_sql_parts.append("LOWER(e.description) LIKE ?")
-            tx_params.append(f"%{tx_q.lower()}%")
+            tx_sql_parts.append("(LOWER(COALESCE(e.vendor, '')) LIKE ? OR LOWER(COALESCE(e.description, '')) LIKE ?)")
+            tx_params.extend([f"%{tx_q.lower()}%", f"%{tx_q.lower()}%"])
 
         if tx_confidence_bucket == "high":
             tx_sql_parts.append("e.category_confidence >= 80")
@@ -2422,7 +2422,7 @@ def create_app(test_config=None):
 
         expenses = db.execute(
             """
-            SELECT e.id, e.date, e.amount, e.description, c.name as category,
+            SELECT e.id, e.date, e.amount, e.vendor, e.description, c.name as category,
                    sc.name AS subcategory, e.updated_at,
                    e.category_confidence, e.category_source, e.paid_by
             FROM expenses e
@@ -2615,7 +2615,16 @@ def create_app(test_config=None):
             paid_by = normalize_paid_by(request.form.get("paid_by", ""))
             category_id = request.form.get("category_id") or None
             submitted_subcategory_id = request.form.get("subcategory_id") or None
+            vendor = request.form.get("vendor", "").strip()
             description = request.form.get("description", "").strip()
+            if not vendor:
+                flash("Vendor is required.")
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=None,
+                )
             category_name = db.execute(
                 "SELECT name FROM categories WHERE id = ? AND user_id = ?",
                 (category_id, g.user["id"]),
@@ -2623,7 +2632,7 @@ def create_app(test_config=None):
             resolved_category = category_name["name"] if category_name else ""
             if not resolved_category:
                 available_category_names = [row["name"] for row in categories]
-                categorized = categorize_transaction(g.user["id"], description, "", "", available_category_names, db)
+                categorized = categorize_transaction(g.user["id"], description, vendor, "", available_category_names, db)
                 resolved_category = categorized["category"]
                 if resolved_category:
                     found = db.execute(
@@ -2648,7 +2657,7 @@ def create_app(test_config=None):
                     subcategory_id = subcategory["id"]
 
             categorization = categorize_transaction(
-                g.user["id"], description, derive_vendor(description), resolved_category, [row["name"] for row in categories], db
+                g.user["id"], description, vendor, resolved_category, [row["name"] for row in categories], db
             )
             if resolved_category and categorization["source"] == "unknown":
                 categorization = {"category": resolved_category, "confidence": 25, "source": "unknown"}
@@ -2689,7 +2698,7 @@ def create_app(test_config=None):
                     category_id,
                     subcategory_id,
                     description,
-                    derive_vendor(description),
+                    vendor,
                     paid_by,
                     1 if is_transfer_transaction(description, resolved_category) else 0,
                     1 if resolved_category == "Personal" else 0,
@@ -2801,7 +2810,17 @@ def create_app(test_config=None):
             paid_by = normalize_paid_by(request.form.get("paid_by", ""))
             category_id = request.form.get("category_id") or None
             submitted_subcategory_id = request.form.get("subcategory_id") or None
+            vendor = request.form.get("vendor", "").strip()
             description = request.form.get("description", "").strip()
+            if not vendor:
+                flash("Vendor is required.")
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=expense,
+                    filter_params=current_filter_redirect_params(request.form),
+                )
             submitted_updated_at = (request.form.get("updated_at") or "").strip()
             effective_updated_at = submitted_updated_at or (expense["updated_at"] or "")
             redirect_params = current_filter_redirect_params(request.form)
@@ -2813,7 +2832,7 @@ def create_app(test_config=None):
             previous_category_id = expense["category_id"]
             resolved_category = category_name["name"] if category_name else ""
             if category_name is None:
-                categorized = categorize_transaction(g.user["id"], description, expense["vendor"] or "", "", available_category_names, db)
+                categorized = categorize_transaction(g.user["id"], description, vendor or expense["vendor"] or "", "", available_category_names, db)
                 resolved_category = categorized["category"]
             if category_name is None and resolved_category:
                 found = db.execute(
@@ -2838,7 +2857,7 @@ def create_app(test_config=None):
                     subcategory_id = subcategory["id"]
 
             categorization = categorize_transaction(
-                g.user["id"], description, derive_vendor(description), resolved_category, available_category_names, db
+                g.user["id"], description, vendor or expense["vendor"] or "", resolved_category, available_category_names, db
             )
             if resolved_category and categorization["source"] == "unknown":
                 categorization = {"category": resolved_category, "confidence": 25, "source": "unknown"}
@@ -2878,7 +2897,7 @@ def create_app(test_config=None):
                     category_id,
                     subcategory_id,
                     description,
-                    derive_vendor(description),
+                    vendor,
                     1 if is_transfer_transaction(description, resolved_category) else 0,
                     1 if resolved_category == "Personal" else 0,
                     categorization["confidence"],
