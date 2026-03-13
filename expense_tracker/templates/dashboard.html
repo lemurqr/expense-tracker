@@ -59,12 +59,23 @@
         <td>${{ '%.2f'|format(row.last_month) }}</td>
         <td>${{ '%.2f'|format(row.year_to_date) }}</td>
       </tr>
+      {% if row.subcategories %}
+      {% for subcategory in row.subcategories %}
+      <tr class="subcategory-row" data-subcategory-group="{{ row.id }}" hidden>
+        <td class="subcategory-cell">{{ subcategory.label }}</td>
+        <td>${{ '%.2f'|format(subcategory.current_month) }}</td>
+        <td>${{ '%.2f'|format(subcategory.last_month) }}</td>
+        <td>${{ '%.2f'|format(subcategory.year_to_date) }}</td>
+      </tr>
+      {% endfor %}
+      {% else %}
       <tr class="subcategory-row" data-subcategory-group="{{ row.id }}" hidden>
         <td class="subcategory-cell">No subcategories yet</td>
         <td>$0.00</td>
         <td>$0.00</td>
         <td>$0.00</td>
       </tr>
+      {% endif %}
       {% else %}
       <tr><td colspan="4">No shared category activity for this period.</td></tr>
       {% endfor %}
@@ -275,7 +286,8 @@
     <input type="hidden" name="tx_amount_max" value="{{ tx_filter_values.tx_amount_max }}">
     <input type="hidden" name="tx_paid_by" value="{{ tx_filter_values.tx_paid_by }}">
     <input type="hidden" name="tx_category_id" value="{{ tx_filter_values.tx_category_id }}">
-    <input type="hidden" name="tx_q" value="{{ tx_filter_values.tx_q }}">
+    <input type="hidden" name="tx_vendor_q" value="{{ tx_filter_values.tx_vendor_q }}">
+    <input type="hidden" name="tx_description_q" value="{{ tx_filter_values.tx_description_q }}">
     <input type="hidden" name="tx_confidence_bucket" value="{{ tx_filter_values.tx_confidence_bucket }}">
     <input type="hidden" name="tx_source" value="{{ tx_filter_values.tx_source }}">
     <input type="hidden" name="tx_transfer_mode" value="{{ tx_filter_values.tx_transfer_mode }}">
@@ -343,7 +355,8 @@
             {% endfor %}
           </select>
         </label>
-        <label class="tx-filter-group tx-description-filter"><span class="form-label">Vendor/Description contains</span><input type="text" class="form-control" form="tx-filters-form" name="tx_q" value="{{ tx_filter_values.tx_q }}"></label>
+        <label class="tx-filter-group tx-description-filter"><span class="form-label">Vendor contains</span><input type="text" class="form-control" form="tx-filters-form" name="tx_vendor_q" value="{{ tx_filter_values.tx_vendor_q }}"></label>
+        <label class="tx-filter-group tx-description-filter"><span class="form-label">Description contains</span><input type="text" class="form-control" form="tx-filters-form" name="tx_description_q" value="{{ tx_filter_values.tx_description_q }}"></label>
         <label class="tx-filter-group"><span class="form-label">Confidence</span>
           <select class="form-select" form="tx-filters-form" name="tx_confidence_bucket">
             {% for option in tx_confidence_options %}
