@@ -1724,14 +1724,53 @@ def create_app(test_config=None):
             """.format(rounded_total_sql=rounded_total_sql),
             (household_id, start_date.isoformat(), end_date.isoformat()),
         ).fetchall()
-        return {
+        category_totals = {
             (row["category_id"] if row["category_id"] is not None else 0): {
                 "id": row["category_id"],
                 "label": row["category"],
                 "value": round(float(row["total"] or 0), 2),
+                "subcategories": [],
             }
             for row in rows
         }
+
+        subcategory_rows = db.execute(
+            """
+            SELECT
+                c.id AS category_id,
+                COALESCE(sc.name, 'No subcategory') AS subcategory,
+                {rounded_total_sql} AS total
+            FROM expenses e
+            LEFT JOIN categories c ON e.category_id = c.id
+            LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
+            WHERE e.household_id = ?
+              AND e.is_transfer = 0
+              AND e.is_personal = 0
+              AND e.date >= ?
+              AND e.date <= ?
+            GROUP BY c.id, COALESCE(sc.name, 'No subcategory')
+            """.format(rounded_total_sql=rounded_total_sql),
+            (household_id, start_date.isoformat(), end_date.isoformat()),
+        ).fetchall()
+
+        for row in subcategory_rows:
+            category_key = row["category_id"] if row["category_id"] is not None else 0
+            if category_key not in category_totals:
+                continue
+            value = round(float(row["total"] or 0), 2)
+            if value <= 0:
+                continue
+            category_totals[category_key]["subcategories"].append(
+                {
+                    "label": row["subcategory"],
+                    "value": value,
+                }
+            )
+
+        for category in category_totals.values():
+            category["subcategories"].sort(key=lambda item: (-item["value"], item["label"]))
+
+        return category_totals
 
     def _build_shared_category_analytics(db, filters):
         analytics_month = _resolve_analytics_month(filters)
@@ -1780,11 +1819,41 @@ def create_app(test_config=None):
         ]
 
         def build_pie_rows(rows, value_key):
+            def build_subcategory_breakdown(subcategories, max_rows=5):
+                if not subcategories:
+                    return []
+                limited = subcategories[:max_rows]
+                remaining_total = round(sum(item["value"] for item in subcategories[max_rows:]), 2)
+                result = [
+                    {"label": item["label"], "value": round(item["value"], 2)}
+                    for item in limited
+                ]
+                if remaining_total > 0:
+                    result.append({"label": "Other subcategories", "value": remaining_total})
+                return result
+
             top_rows = rows[:5]
             other_total = round(sum(row[value_key] for row in rows[5:]), 2)
-            pie_rows = [{"label": row["label"], "value": round(row[value_key], 2)} for row in top_rows]
+            pie_rows = [
+                {
+                    "label": row["label"],
+                    "value": round(row[value_key], 2),
+                    "subcategories": build_subcategory_breakdown(row.get("subcategories") or []),
+                }
+                for row in top_rows
+            ]
             if other_total > 0:
+                other_rows = rows[5:]
+                other_breakdown = [
+                    {"label": row["label"], "value": round(row[value_key], 2)}
+                    for row in other_rows[:5]
+                    if row[value_key] > 0
+                ]
+                remaining_other_total = round(sum(row[value_key] for row in other_rows[5:]), 2)
+                if remaining_other_total > 0:
+                    other_breakdown.append({"label": "Other categories", "value": remaining_other_total})
                 pie_rows.append({"label": "Other", "value": other_total})
+                pie_rows[-1]["included_categories"] = other_breakdown
             return pie_rows
 
         return {
