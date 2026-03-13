@@ -52,8 +52,12 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .transactions-subcard summary > span:first-child { margin-right: auto; }
 .tx-summary-badge { background: #eef2ff; color: #475569; border-radius: 999px; padding: .2rem .55rem; font-size: .78rem; font-weight: 600; }
 .tx-filters-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: .75rem; }
-.tx-actions { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; }
-.tx-btn { display: inline-block; padding: .28rem .5rem; border-radius: 6px; font-size: .82rem; text-decoration: none; border: 1px solid #274690; background: #fff; color: #274690; }
+.tx-actions { display: flex; gap: .25rem; flex-wrap: wrap; align-items: center; }
+.tx-btn { display: inline-block; padding: .2rem .42rem; border-radius: 6px; font-size: .76rem; line-height: 1.15; text-decoration: none; border: 1px solid #274690; background: #fff; color: #274690; }
+
+.dashboard-transactions-table { font-size: .88rem; }
+.dashboard-transactions-table th,
+.dashboard-transactions-table td { padding: .34rem .4rem; }
 .tx-btn-outline { background: #fff; }
 .tx-btn-danger { border-color: #b42318; background: #d92d20; color: #fff; }
 

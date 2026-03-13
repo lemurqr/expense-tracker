@@ -1421,7 +1421,8 @@ def test_expense_form_subcategory_selection_and_dashboard_display(client):
         follow_redirects=True,
     )
     assert created.status_code == 200
-    assert b"Groceries \xe2\x80\xba Produce" in created.data
+    assert b">Groceries<" in created.data
+    assert b">Produce<" in created.data
 
     with client.application.app_context():
         db = client.application.get_db()
