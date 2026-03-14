@@ -422,6 +422,29 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
     (function () {
+      function dashboardScrollKey() {
+        return 'scroll:' + window.location.pathname + ':dashboard';
+      }
+
+      function saveDashboardScrollPosition() {
+        sessionStorage.setItem(dashboardScrollKey(), JSON.stringify({ y: window.scrollY, expiresAt: Date.now() + 15000 }));
+      }
+
+      function restoreDashboardScrollPosition() {
+        const stored = sessionStorage.getItem(dashboardScrollKey());
+        if (!stored) return;
+        sessionStorage.removeItem(dashboardScrollKey());
+        try {
+          const payload = JSON.parse(stored);
+          if (!payload || typeof payload.y !== 'number' || Number(payload.expiresAt) < Date.now()) return;
+          window.scrollTo(0, payload.y);
+        } catch (error) {
+          sessionStorage.removeItem(dashboardScrollKey());
+        }
+      }
+
+      restoreDashboardScrollPosition();
+
       const form = document.getElementById('bulk-actions-form');
       const selectAll = document.getElementById('select-all-expenses');
       const checkboxes = form ? Array.from(form.querySelectorAll('.expense-checkbox')) : [];
@@ -460,6 +483,21 @@
         });
       }
       syncSelection();
+
+      const dashboardFilterForm = document.querySelector('section.card > form[method="get"]');
+      if (dashboardFilterForm) {
+        dashboardFilterForm.addEventListener('submit', saveDashboardScrollPosition);
+      }
+      const txFiltersForm = document.getElementById('tx-filters-form');
+      if (txFiltersForm) {
+        txFiltersForm.addEventListener('submit', saveDashboardScrollPosition);
+      }
+      if (form) {
+        form.addEventListener('submit', saveDashboardScrollPosition);
+      }
+      document.querySelectorAll('form[action*="/settlements/"]').forEach((settlementForm) => {
+        settlementForm.addEventListener('submit', saveDashboardScrollPosition);
+      });
 
       const sharedCategoryAnalytics = {{ shared_category_analytics|tojson }};
       const spendModeButtons = Array.from(document.querySelectorAll('[data-spend-mode]'));
