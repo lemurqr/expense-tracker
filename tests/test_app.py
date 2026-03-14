@@ -1,4 +1,5 @@
 from pathlib import Path
+import csv
 import os
 import io
 import json
@@ -1349,6 +1350,9 @@ def test_subcategory_rollup_and_category_page_subcategory_crud(client):
     categories_page = client.get("/categories")
     assert categories_page.status_code == 200
     assert b"Produce" in categories_page.data
+    assert b"Expand all" in categories_page.data
+    assert b"Collapse all" in categories_page.data
+    assert b"Export categories CSV" in categories_page.data
 
     rename = client.post(f"/subcategories/{subcat_id}/edit", data={"name": "Fruit"}, follow_redirects=True)
     assert b"Subcategory updated." in rename.data
@@ -1357,6 +1361,36 @@ def test_subcategory_rollup_and_category_page_subcategory_crud(client):
     assert b"Cannot delete subcategory while expenses still reference it." in blocked_delete.data
 
 
+def test_categories_csv_export_includes_categories_with_and_without_subcategories(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        groceries_id = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = ?", (user_id, "Groceries")).fetchone()["id"]
+        db.execute(
+            "INSERT INTO categories (user_id, name) VALUES (?, ?)",
+            (user_id, "Household Test Category"),
+        )
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, groceries_id, "Produce", datetime.utcnow().isoformat()),
+        )
+        db.commit()
+
+    response = client.get("/categories/export.csv")
+
+    assert response.status_code == 200
+    assert response.mimetype == "text/csv"
+    content_disposition = response.headers.get("Content-Disposition", "")
+    assert "attachment" in content_disposition
+    assert "categories-" in content_disposition
+
+    rows = list(csv.reader(io.StringIO(response.get_data(as_text=True))))
+    assert rows[0] == ["category", "subcategory"]
+    assert ["Groceries", "Produce"] in rows
+    assert ["Household Test Category", ""] in rows
 
 
 def test_expense_forms_render_when_subcategories_exist(client):

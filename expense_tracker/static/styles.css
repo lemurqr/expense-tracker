@@ -97,14 +97,14 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .settlement-tab.active { background: #274690; color: #fff; border-color: #274690; }
 .settlement-tab-panel { margin-top: .25rem; }
 .category-list { list-style: none; padding: 0; }
-.category-list-item { border: 1px solid #e6e9f2; border-radius: 8px; padding: .75rem; margin-top: .55rem; }
-.category-row-head { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
-.category-heading-group { display: inline-flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
+.category-list-item { border: 1px solid #e6e9f2; border-radius: 8px; padding: .55rem .65rem; margin-top: .4rem; }
+.category-row-head { display: flex; justify-content: space-between; gap: .45rem; align-items: center; }
+.category-heading-group { display: inline-flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
 .category-top-actions { display: inline-flex; align-items: center; gap: .45rem; }
-.subcategory-manager { margin-top: .35rem; }
-.subcategory-list-wrap { margin-top: .3rem; }
-.subcategory-manager ul { list-style: none; padding: 0; margin: .35rem 0 0; }
-.subcategory-manager li { display: flex; gap: .35rem; align-items: center; margin-top: .25rem; }
+.subcategory-manager { margin-top: .25rem; }
+.subcategory-list-wrap { margin-top: .2rem; }
+.subcategory-manager ul { list-style: none; padding: 0; margin: .2rem 0 0; }
+.subcategory-manager li { display: flex; gap: .35rem; align-items: center; margin-top: .18rem; }
 .subcategory-manager li .inline-form { gap: .3rem; }
 .subcategory-manager li input[name="name"] {
   padding: .3rem .45rem;
@@ -112,9 +112,12 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
   border-radius: 6px;
 }
 .subcategory-trigger-wrap { margin-top: 0; }
-.subcategory-form-wrap { margin-top: .3rem; }
+.subcategory-form-wrap { margin-top: .2rem; }
 .category-finder { display: grid; gap: .45rem; margin-bottom: .75rem; max-width: 420px; }
 .category-finder label { font-weight: 600; color: #334155; font-size: .9rem; }
+.categories-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .45rem; margin: .4rem 0 .6rem; }
+.categories-toolbar-actions { display: inline-flex; flex-wrap: wrap; gap: .35rem; }
+.categories-toolbar-actions .button { padding: .34rem .55rem; font-size: .8rem; border-radius: 6px; line-height: 1.2; }
 .subcategory-inline-form { margin-top: 0; }
 .subcategory-toggle-compact {
   padding: .2rem .45rem;
