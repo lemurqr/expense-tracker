@@ -17,9 +17,20 @@
   </form>
   <ul class="category-list">
     {% for category in categories %}
+    {% set category_subcategories = subcategories_by_category.get(category.id, []) %}
     <li class="category-list-item" id="category-{{ category.id }}">
       <div class="category-row-head">
         <div class="category-heading-group">
+          <button
+            type="button"
+            class="button button-secondary subcategory-collapse-toggle"
+            data-subcategory-collapse-toggle="{{ category.id }}"
+            aria-expanded="false"
+            aria-controls="subcategory-list-wrap-{{ category.id }}"
+            title="Toggle subcategories"
+          >
+            ▸
+          </button>
           <strong>{{ category.name }}</strong>
           <div class="subcategory-trigger-wrap" id="subcategory-trigger-{{ category.id }}">
             <button
@@ -54,21 +65,23 @@
             <button type="button" class="button button-secondary subcategory-cancel subcategory-action-button" data-category-id="{{ category.id }}">Cancel</button>
           </form>
         </div>
-        <ul>
-          {% for subcategory in subcategories_by_category.get(category.id, []) %}
-          <li>
-            <form method="post" action="{{ url_for('edit_subcategory', subcategory_id=subcategory.id) }}" class="inline-form">
-              <input name="name" value="{{ subcategory.name }}" required>
-              <button type="submit" class="subcategory-action-button">Rename</button>
-            </form>
-            <form method="post" action="{{ url_for('delete_subcategory', subcategory_id=subcategory.id) }}" class="inline-form">
-              <button type="submit" class="subcategory-action-button">Delete</button>
-            </form>
-          </li>
-          {% else %}
-          <li><small>No subcategories.</small></li>
-          {% endfor %}
-        </ul>
+        <div class="subcategory-list-wrap" id="subcategory-list-wrap-{{ category.id }}" hidden>
+          <ul>
+            {% for subcategory in category_subcategories %}
+            <li>
+              <form method="post" action="{{ url_for('edit_subcategory', subcategory_id=subcategory.id) }}" class="inline-form">
+                <input name="name" value="{{ subcategory.name }}" required>
+                <button type="submit" class="subcategory-action-button">Rename</button>
+              </form>
+              <form method="post" action="{{ url_for('delete_subcategory', subcategory_id=subcategory.id) }}" class="inline-form">
+                <button type="submit" class="subcategory-action-button">Delete</button>
+              </form>
+            </li>
+            {% else %}
+            <li><small>No subcategories.</small></li>
+            {% endfor %}
+          </ul>
+        </div>
       </div>
     </li>
     {% else %}
@@ -81,7 +94,37 @@
   (function () {
     var categorySelect = document.getElementById('category-select');
     var categoryCards = Array.from(document.querySelectorAll('.category-list-item'));
-    var openCategoryId = null;
+
+    function scrollKey() {
+      return 'scroll:' + window.location.pathname + ':categories';
+    }
+
+    function saveScrollPosition() {
+      sessionStorage.setItem(scrollKey(), JSON.stringify({ y: window.scrollY, expiresAt: Date.now() + 15000 }));
+    }
+
+    function restoreScrollPosition() {
+      var stored = sessionStorage.getItem(scrollKey());
+      if (!stored) {
+        return;
+      }
+      sessionStorage.removeItem(scrollKey());
+      try {
+        var payload = JSON.parse(stored);
+        if (!payload || typeof payload.y !== 'number' || Number(payload.expiresAt) < Date.now()) {
+          return;
+        }
+        window.scrollTo(0, payload.y);
+      } catch (error) {
+        sessionStorage.removeItem(scrollKey());
+      }
+    }
+
+    restoreScrollPosition();
+
+    document.querySelectorAll('form').forEach(function (form) {
+      form.addEventListener('submit', saveScrollPosition);
+    });
 
     if (categorySelect) {
       categorySelect.addEventListener('change', function () {
@@ -107,8 +150,27 @@
       if (input) {
         input.value = '';
       }
-      openCategoryId = null;
     }
+
+    function setSubcategoryListExpanded(categoryId, expanded) {
+      var toggle = document.querySelector('[data-subcategory-collapse-toggle="' + categoryId + '"]');
+      var listWrap = document.getElementById('subcategory-list-wrap-' + categoryId);
+      if (!toggle || !listWrap) {
+        return;
+      }
+      toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      toggle.textContent = expanded ? '▾' : '▸';
+      listWrap.hidden = !expanded;
+    }
+
+    document.querySelectorAll('[data-subcategory-collapse-toggle]').forEach(function (toggle) {
+      setSubcategoryListExpanded(toggle.getAttribute('data-subcategory-collapse-toggle'), false);
+      toggle.addEventListener('click', function () {
+        var categoryId = toggle.getAttribute('data-subcategory-collapse-toggle');
+        var expanded = toggle.getAttribute('aria-expanded') === 'true';
+        setSubcategoryListExpanded(categoryId, !expanded);
+      });
+    });
 
     function closeAllForms(exceptCategoryId) {
       document.querySelectorAll('.subcategory-toggle').forEach(function (toggleButton) {
@@ -132,11 +194,11 @@
         }
 
         closeAllForms(categoryId);
+        setSubcategoryListExpanded(categoryId, true);
 
         formWrap.hidden = false;
         triggerWrap.hidden = true;
         toggleButton.setAttribute('aria-expanded', 'true');
-        openCategoryId = categoryId;
 
         var input = form.querySelector('input[name="name"]');
         if (input) {
