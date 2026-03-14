@@ -11,10 +11,17 @@
       {% endfor %}
     </select>
   </div>
-  <form method="post" class="inline-form">
-    <input name="name" placeholder="New category" required>
-    <button type="submit">Add</button>
-  </form>
+  <div class="categories-toolbar">
+    <form method="post" class="inline-form">
+      <input name="name" placeholder="New category" required>
+      <button type="submit">Add</button>
+    </form>
+    <div class="categories-toolbar-actions">
+      <button type="button" class="button button-secondary" id="expand-all-categories">Expand all</button>
+      <button type="button" class="button button-secondary" id="collapse-all-categories">Collapse all</button>
+      <a href="{{ url_for('export_categories_csv') }}" class="button button-secondary">Export categories CSV</a>
+    </div>
+  </div>
   <ul class="category-list">
     {% for category in categories %}
     {% set category_subcategories = subcategories_by_category.get(category.id, []) %}
@@ -163,6 +170,13 @@
       listWrap.hidden = !expanded;
     }
 
+
+    function setAllSubcategoryLists(expanded) {
+      document.querySelectorAll('[data-subcategory-collapse-toggle]').forEach(function (toggle) {
+        setSubcategoryListExpanded(toggle.getAttribute('data-subcategory-collapse-toggle'), expanded);
+      });
+    }
+
     document.querySelectorAll('[data-subcategory-collapse-toggle]').forEach(function (toggle) {
       setSubcategoryListExpanded(toggle.getAttribute('data-subcategory-collapse-toggle'), false);
       toggle.addEventListener('click', function () {
@@ -182,6 +196,20 @@
     }
 
     closeAllForms();
+
+    var expandAllButton = document.getElementById('expand-all-categories');
+    if (expandAllButton) {
+      expandAllButton.addEventListener('click', function () {
+        setAllSubcategoryLists(true);
+      });
+    }
+
+    var collapseAllButton = document.getElementById('collapse-all-categories');
+    if (collapseAllButton) {
+      collapseAllButton.addEventListener('click', function () {
+        setAllSubcategoryLists(false);
+      });
+    }
 
     document.querySelectorAll('.subcategory-toggle').forEach(function (toggleButton) {
       toggleButton.addEventListener('click', function () {

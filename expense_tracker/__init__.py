@@ -3191,6 +3191,48 @@ def create_app(test_config=None):
             subcategories_by_category=subcategories_by_category,
         )
 
+    @app.get("/categories/export.csv")
+    @login_required
+    def export_categories_csv():
+        db = get_db()
+        category_rows = db.execute(
+            "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name ASC",
+            (g.user["id"],),
+        ).fetchall()
+        subcategory_rows = db.execute(
+            """
+            SELECT sc.category_id, sc.name
+            FROM subcategories sc
+            JOIN categories c ON c.id = sc.category_id
+            WHERE sc.user_id = ? AND c.user_id = ?
+            ORDER BY sc.name ASC
+            """,
+            (g.user["id"], g.user["id"]),
+        ).fetchall()
+
+        subcategories_by_category = {}
+        for row in subcategory_rows:
+            subcategories_by_category.setdefault(row["category_id"], []).append(row["name"])
+
+        csv_buffer = io.StringIO()
+        writer = csv.writer(csv_buffer)
+        writer.writerow(["category", "subcategory"])
+
+        for category in category_rows:
+            subcategory_names = subcategories_by_category.get(category["id"], [])
+            if not subcategory_names:
+                writer.writerow([category["name"], ""])
+                continue
+            for subcategory_name in subcategory_names:
+                writer.writerow([category["name"], subcategory_name])
+
+        filename = f"categories-{date.today().isoformat()}.csv"
+        return Response(
+            csv_buffer.getvalue(),
+            mimetype="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.post("/categories/<int:category_id>/subcategories")
     @login_required
     def create_subcategory(category_id):
