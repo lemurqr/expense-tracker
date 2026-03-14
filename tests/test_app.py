@@ -2338,6 +2338,104 @@ def test_manual_add_edit_paid_by_saved_and_shown_on_dashboard(client):
     assert b">YZ<" in dashboard.data
 
 
+
+
+def test_dashboard_row_actions_include_current_filter_state(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-03-05", "amount": "21", "category_id": "", "description": "Manual", "vendor": "Shop", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+
+    response = client.get(
+        "/dashboard?month=2026-03&tx_vendor_q=shop&tx_description_q=manual&tx_transfer_mode=exclude&settlement_tab=record-repayment-panel&spend_mode=ytd"
+    )
+    html = response.get_data(as_text=True)
+
+    assert "/expenses/1/edit?month=2026-03" in html
+    assert "tx_vendor_q=shop" in html
+    assert "tx_description_q=manual" in html
+    assert "tx_transfer_mode=exclude" in html
+    assert "settlement_tab=record-repayment-panel" in html
+    assert "spend_mode=ytd" in html
+    assert 'name="tx_vendor_q" value="shop"' in html
+    assert 'name="settlement_tab" value="record-repayment-panel"' in html
+    assert 'name="spend_mode" value="ytd"' in html
+
+
+def test_edit_expense_redirects_back_with_dashboard_state(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-03-05", "amount": "21", "category_id": "", "description": "Manual", "vendor": "Shop", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+
+    response = client.post(
+        "/expenses/1/edit",
+        data={
+            "date": "2026-03-05",
+            "amount": "21",
+            "category_id": "",
+            "description": "Manual",
+            "vendor": "Shop",
+            "paid_by": "YZ",
+            "month": "2026-03",
+            "tx_vendor_q": "shop",
+            "tx_transfer_mode": "exclude",
+            "settlement_tab": "monthly-breakdown-panel",
+            "spend_mode": "ytd",
+        },
+        follow_redirects=False,
+    )
+
+    location = response.headers["Location"]
+    assert response.status_code == 302
+    assert "/dashboard?" in location
+    assert "month=2026-03" in location
+    assert "tx_vendor_q=shop" in location
+    assert "tx_transfer_mode=exclude" in location
+    assert "settlement_tab=monthly-breakdown-panel" in location
+    assert "spend_mode=ytd" in location
+
+
+def test_delete_expense_redirects_back_with_dashboard_state(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-03-05", "amount": "21", "category_id": "", "description": "Manual", "vendor": "Shop", "paid_by": "DK"},
+        follow_redirects=True,
+    )
+
+    response = client.post(
+        "/expenses/1/delete",
+        data={
+            "month": "2026-03",
+            "tx_vendor_q": "shop",
+            "tx_transfer_mode": "exclude",
+            "settlement_tab": "record-repayment-panel",
+            "spend_mode": "ytd",
+        },
+        follow_redirects=False,
+    )
+
+    location = response.headers["Location"]
+    assert response.status_code == 302
+    assert "/dashboard?" in location
+    assert "month=2026-03" in location
+    assert "tx_vendor_q=shop" in location
+    assert "tx_transfer_mode=exclude" in location
+    assert "settlement_tab=record-repayment-panel" in location
+    assert "spend_mode=ytd" in location
+
+
 def test_import_confirm_blocks_missing_paid_by_for_spending_rows(client):
     register(client)
     login(client)

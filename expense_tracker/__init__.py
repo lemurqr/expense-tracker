@@ -1547,6 +1547,8 @@ def create_app(test_config=None):
             params["month"] = month
 
         for key in [
+            "settlement_tab",
+            "spend_mode",
             "tx_date_from",
             "tx_date_to",
             "tx_amount_min",
@@ -2540,6 +2542,7 @@ def create_app(test_config=None):
             tx_sources=tx_sources,
             household_role=g.household_role,
             edit_repayment_id=edit_repayment_id,
+            dashboard_state_params=current_filter_redirect_params(request.args),
         )
 
     @app.post("/settlement-payments")
