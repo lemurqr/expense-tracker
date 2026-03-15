@@ -690,6 +690,56 @@ def test_detect_cibc_headerless_when_only_credit_column_is_numeric():
     assert header_row_index == 0
 
 
+def test_detect_header_mapping_prefers_vendor_column_over_description_aliases():
+    rows = [["Date", "Description", "Vendor", "Amount", "Memo"]]
+
+    has_header, mapping, _ = detect_header_and_mapping(rows)
+
+    assert has_header is True
+    assert mapping["description"] == "1"
+    assert mapping["vendor"] == "2"
+
+
+def test_import_csv_preserves_manual_vendor_mapping_on_reupload(client):
+    register(client)
+    login(client)
+
+    csv_content = "Date,Description,Vendor,Amount\n2026-01-10,Coffee purchase,Coffee Shop,5.50\n"
+
+    first_preview = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "manual-vendor.csv")},
+        content_type="multipart/form-data",
+    )
+    assert first_preview.status_code == 200
+
+    second_preview = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "map_date": "0",
+            "map_description": "1",
+            "map_vendor": "2",
+            "map_amount": "3",
+            "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "manual-vendor.csv"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert second_preview.status_code == 200
+
+    third_preview = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "manual-vendor.csv")},
+        content_type="multipart/form-data",
+    )
+    assert third_preview.status_code == 200
+
+    with client.session_transaction() as sess:
+        mapping = sess["csv_mapping"]
+
+    assert mapping["desc_col"] == "1"
+    assert mapping["vendor_col"] == "2"
+
 def test_import_cibc_headerless_uses_first_non_empty_row_for_detection(client):
     register(client)
     login(client)

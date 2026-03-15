@@ -171,7 +171,7 @@ HEADER_ALIASES = {
     "amount": ["amount"],
     "debit": ["debit"],
     "credit": ["credit"],
-    "description": ["description", "details", "memo", "merchant", "payee"],
+    "description": ["description", "details", "note", "memo"],
     "vendor": ["vendor", "merchant", "payee", "name", "merchant name"],
     "category": ["category"],
     "paid_by": ["paid by", "paid_by", "payer", "owner"],
@@ -587,21 +587,34 @@ def detect_header_and_mapping(rows):
         first_row = first_row[:-1]
 
     normalized = [normalize_header_name(col) for col in first_row]
-    normalized_lookup = {value: str(i) for i, value in enumerate(normalized) if value}
 
-    mapping["date"] = normalized_lookup.get("date", "") or normalized_lookup.get("transaction date", "") or normalized_lookup.get("date processed", "")
-    mapping["description"] = normalized_lookup.get("description", "") or normalized_lookup.get("merchant", "")
+    def find_alias_index(field, excluded_indexes=None):
+        excluded = excluded_indexes or set()
+        aliases = HEADER_ALIASES.get(field, [])
+        for alias in aliases:
+            for idx, value in enumerate(normalized):
+                if idx in excluded:
+                    continue
+                if value == alias:
+                    return str(idx)
+        return ""
+
+    mapping["date"] = find_alias_index("date")
+    mapping["description"] = find_alias_index("description")
     amount_idx = ""
     for i, col in enumerate(first_row):
         if is_amount_like_header(col):
             amount_idx = str(i)
             break
     mapping["amount"] = amount_idx
-    mapping["debit"] = normalized_lookup.get("debit", "")
-    mapping["credit"] = normalized_lookup.get("credit", "")
-    mapping["vendor"] = normalized_lookup.get("merchant", "") or normalized_lookup.get("vendor", "") or normalized_lookup.get("description", "")
-    mapping["category"] = normalized_lookup.get("category", "")
-    mapping["paid_by"] = normalized_lookup.get("paid by", "") or normalized_lookup.get("paid_by", "") or normalized_lookup.get("payer", "")
+    mapping["debit"] = find_alias_index("debit")
+    mapping["credit"] = find_alias_index("credit")
+    used_indexes = set()
+    if mapping["description"] != "":
+        used_indexes.add(int(mapping["description"]))
+    mapping["vendor"] = find_alias_index("vendor", excluded_indexes=used_indexes)
+    mapping["category"] = find_alias_index("category")
+    mapping["paid_by"] = find_alias_index("paid_by")
 
     has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
     if has_header:
@@ -664,20 +677,34 @@ def detect_amex_headered_mapping(rows, header_row_index):
 
     header_row = rows[header_row_index] if 0 <= header_row_index < len(rows) else []
     normalized = [normalize_header_name(col) for col in header_row]
-    lookup = {value: str(i) for i, value in enumerate(normalized) if value}
 
-    if "amount" not in lookup:
+    def find_alias_index(field, excluded_indexes=None):
+        excluded = excluded_indexes or set()
+        aliases = HEADER_ALIASES.get(field, [])
+        for alias in aliases:
+            for idx, value in enumerate(normalized):
+                if idx in excluded:
+                    continue
+                if value == alias:
+                    return str(idx)
+        return ""
+
+    amount_col = find_alias_index("amount")
+    if amount_col == "":
         return None
 
+    description_col = find_alias_index("description")
+    vendor_col = find_alias_index("vendor", excluded_indexes={int(description_col)}) if description_col != "" else find_alias_index("vendor")
+
     mapping = {
-        "date": lookup.get("date", "") or lookup.get("transaction date", "") or lookup.get("date processed", ""),
-        "description": lookup.get("description", "") or lookup.get("merchant", ""),
-        "vendor": lookup.get("merchant", "") or lookup.get("description", ""),
-        "amount": lookup.get("amount", ""),
+        "date": find_alias_index("date"),
+        "description": description_col,
+        "vendor": vendor_col,
+        "amount": amount_col,
         "debit": "",
         "credit": "",
-        "category": lookup.get("category", ""),
-        "paid_by": lookup.get("paid by", "") or lookup.get("paid_by", "") or lookup.get("payer", ""),
+        "category": find_alias_index("category"),
+        "paid_by": find_alias_index("paid_by"),
     }
 
     if mapping["date"] == "" or mapping["description"] == "":
@@ -4150,20 +4177,28 @@ def create_app(test_config=None):
             saved_mapping = mapping_from_payload(saved_payload)
 
             amex_mapping = detect_amex_headered_mapping(rows, header_row_index) if has_header else None
+            explicit_mapping = {
+                "date": request.form.get("map_date", ""),
+                "description": request.form.get("map_description", ""),
+                "vendor": request.form.get("map_vendor", ""),
+                "amount": request.form.get("map_amount", ""),
+                "debit": request.form.get("map_debit", ""),
+                "credit": request.form.get("map_credit", ""),
+                "category": request.form.get("map_category", ""),
+                "paid_by": request.form.get("map_paid_by", ""),
+            }
+            has_explicit_mapping = any(value != "" for value in explicit_mapping.values())
+            has_saved_mapping = any((saved_mapping.get(field, "") != "") for field in default_mapping)
             if amex_mapping:
                 mapping = amex_mapping
-                detected_format = "headered"
+                for field in mapping:
+                    if explicit_mapping.get(field, "") != "":
+                        mapping[field] = explicit_mapping[field]
+                    elif saved_mapping.get(field, "") != "":
+                        mapping[field] = saved_mapping[field]
+                if not has_explicit_mapping and not has_saved_mapping:
+                    detected_format = "headered"
             else:
-                explicit_mapping = {
-                    "date": request.form.get("map_date", ""),
-                    "description": request.form.get("map_description", ""),
-                    "vendor": request.form.get("map_vendor", ""),
-                    "amount": request.form.get("map_amount", ""),
-                    "debit": request.form.get("map_debit", ""),
-                    "credit": request.form.get("map_credit", ""),
-                    "category": request.form.get("map_category", ""),
-                    "paid_by": request.form.get("map_paid_by", ""),
-                }
                 auto_mapping = should_auto_map_cibc_headerless(rows, explicit_mapping, detected_format) if header_row_index == 0 else None
                 if auto_mapping:
                     mapping = auto_mapping
