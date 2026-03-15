@@ -917,9 +917,57 @@ def update_staged_preview_row(db, staging_id, row):
     )
 
 
+def build_subcategory_options_by_category(db, user_id):
+    rows = db.execute(
+        """
+        SELECT c.name AS category_name, sc.name AS subcategory_name
+        FROM subcategories sc
+        JOIN categories c ON c.id = sc.category_id
+        WHERE sc.user_id = ?
+        ORDER BY c.name ASC, sc.name ASC
+        """,
+        (user_id,),
+    ).fetchall()
+    options = {}
+    for row in rows:
+        options.setdefault(row["category_name"], []).append(row["subcategory_name"])
+    return options
+
+
+def build_preview_subcategory_suggestions(db, user_id):
+    rows = db.execute(
+        """
+        SELECT c.name AS category_name, LOWER(TRIM(e.vendor)) AS vendor_key, sc.name AS subcategory_name, COUNT(*) AS hits
+        FROM expenses e
+        JOIN categories c ON c.id = e.category_id
+        JOIN subcategories sc ON sc.id = e.subcategory_id
+        WHERE e.user_id = ? AND e.vendor IS NOT NULL AND TRIM(e.vendor) != ''
+        GROUP BY c.name, LOWER(TRIM(e.vendor)), sc.name
+        ORDER BY hits DESC, sc.name ASC
+        """,
+        (user_id,),
+    ).fetchall()
+
+    suggestions = {}
+    for row in rows:
+        key = (row["category_name"], row["vendor_key"])
+        suggestions.setdefault(key, row["subcategory_name"])
+    return suggestions
+
+
+def suggest_preview_subcategory(row, suggestions_by_vendor):
+    category_name = (row.get("category") or "").strip()
+    vendor_key = normalize_text(row.get("vendor") or "")
+    if not category_name or not vendor_key:
+        return ""
+    return suggestions_by_vendor.get((category_name, vendor_key), "")
+
+
 def apply_staged_category_override(row, category_name, category_id=None):
     selected_category_name = (category_name or "").strip()
     row["category"] = selected_category_name
+    row["subcategory"] = ""
+    row.pop("override_subcategory", None)
     if selected_category_name:
         row["override_category"] = selected_category_name
         row["category_name"] = selected_category_name
@@ -3479,6 +3527,8 @@ def create_app(test_config=None):
             )
             row["category"] = category_name
             row["override_category"] = category_name
+            row["subcategory"] = ""
+            row.pop("override_subcategory", None)
             row["confidence"] = categorized["confidence"]
             row["confidence_label"] = confidence_label(categorized["confidence"])
             row["suggested_source"] = categorized["source"]
@@ -3546,8 +3596,22 @@ def create_app(test_config=None):
                     row["mapped_category_id"] = matched["id"]
                     if row.get("csv_category_name"):
                         row["csv_category_match_status"] = "mapped"
+                else:
+                    row["subcategory"] = ""
+                    row.pop("override_subcategory", None)
             else:
                 row.pop("override_category", None)
+                row["subcategory"] = ""
+                row.pop("override_subcategory", None)
+
+            subcategory_override = (request.form.get(f"override_subcategory_{row_index}", "") or "").strip()
+            if subcategory_override:
+                row["subcategory"] = subcategory_override
+                row["override_subcategory"] = subcategory_override
+            else:
+                row.pop("override_subcategory", None)
+                if row.get("override_category"):
+                    row["subcategory"] = ""
 
             vendor_override = (request.form.get(f"override_vendor_{row_index}", "") or "").strip()
             if vendor_override:
@@ -3652,6 +3716,14 @@ def create_app(test_config=None):
                 row.pop("paid_by", None)
         if "override_category" in payload:
             apply_staged_category_override(row, payload.get("override_category") or "")
+        if "override_subcategory" in payload:
+            subcategory_override = (payload.get("override_subcategory") or "").strip()
+            if subcategory_override:
+                row["subcategory"] = subcategory_override
+                row["override_subcategory"] = subcategory_override
+            else:
+                row.pop("override_subcategory", None)
+                row["subcategory"] = ""
 
         if "date" in payload:
             date_value = (payload.get("date") or "").strip()
@@ -3945,8 +4017,19 @@ def create_app(test_config=None):
                         else:
                             row["override_category"] = category_override
                             row["category"] = category_override
+                            row["subcategory"] = ""
+                            row.pop("override_subcategory", None)
                     else:
                         row.pop("override_category", None)
+                        row["subcategory"] = ""
+                        row.pop("override_subcategory", None)
+
+                    subcategory_override = (request.form.get(f"override_subcategory_{row_index}", "") or "").strip()
+                    if subcategory_override:
+                        row["subcategory"] = subcategory_override
+                        row["override_subcategory"] = subcategory_override
+                    else:
+                        row.pop("override_subcategory", None)
 
                     update_staged_preview_row(db, record["id"], row)
                     rows_updated_from_form = True
@@ -4015,6 +4098,7 @@ def create_app(test_config=None):
                         continue
 
                     category_id = None
+                    subcategory_id = None
                     assigned_category = ""
                     categorized = {"confidence": 25, "source": "unknown"}
 
@@ -4051,6 +4135,15 @@ def create_app(test_config=None):
                         if assigned_category:
                             category_id = category_id_lookup.get(normalize_description(assigned_category))
 
+                    selected_subcategory = (row.get("override_subcategory") or row.get("subcategory") or "").strip()
+                    if selected_subcategory and category_id:
+                        subcategory_row = db.execute(
+                            "SELECT id FROM subcategories WHERE user_id = ? AND category_id = ? AND LOWER(name) = LOWER(?)",
+                            (g.user["id"], category_id, selected_subcategory),
+                        ).fetchone()
+                        if subcategory_row:
+                            subcategory_id = subcategory_row["id"]
+
                     is_personal = assigned_category == "Personal"
                     is_transfer = is_transfer_transaction(row.get("description", ""), assigned_category)
 
@@ -4069,7 +4162,7 @@ def create_app(test_config=None):
                     result = db.insert_ignore(
                         "expenses",
                         [
-                            "user_id", "household_id", "date", "amount", "category_id", "description", "vendor", "paid_by",
+                            "user_id", "household_id", "date", "amount", "category_id", "subcategory_id", "description", "vendor", "paid_by",
                             "is_transfer", "is_personal", "category_confidence", "category_source", "tags", "txn_hash",
                         ],
                         [
@@ -4078,6 +4171,7 @@ def create_app(test_config=None):
                             row["date"],
                             row["amount"],
                             category_id,
+                            subcategory_id,
                             row["description"],
                             row.get("vendor", "") or derive_vendor(row.get("description", "")),
                             row.get("paid_by", ""),
@@ -4288,6 +4382,7 @@ def create_app(test_config=None):
             ).fetchall()
             category_lookup = {normalize_description(row["name"]): row for row in category_rows}
             available_category_names = [row["name"] for row in category_rows]
+            subcategory_suggestions = build_preview_subcategory_suggestions(db, g.user["id"])
             for row in parsed_rows:
                 categorized = categorize_transaction(
                     g.user["id"], row.get("description", ""), row.get("vendor", ""), row.get("category", ""), available_category_names, db
@@ -4296,6 +4391,7 @@ def create_app(test_config=None):
                 row["suggested_source"] = categorized["source"]
                 row["confidence"] = categorized["confidence"]
                 row["confidence_label"] = confidence_label(categorized["confidence"])
+                row["subcategory"] = suggest_preview_subcategory(row, subcategory_suggestions)
 
                 csv_category_name, csv_matched_category_id, csv_match_status = resolve_csv_category_mapping(
                     row.get("csv_category_name", ""), category_lookup
@@ -4366,6 +4462,7 @@ def create_app(test_config=None):
                 mapping=mapping,
                 columns=columns,
                 categories=category_rows,
+                subcategory_options_by_category=build_subcategory_options_by_category(db, g.user["id"]),
                 preview_id=import_id,
                 detected_mode="headered" if has_header else "headerless",
                 has_header=has_header,
@@ -4431,6 +4528,7 @@ def create_app(test_config=None):
                 mapping=saved_mapping or default_mapping,
                 columns=placeholder_columns_from_mapping(saved_mapping),
                 categories=category_rows,
+                subcategory_options_by_category=build_subcategory_options_by_category(db, g.user["id"]),
                 preview_id=import_id,
                 detected_mode="staged",
                 has_header=saved_payload.get("has_header", False),
@@ -4460,6 +4558,7 @@ def create_app(test_config=None):
             mapping=saved_mapping or default_mapping,
             columns=placeholder_columns_from_mapping(saved_mapping),
             categories=[],
+            subcategory_options_by_category={},
             preview_id="",
             detected_mode=None,
             has_header=saved_payload.get("has_header", False),

@@ -184,7 +184,7 @@
     </p>
     <table>
       <thead>
-        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Edited</th><th>Confidence</th><th>Source</th></tr>
+        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Suggested Subcategory</th><th>Edited</th><th>Confidence</th></tr>
       </thead>
       <tbody>
         {% for row in preview_rows %}
@@ -226,19 +226,23 @@
               </select>
             </label>
           </td>
-          <td><span class="edited-badge" {% if not (row.has_override|default(False, true)) and not row.override_category %}hidden{% endif %}>Edited</span></td>
+          <td>
+            <select name="override_subcategory_{{ row.row_index }}" class="subcategory-select" data-original-subcategory="{{ row.subcategory or '' }}">
+              <option value="" {% if not row.override_subcategory %}selected{% endif %}>{{ row.subcategory or '-' }}</option>
+            </select>
+          </td>
+          <td><span class="edited-badge" {% if not (row.has_override|default(False, true)) and not row.override_category and not row.override_subcategory %}hidden{% endif %}>Edited</span></td>
           <td>
             {% if row.suggested_source == 'transfer' %}
-              <span class="confidence-badge confidence-transfer badge-transfer">Transfer</span>
+              <span class="confidence-badge confidence-transfer badge-transfer" title="Source: {{ row.suggested_source or 'unknown' }}">Transfer</span>
             {% elif row.confidence >= 80 %}
-              <span class="confidence-badge confidence-high badge-high">{{ row.confidence }} ({{ row.confidence_label }})</span>
+              <span class="confidence-badge confidence-high badge-high" title="Source: {{ row.suggested_source or 'unknown' }}">{{ row.confidence }} ({{ row.confidence_label }})</span>
             {% elif row.confidence >= 50 %}
-              <span class="confidence-badge confidence-medium badge-medium">{{ row.confidence }} ({{ row.confidence_label }})</span>
+              <span class="confidence-badge confidence-medium badge-medium" title="Source: {{ row.suggested_source or 'unknown' }}">{{ row.confidence }} ({{ row.confidence_label }})</span>
             {% else %}
-              <span class="confidence-badge confidence-low badge-low">{{ row.confidence }} ({{ row.confidence_label }})</span>
+              <span class="confidence-badge confidence-low badge-low" title="Source: {{ row.suggested_source or 'unknown' }}">{{ row.confidence }} ({{ row.confidence_label }})</span>
             {% endif %}
           </td>
-          <td class="source-cell"><small>{{ row.suggested_source }}</small></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -363,6 +367,7 @@
   const confirmImportButton = document.getElementById('confirmImportButton');
   const confirmSaveState = document.getElementById('confirmSaveState');
   const confirmRowOverridesContainer = document.getElementById('confirm-row-overrides');
+  const subcategoryOptionsByCategory = {{ subcategory_options_by_category|default({}, true)|tojson }};
 
   let pendingSaveCount = 0;
   const pendingSaveWaiters = [];
@@ -414,6 +419,29 @@
     return true;
   };
 
+  const populateSubcategorySelect = (row, categoryName) => {
+    const select = row.querySelector('.subcategory-select');
+    if (!select) return;
+    const currentValue = select.value || select.dataset.originalSubcategory || '';
+    const options = (categoryName && subcategoryOptionsByCategory[categoryName]) ? subcategoryOptionsByCategory[categoryName] : [];
+    select.innerHTML = '';
+    const base = document.createElement('option');
+    base.value = '';
+    base.textContent = options.length ? '-' : (currentValue || '-');
+    select.appendChild(base);
+    options.forEach((value) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      select.appendChild(option);
+    });
+    if (currentValue && options.includes(currentValue)) {
+      select.value = currentValue;
+    } else {
+      select.value = '';
+    }
+  };
+
   const selectedRowIds = () => Array.from(rowSelectCheckboxes)
     .filter((checkbox) => checkbox.checked && !checkbox.disabled)
     .map((checkbox) => checkbox.value);
@@ -442,6 +470,13 @@
       input.name = `override_category_${rowIndex}`;
       input.value = categorySelect.value || '';
       confirmRowOverridesContainer.appendChild(input);
+
+      const subcategorySelect = row.querySelector('.subcategory-select');
+      const subcategoryInput = document.createElement('input');
+      subcategoryInput.type = 'hidden';
+      subcategoryInput.name = `override_subcategory_${rowIndex}`;
+      subcategoryInput.value = subcategorySelect ? (subcategorySelect.value || '') : '';
+      confirmRowOverridesContainer.appendChild(subcategoryInput);
     });
   };
 
@@ -552,7 +587,6 @@
         const rowCheck = target.querySelector('.row-check');
         const rowSelect = target.querySelector('.category-select');
         const badge = target.querySelector('.confidence-badge');
-        const sourceCell = target.querySelector('.source-cell');
 
         if (rowCheck) rowCheck.checked = true;
         if (rowSelect) {
@@ -565,7 +599,6 @@
           badge.classList.add(classes[0], classes[1]);
           badge.textContent = updated.source === 'transfer' ? 'Transfer' : `${updated.confidence} (${updated.confidence_label})`;
         }
-        if (sourceCell) sourceCell.innerHTML = `<small>${updated.source}</small>`;
 
         target.dataset.confidence = updated.confidence;
         markRowOverridden(target, true);
@@ -641,7 +674,15 @@
   document.querySelectorAll('.category-select').forEach((select) => {
     select.addEventListener('change', async (event) => {
       const row = event.target.closest('.preview-row');
-      await postRowUpdate(row, { override_category: event.target.value });
+      populateSubcategorySelect(row, event.target.value);
+      await postRowUpdate(row, { override_category: event.target.value, override_subcategory: '' });
+    });
+  });
+
+  document.querySelectorAll('.subcategory-select').forEach((select) => {
+    select.addEventListener('change', async (event) => {
+      const row = event.target.closest('.preview-row');
+      await postRowUpdate(row, { override_subcategory: event.target.value });
     });
   });
 
@@ -677,8 +718,13 @@
       document.querySelectorAll('.preview-row').forEach((row) => {
         const checkbox = row.querySelector('.row-select');
         const rowCategory = row.querySelector('.category-select');
+        const rowSubcategory = row.querySelector('.subcategory-select');
         if (!checkbox || !checkbox.checked || !rowCategory) return;
         rowCategory.value = categoryName;
+        if (rowSubcategory) {
+          populateSubcategorySelect(row, categoryName);
+          rowSubcategory.value = '';
+        }
         toggleApplyAllOption(rowCategory);
         const badge = row.querySelector('.edited-badge');
         if (badge) badge.hidden = false;
@@ -725,6 +771,17 @@
       confirmImportForm.submit();
     });
   }
+
+  document.querySelectorAll('.preview-row').forEach((row) => {
+    const categorySelect = row.querySelector('.category-select');
+    populateSubcategorySelect(row, categorySelect ? categorySelect.value : '');
+    const subcategorySelect = row.querySelector('.subcategory-select');
+    if (!subcategorySelect) return;
+    const preferred = subcategorySelect.dataset.originalSubcategory || '';
+    if (preferred && Array.from(subcategorySelect.options).some((option) => option.value === preferred)) {
+      subcategorySelect.value = preferred;
+    }
+  });
 
   setPendingSaveState();
 </script>

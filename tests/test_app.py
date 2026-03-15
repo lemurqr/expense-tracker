@@ -1976,7 +1976,9 @@ def test_preview_renders_confidence_badges(client):
     html = preview_response.get_data(as_text=True)
     assert "Legend:" in html
     assert "confidence-badge" in html
-    assert "Source" in html
+    assert "Suggested Subcategory" in html
+    assert "<th>Source</th>" not in html
+    assert "title=\"Source:" in html
 
 def test_apply_same_vendor_endpoint_updates_preview_state(client):
     register(client)
@@ -2005,6 +2007,69 @@ def test_apply_same_vendor_endpoint_updates_preview_state(client):
     assert rows[2].get("override_category", "") == ""
 
 
+
+
+def test_import_preview_subcategory_override_persists_and_imports(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Groceries'").fetchone()["id"]
+        dairy_id = db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)",
+            (1, groceries_id, "Dairy"),
+        ).lastrowid
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, description, vendor, paid_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, 1, "2026-10-01", -9.99, groceries_id, dairy_id, "Milk", "Corner Store", "DK"),
+        )
+        db.commit()
+
+    csv_content = "date,description,vendor,debit,credit\n2026-10-02,Milk,Corner Store,12.00,\n"
+    preview_response = client.post(
+        "/import/csv",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "preview-sub.csv")},
+        content_type="multipart/form-data",
+    )
+    html = preview_response.get_data(as_text=True)
+    assert "Dairy" in html
+
+    import_id = extract_import_id_from_html(html)
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute("SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1", (import_id,)).fetchone()["id"]
+
+    update_response = client.post(
+        "/import/preview/row_update",
+        json={"import_id": import_id, "row_id": row_id, "override_category": "Groceries", "override_subcategory": "Dairy"},
+    )
+    assert update_response.status_code == 200
+
+    client.get(f"/import/csv?import_id={import_id}&show_all=1")
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK", "override_category_0": "Groceries", "override_subcategory_0": "Dairy"},
+        follow_redirects=True,
+    )
+    assert confirm_response.status_code == 200
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        inserted = db.execute(
+            """
+            SELECT sc.name AS subcategory
+            FROM expenses e
+            LEFT JOIN subcategories sc ON sc.id = e.subcategory_id
+            WHERE e.user_id = 1 AND e.date = '2026-10-02' AND e.description = 'Milk'
+            ORDER BY e.id DESC LIMIT 1
+            """
+        ).fetchone()
+        staged = json.loads(db.execute("SELECT row_json FROM import_staging WHERE id = ?", (row_id,)).fetchone()["row_json"])
+
+    assert staged["override_subcategory"] == "Dairy"
+    assert inserted["subcategory"] == "Dairy"
 
 
 def test_amex_headered_preview_auto_maps_expected_columns(client):
