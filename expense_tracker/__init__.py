@@ -174,6 +174,7 @@ HEADER_ALIASES = {
     "description": ["description", "details", "note", "memo"],
     "vendor": ["vendor", "merchant", "payee", "name", "merchant name"],
     "category": ["category"],
+    "subcategory": ["subcategory", "sub category", "sub-category"],
     "paid_by": ["paid by", "paid_by", "payer", "owner"],
 }
 VENDOR_NOISE_TOKENS = {
@@ -566,7 +567,7 @@ def transaction_confidence_filter_options():
 
 
 def detect_header_and_mapping(rows):
-    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "paid_by": ""}
+    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": ""}
     if not rows:
         return False, mapping, 0
 
@@ -614,6 +615,7 @@ def detect_header_and_mapping(rows):
         used_indexes.add(int(mapping["description"]))
     mapping["vendor"] = find_alias_index("vendor", excluded_indexes=used_indexes)
     mapping["category"] = find_alias_index("category")
+    mapping["subcategory"] = find_alias_index("subcategory")
     mapping["paid_by"] = find_alias_index("paid_by")
 
     has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
@@ -664,6 +666,7 @@ def detect_cibc_headerless_mapping(rows):
             "amount": "",
             "vendor": "",
             "category": "",
+            "subcategory": "",
             "paid_by": "",
         }
 
@@ -704,6 +707,7 @@ def detect_amex_headered_mapping(rows, header_row_index):
         "debit": "",
         "credit": "",
         "category": find_alias_index("category"),
+        "subcategory": find_alias_index("subcategory"),
         "paid_by": find_alias_index("paid_by"),
     }
 
@@ -722,6 +726,7 @@ def build_csv_mapping_payload(mapping, has_header, detected_format, file_signatu
         "credit_col": mapping.get("credit", ""),
         "vendor_col": mapping.get("vendor", ""),
         "category_col": mapping.get("category", ""),
+        "subcategory_col": mapping.get("subcategory", ""),
         "paid_by_col": mapping.get("paid_by", ""),
         "has_header": bool(has_header),
         "detected_format": detected_format,
@@ -738,7 +743,7 @@ def build_file_signature(filename, header_row):
 
 def mapping_from_payload(payload):
     if not payload:
-        return {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "paid_by": ""}
+        return {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": ""}
     return {
         "date": payload.get("date_col", ""),
         "description": payload.get("desc_col", ""),
@@ -747,6 +752,7 @@ def mapping_from_payload(payload):
         "debit": payload.get("debit_col", ""),
         "credit": payload.get("credit_col", ""),
         "category": payload.get("category_col", ""),
+        "subcategory": payload.get("subcategory_col", ""),
         "paid_by": payload.get("paid_by_col", ""),
     }
 
@@ -1200,6 +1206,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
         parsed_date = parse_transaction_date(get_value("date"))
         row_description = get_value("description")
         row_category = get_value("category")
+        row_subcategory = get_value("subcategory")
         csv_category_name = normalize_csv_category_name(row_category)
         normalized_description = normalize_description(row_description)
         row_vendor = get_value("vendor") or derive_vendor(row_description)
@@ -1299,6 +1306,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
                 "description_rule_key": extract_pattern(row_description),
                 "category": infer_category(row_description, row_category),
                 "csv_category_name": csv_category_name,
+                "csv_subcategory_name": (row_subcategory or "").strip(),
                 "tags": derive_tags(row_description),
                 "paid_by": row_paid_by,
                 "source_type": resolved_source_type,
@@ -3901,7 +3909,7 @@ def create_app(test_config=None):
     @app.route("/import/csv", methods=("GET", "POST"))
     @login_required
     def import_csv():
-        default_mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "paid_by": ""}
+        default_mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": ""}
         import_results = None
         skipped_result_rows = []
         saved_payload = get_saved_csv_mapping_for_user(g.user["id"])
@@ -4222,6 +4230,7 @@ def create_app(test_config=None):
                     "debit": request.form.get("map_debit", ""),
                     "credit": request.form.get("map_credit", ""),
                     "category": request.form.get("map_category", ""),
+                    "subcategory": request.form.get("map_subcategory", ""),
                     "paid_by": request.form.get("map_paid_by", ""),
                 }
                 detected_format = request.form.get("detected_format", "manual")
@@ -4290,6 +4299,7 @@ def create_app(test_config=None):
                 "debit": request.form.get("map_debit", ""),
                 "credit": request.form.get("map_credit", ""),
                 "category": request.form.get("map_category", ""),
+                "subcategory": request.form.get("map_subcategory", ""),
                 "paid_by": request.form.get("map_paid_by", ""),
             }
             has_explicit_mapping = any(value != "" for value in explicit_mapping.values())
@@ -4322,6 +4332,7 @@ def create_app(test_config=None):
                         "debit": request.form.get("map_debit") if request.form.get("map_debit") is not None else inferred_mapping["debit"],
                         "credit": request.form.get("map_credit") if request.form.get("map_credit") is not None else inferred_mapping["credit"],
                         "category": request.form.get("map_category") if request.form.get("map_category") is not None else inferred_mapping["category"],
+                        "subcategory": request.form.get("map_subcategory") if request.form.get("map_subcategory") is not None else inferred_mapping["subcategory"],
                         "paid_by": request.form.get("map_paid_by") if request.form.get("map_paid_by") is not None else inferred_mapping["paid_by"],
                     }
 
@@ -4394,6 +4405,7 @@ def create_app(test_config=None):
             category_lookup = {normalize_description(row["name"]): row for row in category_rows}
             available_category_names = [row["name"] for row in category_rows]
             subcategory_suggestions = build_preview_subcategory_suggestions(db, g.user["id"])
+            subcategory_options_by_category = build_subcategory_options_by_category(db, g.user["id"])
             for row in parsed_rows:
                 categorized = categorize_transaction(
                     g.user["id"], row.get("description", ""), row.get("vendor", ""), row.get("category", ""), available_category_names, db
@@ -4402,7 +4414,6 @@ def create_app(test_config=None):
                 row["suggested_source"] = categorized["source"]
                 row["confidence"] = categorized["confidence"]
                 row["confidence_label"] = confidence_label(categorized["confidence"])
-                row["subcategory"] = resolve_preview_subcategory(row, subcategory_suggestions)
 
                 csv_category_name, csv_matched_category_id, csv_match_status = resolve_csv_category_mapping(
                     row.get("csv_category_name", ""), category_lookup
@@ -4430,6 +4441,15 @@ def create_app(test_config=None):
                     row["category_name"] = resolved_category
                     row["category_id"] = None
                     row["mapped_category_id"] = None
+
+                imported_subcategory = (row.get("csv_subcategory_name") or "").strip()
+                valid_subcategories = subcategory_options_by_category.get(row.get("category", ""), [])
+                if imported_subcategory and imported_subcategory in valid_subcategories:
+                    row["subcategory"] = imported_subcategory
+                elif imported_subcategory:
+                    row["subcategory"] = ""
+                else:
+                    row["subcategory"] = resolve_preview_subcategory(row, subcategory_suggestions)
 
             import_id = str(uuid.uuid4())
             show_all = request.form.get("show_all_rows") == "1"

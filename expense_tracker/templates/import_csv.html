@@ -73,6 +73,14 @@
         </select>
       </label>
 
+      <label>Subcategory (optional)
+        <select name="map_subcategory">
+          <option value="">-- Select --</option>
+          {% for idx in range(columns|length) %}
+          <option value="{{ idx }}" {% if mapping.subcategory == idx|string %}selected{% endif %}>{{ columns[idx] }}</option>
+          {% endfor %}
+        </select>
+      </label>
 
       <label>Paid by (optional)
         <select name="map_paid_by">
@@ -261,6 +269,7 @@
     <input type="hidden" name="map_credit" value="{{ mapping.credit }}">
     <input type="hidden" name="map_vendor" value="{{ mapping.vendor }}">
     <input type="hidden" name="map_category" value="{{ mapping.category }}">
+    <input type="hidden" name="map_subcategory" value="{{ mapping.subcategory }}">
     <input type="hidden" name="map_paid_by" value="{{ mapping.paid_by }}">
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
@@ -283,6 +292,7 @@
     <input type="hidden" name="map_credit" value="{{ mapping.credit }}">
     <input type="hidden" name="map_vendor" value="{{ mapping.vendor }}">
     <input type="hidden" name="map_category" value="{{ mapping.category }}">
+    <input type="hidden" name="map_subcategory" value="{{ mapping.subcategory }}">
     <input type="hidden" name="map_paid_by" value="{{ mapping.paid_by }}">
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">

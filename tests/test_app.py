@@ -2072,6 +2072,69 @@ def test_import_preview_subcategory_override_persists_and_imports(client):
     assert inserted["subcategory"] == "Dairy"
 
 
+
+def test_import_preview_uses_mapped_csv_subcategory_when_valid_for_selected_category(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        utilities_id = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Utilities'").fetchone()["id"]
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)",
+            (1, utilities_id, "Internet"),
+        )
+        db.commit()
+
+    csv_content = "date,description,vendor,category,subcategory,debit,credit\n2026-10-02,ISP Bill,My ISP,Utilities,Internet,90.00,\n"
+    preview_response = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "map_date": "0",
+            "map_description": "1",
+            "map_vendor": "2",
+            "map_category": "3",
+            "map_subcategory": "4",
+            "map_debit": "5",
+            "map_credit": "6",
+            "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "preview-sub-valid.csv"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert preview_response.status_code == 200
+    html = preview_response.get_data(as_text=True)
+    assert 'data-current-subcategory="Internet"' in html
+
+    with client.session_transaction() as session_data:
+        saved_mapping = session_data.get("csv_mapping")
+    assert saved_mapping["subcategory_col"] == "4"
+
+
+def test_import_preview_clears_mapped_csv_subcategory_when_invalid_for_selected_category(client):
+    register(client)
+    login(client)
+
+    csv_content = "date,description,vendor,category,subcategory,debit,credit\n2026-10-02,ISP Bill,My ISP,Utilities,NotARealSubcategory,90.00,\n"
+    preview_response = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "map_date": "0",
+            "map_description": "1",
+            "map_vendor": "2",
+            "map_category": "3",
+            "map_subcategory": "4",
+            "map_debit": "5",
+            "map_credit": "6",
+            "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "preview-sub-invalid.csv"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert preview_response.status_code == 200
+    html = preview_response.get_data(as_text=True)
+    assert 'data-current-subcategory=""' in html
+
 def test_amex_headered_preview_auto_maps_expected_columns(client):
     register(client)
     login(client)
