@@ -5,9 +5,11 @@ import io
 import json
 import re
 import sqlite3
+from decimal import Decimal
 from datetime import datetime, timedelta
 
 import pytest
+import expense_tracker as expense_tracker_module
 
 from tests.conftest import LIVE_DB_NAME, get_test_postgres_url
 
@@ -424,6 +426,43 @@ def test_row_update_amount_override_used_on_confirm(client):
         db = client.application.get_db()
         amount = db.execute("SELECT amount FROM expenses WHERE description = 'Coffee'").fetchone()["amount"]
     assert amount == pytest.approx(123.45)
+
+
+def test_confirm_import_handles_decimal_amount_override_in_preview_state(client, monkeypatch):
+    register(client)
+    login(client)
+    rows = [
+        {
+            "user_id": 1,
+            "row_index": 0,
+            "date": "2026-09-02",
+            "amount": -10.0,
+            "description": "Decimal Override",
+            "vendor": "Decimal Override",
+            "category": "Groceries",
+            "paid_by": "DK",
+        }
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="preview-decimal-override")
+
+    original_get_records = expense_tracker_module.get_staged_preview_row_records
+
+    def _records_with_decimal(*args, **kwargs):
+        records = original_get_records(*args, **kwargs)
+        for record in records:
+            record["row"]["amount_override"] = Decimal("12.34")
+        return records
+
+    monkeypatch.setattr(expense_tracker_module, "get_staged_preview_row_records", _records_with_decimal)
+
+    confirm_response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id},
+        follow_redirects=True,
+    )
+
+    assert confirm_response.status_code == 200
+    assert b"Imported 1 transaction(s)." in confirm_response.data
 
 
 def test_confirm_normalizes_transfer_and_payment_as_outflows(client):
