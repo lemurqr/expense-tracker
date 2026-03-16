@@ -158,6 +158,9 @@
   {% endif %}
 
   {% if preview_rows %}
+  <style>
+    .amount-input { width: 7.5rem; min-width: 6.5rem; }
+  </style>
   <form method="post" id="previewEditForm" onsubmit="return false;">
     <p class="inline-form">
       <label>Paid by (default for this import)
@@ -184,7 +187,7 @@
     </p>
     <table>
       <thead>
-        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Suggested Subcategory</th><th>Edited</th><th>Confidence</th></tr>
+        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Suggested Subcategory</th><th>Confidence</th></tr>
       </thead>
       <tbody>
         {% for row in preview_rows %}
@@ -227,11 +230,10 @@
             </label>
           </td>
           <td>
-            <select name="override_subcategory_{{ row.row_index }}" class="subcategory-select" data-original-subcategory="{{ row.subcategory or '' }}">
+            <select name="override_subcategory_{{ row.row_index }}" class="subcategory-select" data-original-subcategory="{{ row.subcategory or '' }}" data-current-subcategory="{{ row.override_subcategory or row.subcategory or '' }}">
               <option value="" {% if not row.override_subcategory %}selected{% endif %}>{{ row.subcategory or '-' }}</option>
             </select>
           </td>
-          <td><span class="edited-badge" {% if not (row.has_override|default(False, true)) and not row.override_category and not row.override_subcategory %}hidden{% endif %}>Edited</span></td>
           <td>
             {% if row.suggested_source == 'transfer' %}
               <span class="confidence-badge confidence-transfer badge-transfer" title="Source: {{ row.suggested_source or 'unknown' }}">Transfer</span>
@@ -413,16 +415,15 @@
       body: JSON.stringify({ import_id: importId, row_id: rowId, ...payload }),
     }));
     if (!response.ok) return false;
-    const badge = row.querySelector('.edited-badge');
-    if (badge) badge.hidden = false;
     markRowOverridden(row, true);
     return true;
   };
 
-  const populateSubcategorySelect = (row, categoryName) => {
+  const populateSubcategorySelect = (row, categoryName, preferredValue = null) => {
     const select = row.querySelector('.subcategory-select');
     if (!select) return;
-    const currentValue = select.value || select.dataset.originalSubcategory || '';
+    const fallbackValue = select.dataset.currentSubcategory || select.dataset.originalSubcategory || '';
+    const currentValue = preferredValue !== null ? preferredValue : (select.value || fallbackValue || '');
     const options = (categoryName && subcategoryOptionsByCategory[categoryName]) ? subcategoryOptionsByCategory[categoryName] : [];
     select.innerHTML = '';
     const base = document.createElement('option');
@@ -437,8 +438,10 @@
     });
     if (currentValue && options.includes(currentValue)) {
       select.value = currentValue;
+      select.dataset.currentSubcategory = currentValue;
     } else {
       select.value = '';
+      select.dataset.currentSubcategory = '';
     }
   };
 
@@ -674,7 +677,7 @@
   document.querySelectorAll('.category-select').forEach((select) => {
     select.addEventListener('change', async (event) => {
       const row = event.target.closest('.preview-row');
-      populateSubcategorySelect(row, event.target.value);
+      populateSubcategorySelect(row, event.target.value, '');
       await postRowUpdate(row, { override_category: event.target.value, override_subcategory: '' });
     });
   });
@@ -682,6 +685,7 @@
   document.querySelectorAll('.subcategory-select').forEach((select) => {
     select.addEventListener('change', async (event) => {
       const row = event.target.closest('.preview-row');
+      event.target.dataset.currentSubcategory = event.target.value || '';
       await postRowUpdate(row, { override_subcategory: event.target.value });
     });
   });
@@ -722,12 +726,10 @@
         if (!checkbox || !checkbox.checked || !rowCategory) return;
         rowCategory.value = categoryName;
         if (rowSubcategory) {
-          populateSubcategorySelect(row, categoryName);
+          populateSubcategorySelect(row, categoryName, '');
           rowSubcategory.value = '';
         }
         toggleApplyAllOption(rowCategory);
-        const badge = row.querySelector('.edited-badge');
-        if (badge) badge.hidden = false;
         markRowOverridden(row, true);
       });
       showAppliedMessage(result.updated || 0);
@@ -777,7 +779,7 @@
     populateSubcategorySelect(row, categorySelect ? categorySelect.value : '');
     const subcategorySelect = row.querySelector('.subcategory-select');
     if (!subcategorySelect) return;
-    const preferred = subcategorySelect.dataset.originalSubcategory || '';
+    const preferred = subcategorySelect.dataset.currentSubcategory || subcategorySelect.dataset.originalSubcategory || '';
     if (preferred && Array.from(subcategorySelect.options).some((option) => option.value === preferred)) {
       subcategorySelect.value = preferred;
     }
