@@ -7,6 +7,7 @@ import json
 import re
 import unicodedata
 import uuid
+from decimal import Decimal
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -914,12 +915,23 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
 
 
 def update_staged_preview_row(db, staging_id, row):
+    def make_json_safe(value):
+        if isinstance(value, Decimal):
+            return format(value, "f")
+        if isinstance(value, dict):
+            return {key: make_json_safe(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [make_json_safe(item) for item in value]
+        if isinstance(value, tuple):
+            return [make_json_safe(item) for item in value]
+        return value
+
     is_selected = bool(row.get("selected", True))
     amount_override = row.get("amount_override")
     has_override = 1 if amount_override is not None else 0
     db.execute(
         "UPDATE import_staging SET row_json = ?, selected = ?, amount_override = ?, has_override = ? WHERE id = ?",
-        (json.dumps(row), 1 if is_selected else 0, amount_override, has_override, staging_id),
+        (json.dumps(make_json_safe(row)), 1 if is_selected else 0, amount_override, has_override, staging_id),
     )
 
 
