@@ -963,6 +963,17 @@ def suggest_preview_subcategory(row, suggestions_by_vendor):
     return suggestions_by_vendor.get((category_name, vendor_key), "")
 
 
+def resolve_preview_subcategory(row, suggestions_by_vendor):
+    explicit_subcategory = (
+        row.get("override_subcategory")
+        or row.get("subcategory")
+        or ""
+    ).strip()
+    if explicit_subcategory:
+        return explicit_subcategory
+    return suggest_preview_subcategory(row, suggestions_by_vendor)
+
+
 def apply_staged_category_override(row, category_name, category_id=None):
     selected_category_name = (category_name or "").strip()
     row["category"] = selected_category_name
@@ -4391,7 +4402,7 @@ def create_app(test_config=None):
                 row["suggested_source"] = categorized["source"]
                 row["confidence"] = categorized["confidence"]
                 row["confidence_label"] = confidence_label(categorized["confidence"])
-                row["subcategory"] = suggest_preview_subcategory(row, subcategory_suggestions)
+                row["subcategory"] = resolve_preview_subcategory(row, subcategory_suggestions)
 
                 csv_category_name, csv_matched_category_id, csv_match_status = resolve_csv_category_mapping(
                     row.get("csv_category_name", ""), category_lookup
