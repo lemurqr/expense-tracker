@@ -4655,3 +4655,46 @@ def test_import_skipped_duplicate_can_be_overridden(client):
         db = client.application.get_db()
         count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = ?", ("Freshco override dup",)).fetchone()["c"]
         assert count == 2
+
+
+def test_import_skipped_selected_with_empty_selection_is_safe(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "date": "2026-11-20",
+            "amount": -42.5,
+            "description": "Freshco empty selection",
+            "normalized_description": "freshco empty selection",
+            "vendor": "Freshco",
+            "category": "Groceries",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "source_type": "bank",
+            "paid_by": "DK",
+        }
+    ]
+
+    import_id = stage_import_preview(client, rows, preview_id="override-empty")
+    first = client.post("/import/csv", data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"}, follow_redirects=True)
+    assert b"Imported 1 transaction(s)." in first.data
+
+    second_id = stage_import_preview(client, rows, preview_id="override-empty-2")
+    second = client.post("/import/csv", data={"action": "confirm", "import_id": second_id, "import_default_paid_by": "DK"}, follow_redirects=True)
+    assert b"Skipped duplicates: 1" in second.data
+
+    no_selection = client.post(
+        "/import/csv",
+        data={"action": "import_skipped_selected", "import_id": second_id},
+        follow_redirects=True,
+    )
+    assert no_selection.status_code == 200
+    assert b"No skipped rows were selected." in no_selection.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = ?", ("Freshco empty selection",)).fetchone()["c"]
+        assert count == 1

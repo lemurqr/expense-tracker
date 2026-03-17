@@ -69,11 +69,14 @@ class CompatConnection:
         placeholders = ", ".join(["?"] * len(columns))
         column_sql = ", ".join(columns)
         if self.backend == "postgres":
-            conflict_sql = ", ".join(conflict_cols)
-            sql = (
-                f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
-                f"ON CONFLICT ({conflict_sql}) DO NOTHING"
-            )
+            if conflict_cols:
+                conflict_sql = ", ".join(conflict_cols)
+                sql = (
+                    f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+                    f"ON CONFLICT ({conflict_sql}) DO NOTHING"
+                )
+            else:
+                sql = f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})"
         else:
             sql = f"INSERT OR IGNORE INTO {table} ({column_sql}) VALUES ({placeholders})"
         return self.execute(sql, tuple(values))

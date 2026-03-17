@@ -4075,6 +4075,10 @@ def create_app(test_config=None):
                     default_paid_by = "DK"
 
                 selected_override_ids = set(parse_selected_row_ids(request.form.getlist("selected_skipped_row_ids")))
+                if action == "import_skipped_selected" and not selected_override_ids:
+                    flash("No skipped rows were selected.")
+                    return redirect(url_for("import_csv", import_id=import_id))
+
                 selected_count = 0
                 uncategorized_unmapped_count = 0
                 for index, record in enumerate(records):
