@@ -607,7 +607,7 @@ def test_dashboard_date_range_filter_and_totals(client):
     assert b"Inside A" in response.data
     assert b"Inside B" in response.data
     assert b"Outside" not in response.data
-    assert b'id="shared-category-pie-chart"' in response.data
+    assert b'id="spend-details-chart"' in response.data
 
 
 def test_export_csv_respects_date_range(client):
@@ -1226,7 +1226,7 @@ def test_dashboard_shared_category_chart_and_repayment_markup(client):
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert 'id="shared-category-pie-chart"' in text
+    assert 'id="spend-details-chart"' in text
     assert "Spend details" in text
     assert "Shared Expenses and Settlements" in text
     assert "legend: {" in text
@@ -1270,7 +1270,7 @@ def test_dashboard_shared_category_chart_shows_categories_in_pie_data(client):
     text = response.get_data(as_text=True)
 
     assert response.status_code == 200
-    assert 'id="shared-category-pie-chart"' in text
+    assert 'id="spend-details-chart"' in text
     assert "Shared Expenses and Settlements" in text
     assert "legend: {" in text
 
@@ -1368,6 +1368,140 @@ def test_dashboard_malformed_date_range_does_not_500(client):
 
     assert "Shared categories for" in text
     assert analytics["period_label"]
+
+
+def test_dashboard_spend_details_yoy_category_aggregation_for_custom_date_range(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        gifts_id = db.execute("SELECT id FROM categories WHERE name = 'Gifts & Presents'").fetchone()["id"]
+        for expense_date, amount, category_id, description in [
+            ("2025-07-05", -80, groceries_id, "Current groceries"),
+            ("2025-08-06", -35, gifts_id, "Current gifts"),
+            ("2024-07-05", -50, groceries_id, "Prior groceries"),
+            ("2024-08-06", -70, gifts_id, "Prior gifts"),
+            ("2025-10-01", -999, groceries_id, "Outside range"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, category_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    assert analytics["yoy"]["period"]["current_label"] == "2025-07-01 to 2025-09-30"
+    assert analytics["yoy"]["period"]["prior_label"] == "2024-07-01 to 2024-09-30"
+    assert analytics["yoy"]["period"]["categories"] == [
+        {"id": groceries_id, "label": "Groceries", "current_value": 80.0, "prior_value": 50.0},
+        {"id": gifts_id, "label": "Gifts & Presents", "current_value": 35.0, "prior_value": 70.0},
+    ]
+
+
+def test_dashboard_spend_details_yoy_category_aggregation_for_ytd(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        utilities_id = db.execute("SELECT id FROM categories WHERE name = 'Utilities'").fetchone()["id"]
+        for expense_date, amount, category_id, description in [
+            ("2025-01-10", -20, groceries_id, "YTD groceries 1"),
+            ("2025-09-02", -30, groceries_id, "YTD groceries 2"),
+            ("2025-03-01", -40, utilities_id, "YTD utilities"),
+            ("2024-01-10", -10, groceries_id, "Prior YTD groceries"),
+            ("2024-04-15", -60, utilities_id, "Prior YTD utilities"),
+            ("2024-10-05", -999, groceries_id, "Outside prior YTD"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, category_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    assert analytics["yoy"]["ytd"]["current_label"] == "2025-01-01 to 2025-09-30"
+    assert analytics["yoy"]["ytd"]["prior_label"] == "2024-01-01 to 2024-09-30"
+    assert analytics["yoy"]["ytd"]["categories"] == [
+        {"id": groceries_id, "label": "Groceries", "current_value": 50.0, "prior_value": 10.0},
+        {"id": utilities_id, "label": "Utilities", "current_value": 40.0, "prior_value": 60.0},
+    ]
+
+
+def test_dashboard_spend_details_yoy_subcategory_drilldown_data(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Produce"))
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Dairy"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE name = 'Produce'").fetchone()["id"]
+        dairy_id = db.execute("SELECT id FROM subcategories WHERE name = 'Dairy'").fetchone()["id"]
+        for expense_date, amount, subcategory_id, description in [
+            ("2025-07-05", -25, produce_id, "Current produce"),
+            ("2025-08-05", -15, dairy_id, "Current dairy"),
+            ("2024-07-05", -10, produce_id, "Prior produce"),
+            ("2024-08-05", -22, dairy_id, "Prior dairy"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, subcategory_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, groceries_id, subcategory_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+    drilldown = analytics["yoy"]["period"]["subcategories"][str(groceries_id)]
+
+    assert drilldown["category_label"] == "Groceries"
+    assert drilldown["rows"] == [
+        {"label": "Produce", "current_value": 25.0, "prior_value": 10.0},
+        {"label": "Dairy", "current_value": 15.0, "prior_value": 22.0},
+    ]
+
+
+def test_dashboard_spend_details_mode_switch_keeps_mix_markup(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (None, 1, "2026-04-10", -42, groceries_id, "Groceries"),
+        )
+        db.commit()
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
+
+    assert 'data-spend-view="mix"' in text
+    assert 'data-spend-view="yoy"' in text
+    assert 'id="spend-details-chart"' in text
+    assert analytics["pie_period"] == [{"label": "Groceries", "value": 42.0, "subcategories": []}]
 
 
 def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_categories(client):

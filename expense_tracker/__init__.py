@@ -1823,6 +1823,37 @@ def create_app(test_config=None):
         next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
         return month_start, next_month - timedelta(days=1)
 
+    def _label_or_fallback(value, fallback):
+        text = str(value or "").strip()
+        return text or fallback
+
+    def _safe_same_day_last_year(value):
+        if value.month == 2 and value.day == 29:
+            return value.replace(year=value.year - 1, day=28)
+        return value.replace(year=value.year - 1)
+
+    def _build_yoy_rows(current_rows, prior_rows):
+        row_keys = set(current_rows.keys()) | set(prior_rows.keys())
+        results = []
+        for key in row_keys:
+            current_value = round(float(current_rows.get(key, {}).get("value", 0.0)), 2)
+            prior_value = round(float(prior_rows.get(key, {}).get("value", 0.0)), 2)
+            if current_value <= 0 and prior_value <= 0:
+                continue
+            label = (
+                current_rows.get(key, {}).get("label")
+                or prior_rows.get(key, {}).get("label")
+                or "Uncategorized"
+            )
+            results.append({
+                "id": key,
+                "label": _label_or_fallback(label, "Uncategorized"),
+                "current_value": current_value,
+                "prior_value": prior_value,
+            })
+        results.sort(key=lambda row: (-row["current_value"], -row["prior_value"], row["label"]))
+        return results
+
     def _fetch_shared_category_totals_for_period(db, household_id, start_date, end_date):
         if db.backend == "postgres":
             rounded_total_sql = "ROUND(SUM(-e.amount)::numeric, 2)"
@@ -1833,7 +1864,7 @@ def create_app(test_config=None):
             """
             SELECT
                 c.id AS category_id,
-                COALESCE(c.name, 'Uncategorized') AS category,
+                COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized') AS category,
                 {rounded_total_sql} AS total
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
@@ -1842,14 +1873,14 @@ def create_app(test_config=None):
               AND e.is_personal = 0
               AND e.date >= ?
               AND e.date <= ?
-            GROUP BY c.id, COALESCE(c.name, 'Uncategorized')
+            GROUP BY c.id, COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized')
             """.format(rounded_total_sql=rounded_total_sql),
             (household_id, start_date.isoformat(), end_date.isoformat()),
         ).fetchall()
         category_totals = {
             (row["category_id"] if row["category_id"] is not None else 0): {
                 "id": row["category_id"],
-                "label": row["category"],
+                "label": _label_or_fallback(row["category"], "Uncategorized"),
                 "value": round(float(row["total"] or 0), 2),
                 "subcategories": [],
             }
@@ -1860,7 +1891,7 @@ def create_app(test_config=None):
             """
             SELECT
                 c.id AS category_id,
-                sc.name AS subcategory,
+                COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory') AS subcategory,
                 {rounded_total_sql} AS total
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
@@ -1870,7 +1901,7 @@ def create_app(test_config=None):
               AND e.is_personal = 0
               AND e.date >= ?
               AND e.date <= ?
-            GROUP BY c.id, sc.id, sc.name
+            GROUP BY c.id, sc.id, COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory')
             """.format(rounded_total_sql=rounded_total_sql),
             (household_id, start_date.isoformat(), end_date.isoformat()),
         ).fetchall()
@@ -1884,7 +1915,7 @@ def create_app(test_config=None):
                 continue
             category_totals[category_key]["subcategories"].append(
                 {
-                    "label": row["subcategory"],
+                    "label": _label_or_fallback(row["subcategory"], "No subcategory"),
                     "value": value,
                 }
             )
@@ -2027,6 +2058,58 @@ def create_app(test_config=None):
                 pie_rows[-1]["included_categories"] = other_breakdown
             return pie_rows
 
+        yoy_period_current_start = pie_period_start
+        yoy_period_current_end = pie_period_end
+        yoy_period_prior_start = _safe_same_day_last_year(yoy_period_current_start)
+        yoy_period_prior_end = _safe_same_day_last_year(yoy_period_current_end)
+
+        yoy_ytd_current_start = current_end.replace(month=1, day=1)
+        yoy_ytd_current_end = current_end
+        yoy_ytd_prior_start = _safe_same_day_last_year(yoy_ytd_current_start)
+        yoy_ytd_prior_end = _safe_same_day_last_year(yoy_ytd_current_end)
+
+        yoy_period_current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_period_current_start, yoy_period_current_end)
+        yoy_period_prior_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_period_prior_start, yoy_period_prior_end)
+        yoy_ytd_current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_ytd_current_start, yoy_ytd_current_end)
+        yoy_ytd_prior_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_ytd_prior_start, yoy_ytd_prior_end)
+
+        yoy_category_period = _build_yoy_rows(yoy_period_current_rows, yoy_period_prior_rows)
+        yoy_category_ytd = _build_yoy_rows(yoy_ytd_current_rows, yoy_ytd_prior_rows)
+
+        def build_yoy_subcategory_rows(current_rows, prior_rows):
+            result = {}
+            for key in set(current_rows.keys()) | set(prior_rows.keys()):
+                label = (
+                    current_rows.get(key, {}).get("label")
+                    or prior_rows.get(key, {}).get("label")
+                    or "Uncategorized"
+                )
+                current_subs = {
+                    item["label"]: round(float(item.get("value") or 0), 2)
+                    for item in current_rows.get(key, {}).get("subcategories", [])
+                }
+                prior_subs = {
+                    item["label"]: round(float(item.get("value") or 0), 2)
+                    for item in prior_rows.get(key, {}).get("subcategories", [])
+                }
+                sub_rows = []
+                for sub_label in set(current_subs.keys()) | set(prior_subs.keys()):
+                    current_value = current_subs.get(sub_label, 0.0)
+                    prior_value = prior_subs.get(sub_label, 0.0)
+                    if current_value <= 0 and prior_value <= 0:
+                        continue
+                    sub_rows.append({
+                        "label": _label_or_fallback(sub_label, "No subcategory"),
+                        "current_value": current_value,
+                        "prior_value": prior_value,
+                    })
+                sub_rows.sort(key=lambda row: (-row["current_value"], -row["prior_value"], row["label"]))
+                result[str(key)] = {
+                    "category_label": _label_or_fallback(label, "Uncategorized"),
+                    "rows": sub_rows,
+                }
+            return result
+
         return {
             "month": analytics_month,
             "period_label": pie_period_label,
@@ -2034,6 +2117,20 @@ def create_app(test_config=None):
             "pie_period": build_pie_rows(positive_pie_period_rows, "value"),
             "pie_ytd": build_pie_rows(positive_ytd_rows, "year_to_date"),
             "table": table_rows,
+            "yoy": {
+                "period": {
+                    "current_label": f"{yoy_period_current_start.isoformat()} to {yoy_period_current_end.isoformat()}",
+                    "prior_label": f"{yoy_period_prior_start.isoformat()} to {yoy_period_prior_end.isoformat()}",
+                    "categories": yoy_category_period,
+                    "subcategories": build_yoy_subcategory_rows(yoy_period_current_rows, yoy_period_prior_rows),
+                },
+                "ytd": {
+                    "current_label": f"{yoy_ytd_current_start.isoformat()} to {yoy_ytd_current_end.isoformat()}",
+                    "prior_label": f"{yoy_ytd_prior_start.isoformat()} to {yoy_ytd_prior_end.isoformat()}",
+                    "categories": yoy_category_ytd,
+                    "subcategories": build_yoy_subcategory_rows(yoy_ytd_current_rows, yoy_ytd_prior_rows),
+                },
+            },
         }
 
     def calculate_settlement_ledger(db, household_id, filters):
