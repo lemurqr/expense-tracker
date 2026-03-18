@@ -24,7 +24,7 @@
       <button type="button" class="spend-mode-button" data-spend-mode="ytd" aria-pressed="false">YTD</button>
     </div>
   </div>
-  <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.month }}</p>
+  <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.period_label }}</p>
 
   {% if shared_category_analytics.pie_period %}
   <div class="chart-wrap" id="category-analytics-pie-wrap" aria-label="Shared spending by category chart container">
@@ -565,7 +565,7 @@
       const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
       const emptyPieCopy = {
         period: 'No shared expenses in selected period.',
-        ytd: `No shared year-to-date expenses through ${sharedCategoryAnalytics.month}.`
+        ytd: `No shared ${sharedCategoryAnalytics.ytd_label}.`
       };
 
       function getModeRows(mode) {
@@ -577,8 +577,8 @@
       function updateSpendSubtitle(mode) {
         if (!spendDetailsSubtitle) return;
         spendDetailsSubtitle.textContent = mode === 'ytd'
-          ? `Shared categories year-to-date through ${sharedCategoryAnalytics.month}`
-          : `Shared categories for ${sharedCategoryAnalytics.month}`;
+          ? `Shared categories ${sharedCategoryAnalytics.ytd_label}`
+          : `Shared categories for ${sharedCategoryAnalytics.period_label}`;
       }
 
       function ensureEmptyPieMessage(mode) {

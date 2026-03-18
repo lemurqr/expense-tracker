@@ -1315,6 +1315,47 @@ def test_dashboard_shared_category_chart_hides_zero_current_month_categories(cli
     assert "Gifts & Presents" not in chart_labels
 
 
+def test_dashboard_shared_category_chart_uses_custom_date_range_period(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        gifts_id = db.execute("SELECT id FROM categories WHERE name = 'Gifts & Presents'").fetchone()["id"]
+        for expense_date, amount, category_id, description in [
+            ("2026-01-05", -15, gifts_id, "YTD only"),
+            ("2026-07-10", -40, groceries_id, "July groceries"),
+            ("2026-08-12", -50, gifts_id, "August gifts"),
+            ("2026-09-03", -60, groceries_id, "September groceries"),
+            ("2026-10-01", -999, gifts_id, "Outside range"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, category_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2026-07-01&end=2026-09-30")
+    text = response.get_data(as_text=True)
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
+
+    assert "Shared categories for 2026-07-01 → 2026-09-30" in text
+    assert analytics["period_label"] == "2026-07-01 → 2026-09-30"
+    assert analytics["ytd_label"] == "year-to-date through 2026-09"
+    assert analytics["pie_period"] == [
+        {"label": "Groceries", "value": 100.0, "subcategories": []},
+        {"label": "Gifts & Presents", "value": 50.0, "subcategories": []},
+    ]
+    assert analytics["pie_ytd"][0]["label"] == "Groceries"
+    assert analytics["pie_ytd"][0]["value"] == 100.0
+    assert analytics["pie_ytd"][1]["label"] == "Gifts & Presents"
+    assert analytics["pie_ytd"][1]["value"] == 65.0
+
+
 def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_categories(client):
     register(client)
     login(client)
