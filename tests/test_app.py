@@ -1356,6 +1356,20 @@ def test_dashboard_shared_category_chart_uses_custom_date_range_period(client):
     assert analytics["pie_ytd"][1]["value"] == 65.0
 
 
+def test_dashboard_malformed_date_range_does_not_500(client):
+    register(client)
+    login(client)
+
+    response = client.get("/dashboard?start=foo&end=bar")
+
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
+
+    assert "Shared categories for" in text
+    assert analytics["period_label"]
+
+
 def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_categories(client):
     register(client)
     login(client)

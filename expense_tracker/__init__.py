@@ -1633,6 +1633,8 @@ def create_app(test_config=None):
             "selected_month": selected_month,
             "start_date": start_date,
             "end_date": end_date,
+            "parsed_start_date": parsed_start,
+            "parsed_end_date": parsed_end,
             "period_label": period_label,
             "tx_filter_sql": tx_filter_sql,
             "tx_params": tx_params,
@@ -1902,9 +1904,11 @@ def create_app(test_config=None):
         pie_period_start = current_start
         pie_period_end = current_end
         pie_period_label = analytics_month
-        if filters.get("start_date") and filters.get("end_date"):
-            pie_period_start = datetime.strptime(filters["start_date"], "%Y-%m-%d").date()
-            pie_period_end = datetime.strptime(filters["end_date"], "%Y-%m-%d").date()
+        parsed_start_date = filters.get("parsed_start_date")
+        parsed_end_date = filters.get("parsed_end_date")
+        if parsed_start_date and parsed_end_date:
+            pie_period_start = parsed_start_date
+            pie_period_end = parsed_end_date
             pie_period_label = filters["period_label"]
 
         current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, current_start, current_end)
