@@ -1899,11 +1899,20 @@ def create_app(test_config=None):
         last_start = last_end.replace(day=1)
         ytd_start = current_start.replace(month=1, day=1)
 
+        pie_period_start = current_start
+        pie_period_end = current_end
+        pie_period_label = analytics_month
+        if filters.get("start_date") and filters.get("end_date"):
+            pie_period_start = datetime.strptime(filters["start_date"], "%Y-%m-%d").date()
+            pie_period_end = datetime.strptime(filters["end_date"], "%Y-%m-%d").date()
+            pie_period_label = filters["period_label"]
+
         current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, current_start, current_end)
         last_rows = _fetch_shared_category_totals_for_period(db, g.household_id, last_start, last_end)
         ytd_rows = _fetch_shared_category_totals_for_period(db, g.household_id, ytd_start, current_end)
+        pie_period_rows = _fetch_shared_category_totals_for_period(db, g.household_id, pie_period_start, pie_period_end)
 
-        category_keys = set(current_rows.keys()) | set(last_rows.keys()) | set(ytd_rows.keys())
+        category_keys = set(current_rows.keys()) | set(last_rows.keys()) | set(ytd_rows.keys()) | set(pie_period_rows.keys())
         table_rows = []
         for key in category_keys:
             current_value = round(float(current_rows.get(key, {}).get("value", 0.0)), 2)
@@ -1915,6 +1924,7 @@ def create_app(test_config=None):
                 current_rows.get(key, {}).get("label")
                 or last_rows.get(key, {}).get("label")
                 or ytd_rows.get(key, {}).get("label")
+                or pie_period_rows.get(key, {}).get("label")
                 or "Uncategorized"
             )
             subcategory_totals = {}
@@ -1955,6 +1965,10 @@ def create_app(test_config=None):
         positive_current_rows = [
             row for row in sorted(table_rows, key=lambda row: (-row["current_month"], row["label"]))
             if row["current_month"] > 0
+        ]
+        positive_pie_period_rows = [
+            row for row in sorted(pie_period_rows.values(), key=lambda row: (-row["value"], row["label"]))
+            if row["value"] > 0
         ]
         positive_ytd_rows = [
             row for row in sorted(table_rows, key=lambda row: (-row["year_to_date"], row["label"]))
@@ -2011,7 +2025,9 @@ def create_app(test_config=None):
 
         return {
             "month": analytics_month,
-            "pie_period": build_pie_rows(positive_current_rows, "current_month"),
+            "period_label": pie_period_label,
+            "ytd_label": f"year-to-date through {analytics_month}",
+            "pie_period": build_pie_rows(positive_pie_period_rows, "value"),
             "pie_ytd": build_pie_rows(positive_ytd_rows, "year_to_date"),
             "table": table_rows,
         }
