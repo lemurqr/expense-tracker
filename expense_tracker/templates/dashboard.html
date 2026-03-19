@@ -30,6 +30,13 @@
       </div>
     </div>
   </div>
+  <div class="spend-yoy-scope-row" id="spend-yoy-scope-row" hidden>
+    <span class="spend-yoy-scope-label">YoY categories</span>
+    <div class="spend-yoy-scope-toggle" role="group" aria-label="YoY category scope">
+      <button type="button" class="spend-yoy-scope-button active" data-yoy-scope="top" aria-pressed="true">Top 8</button>
+      <button type="button" class="spend-yoy-scope-button" data-yoy-scope="all" aria-pressed="false">All</button>
+    </div>
+  </div>
   <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.period_label }}</p>
 
   <div class="spend-details-chart-panel">
@@ -570,14 +577,19 @@
       const emptyState = document.getElementById('spend-details-empty');
       const backRow = document.getElementById('spend-details-back-row');
       const backButton = document.getElementById('spend-details-back-button');
+      const yoyScopeRow = document.getElementById('spend-yoy-scope-row');
+      const yoyScopeButtons = Array.from(document.querySelectorAll('[data-yoy-scope]'));
       let spendMode = 'period';
       let spendView = 'mix';
       let yoyDrilldownKey = null;
+      let yoyCategoryScope = 'top';
       let sharedChart = null;
 
       const piePalette = ['#1d4ed8', '#0f766e', '#b45309', '#9333ea', '#be123c'];
       const yoyPalette = { current: '#274690', prior: '#93c5fd' };
       const maxLabelLength = 22;
+      const maxYoyLabelLength = 26;
+      const topYoyCategoryCount = 8;
       const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
       const emptyCopy = {
         mix: {
@@ -590,8 +602,15 @@
         }
       };
 
-      function shortenLabel(label) {
-        return label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label;
+      function shortenLabel(label, maxLength = maxLabelLength) {
+        return label.length > maxLength ? `${label.slice(0, maxLength - 1).trimEnd()}…` : label;
+      }
+
+      function getVisibleYoyRows(rows, level) {
+        if (level !== 'categories' || yoyCategoryScope !== 'top') {
+          return rows;
+        }
+        return rows.slice(0, topYoyCategoryCount);
       }
 
       function getMixRows(mode) {
@@ -622,7 +641,7 @@
           level: 'categories',
           currentLabel: bucket.current_label || '',
           priorLabel: bucket.prior_label || '',
-          rows: bucket.categories || []
+          rows: getVisibleYoyRows(bucket.categories || [], 'categories')
         };
       }
 
@@ -752,17 +771,19 @@
         }
         showChartWrap();
         const fullLabels = rows.map((row) => row.label);
-        const chartHeight = Math.max(220, rows.length * 48 + 36);
+        const truncatedLabels = fullLabels.map((label) => shortenLabel(label, maxYoyLabelLength));
+        const chartHeight = Math.max(260, rows.length * 56 + 40);
         chartCanvas.style.minHeight = `${chartHeight}px`;
-        chartWrap.style.height = `${Math.min(chartHeight, 420)}px`;
+        chartWrap.style.height = `${Math.min(chartHeight, rows.length <= topYoyCategoryCount ? 520 : 560)}px`;
+        chartCanvas.title = fullLabels.join(' | ');
         destroySharedChart();
         sharedChart = new window.Chart(chartCanvas, {
           type: 'bar',
           data: {
-            labels: fullLabels.map(shortenLabel),
+            labels: truncatedLabels,
             datasets: [
-              { label: state.currentLabel, data: rows.map((row) => row.current_value), backgroundColor: yoyPalette.current, borderRadius: 6, barThickness: 14 },
-              { label: state.priorLabel, data: rows.map((row) => row.prior_value), backgroundColor: yoyPalette.prior, borderRadius: 6, barThickness: 14 }
+              { label: state.currentLabel, data: rows.map((row) => row.current_value), backgroundColor: yoyPalette.current, borderRadius: 6, barThickness: 18, categoryPercentage: 0.8, barPercentage: 0.9 },
+              { label: state.priorLabel, data: rows.map((row) => row.prior_value), backgroundColor: yoyPalette.prior, borderRadius: 6, barThickness: 18, categoryPercentage: 0.8, barPercentage: 0.9 }
             ]
           },
           options: {
@@ -776,6 +797,7 @@
               yoyDrilldownKey = String(row.id);
               renderSpendDetails();
             },
+            layout: { padding: { left: 18, right: 10, top: 4, bottom: 6 } },
             plugins: {
               legend: { display: true, position: 'bottom' },
               tooltip: {
@@ -795,7 +817,12 @@
                 beginAtZero: true,
                 ticks: { callback: function (value) { return `$${Number(value).toFixed(0)}`; } }
               },
-              y: { ticks: { autoSkip: false } }
+              y: {
+                ticks: { autoSkip: false, crossAlign: 'far', padding: 6, font: { size: 12 } },
+                afterFit: function (scaleInstance) {
+                  scaleInstance.width = Math.max(scaleInstance.width, 180);
+                }
+              }
             }
           }
         });
@@ -814,6 +841,12 @@
           button.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
         if (backRow) backRow.hidden = !(spendView === 'yoy' && yoyDrilldownKey);
+        if (yoyScopeRow) yoyScopeRow.hidden = !(spendView === 'yoy' && !yoyDrilldownKey);
+        yoyScopeButtons.forEach((button) => {
+          const active = button.dataset.yoyScope === yoyCategoryScope;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
         if (spendView === 'mix') {
           if (chartWrap) chartWrap.style.height = '';
           if (chartCanvas) chartCanvas.style.minHeight = '';
@@ -836,6 +869,14 @@
       spendViewButtons.forEach((button) => {
         button.addEventListener('click', function () {
           spendView = button.dataset.spendView;
+          yoyDrilldownKey = null;
+          renderSpendDetails();
+        });
+      });
+
+      yoyScopeButtons.forEach((button) => {
+        button.addEventListener('click', function () {
+          yoyCategoryScope = button.dataset.yoyScope === 'all' ? 'all' : 'top';
           yoyDrilldownKey = null;
           renderSpendDetails();
         });
