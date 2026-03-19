@@ -21,7 +21,7 @@
     <h3>Spend details</h3>
     <div class="spend-details-toolbar">
       <div class="spend-view-toggle" role="group" aria-label="Spend details mode">
-        <button type="button" class="spend-view-button active" data-spend-detail-mode="mix" aria-pressed="true">Mix</button>
+        <button type="button" class="spend-view-button active" data-spend-detail-mode="mix" aria-pressed="true">Spend Mix</button>
         <button type="button" class="spend-view-button" data-spend-detail-mode="period-vs-ly" aria-pressed="false">Period vs LY</button>
         <button type="button" class="spend-view-button" data-spend-detail-mode="yoy" aria-pressed="false">YoY</button>
       </div>
@@ -53,7 +53,8 @@
     <p class="spend-details-empty" id="spend-details-empty" hidden>No shared expenses in selected period.</p>
   </div>
 
-  <div class="spend-table-controls">
+  <div class="spend-details-breakdown" id="spend-details-breakdown">
+    <div class="spend-table-controls">
     <button type="button" id="expand-all-categories" class="button button-secondary">Expand All</button>
     <button type="button" id="collapse-all-categories" class="button button-secondary">Collapse All</button>
   </div>
@@ -100,6 +101,7 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
 </section>
 
 <section class="card">
@@ -596,6 +598,7 @@
       const yoyCurrentHeading = document.getElementById('spend-yoy-current-heading');
       const yoyComparisonHeading = document.getElementById('spend-yoy-comparison-heading');
       const yoyDeltaHeading = document.getElementById('spend-yoy-delta-heading');
+      const spendDetailsBreakdown = document.getElementById('spend-details-breakdown');
       let spendDetailMode = 'mix';
       let yoyDrilldownKey = null;
       let expandedComparisonRows = {};
@@ -940,6 +943,7 @@
           button.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
         if (backRow) backRow.hidden = !(spendDetailMode !== 'mix' && yoyDrilldownKey);
+        if (spendDetailsBreakdown) spendDetailsBreakdown.hidden = spendDetailMode !== 'mix';
         if (spendDetailMode === 'mix') {
           expandedComparisonRows = {};
           if (chartWrap) chartWrap.style.height = '';
