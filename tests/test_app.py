@@ -1480,7 +1480,7 @@ def test_dashboard_spend_details_yoy_subcategory_drilldown_data(client):
     ]
 
 
-def test_dashboard_spend_details_yoy_markup_includes_custom_legend_and_comparison_table(client):
+def test_dashboard_spend_details_compare_markup_includes_separate_pop_and_yoy_modes(client):
     register(client)
     login(client)
 
@@ -1503,15 +1503,37 @@ def test_dashboard_spend_details_yoy_markup_includes_custom_legend_and_compariso
             )
         db.commit()
 
-    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30&spend_view=compare&spend_compare=pop")
     text = response.get_data(as_text=True)
 
+    assert 'data-spend-view="mix"' in text
+    assert 'data-spend-view="compare"' in text
+    assert 'data-spend-compare="pop"' in text
+    assert 'data-spend-compare="yoy"' in text
     assert 'id="spend-chart-legend"' in text
     assert 'id="spend-yoy-table-wrap"' in text
-    assert 'Previous comparable period' in text
-    assert 'Same period last year' in text
+    assert 'id="spend-yoy-comparison-heading">Previous period<' in text
+    assert 'id="spend-yoy-delta-heading">Period delta<' in text
+    assert "const comparisonLabel = yoyState.compareMode === 'yoy'" in text
+    assert "comparisonDatasetKey = state.compareMode === 'yoy' ? 'prior_value' : 'previous_period_value'" in text
     assert 'chartCanvas.title = ""' in text
     assert 'legend: { display: false }' in text
+
+
+def test_dashboard_spend_details_compare_query_state_is_preserved_in_markup(client):
+    register(client)
+    login(client)
+
+    response = client.get(
+        "/dashboard?month=2026-03&settlement_tab=record-repayment-panel&spend_mode=ytd&spend_view=compare&spend_compare=yoy"
+    )
+    text = response.get_data(as_text=True)
+
+    assert 'name="spend_mode" value="ytd"' in text
+    assert 'name="spend_view" value="compare"' in text
+    assert 'name="spend_compare" value="yoy"' in text
+    assert 'spend_view=compare' in text
+    assert 'spend_compare=yoy' in text
 
 
 def test_dashboard_spend_details_mode_switch_keeps_mix_markup(client):
@@ -1535,7 +1557,7 @@ def test_dashboard_spend_details_mode_switch_keeps_mix_markup(client):
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
 
     assert 'data-spend-view="mix"' in text
-    assert 'data-spend-view="yoy"' in text
+    assert 'data-spend-view="compare"' in text
     assert 'id="spend-details-chart"' in text
     assert analytics["pie_period"] == [{"label": "Groceries", "value": 42.0, "subcategories": []}]
 
