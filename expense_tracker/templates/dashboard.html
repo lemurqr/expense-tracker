@@ -19,20 +19,28 @@
 <section class="card spend-details-card">
   <div class="spend-details-header">
     <h3>Spend details</h3>
-    <div class="spend-mode-toggle" role="group" aria-label="Spend details mode">
-      <button type="button" class="spend-mode-button active" data-spend-mode="period" aria-pressed="true">Period</button>
-      <button type="button" class="spend-mode-button" data-spend-mode="ytd" aria-pressed="false">YTD</button>
+    <div class="spend-details-toolbar">
+      <div class="spend-view-toggle" role="group" aria-label="Spend details chart view">
+        <button type="button" class="spend-view-button active" data-spend-view="mix" aria-pressed="true">Mix</button>
+        <button type="button" class="spend-view-button" data-spend-view="yoy" aria-pressed="false">YoY</button>
+      </div>
+      <div class="spend-mode-toggle" role="group" aria-label="Spend details time scope">
+        <button type="button" class="spend-mode-button active" data-spend-mode="period" aria-pressed="true">Period</button>
+        <button type="button" class="spend-mode-button" data-spend-mode="ytd" aria-pressed="false">YTD</button>
+      </div>
     </div>
   </div>
   <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.period_label }}</p>
 
-  {% if shared_category_analytics.pie_period %}
-  <div class="chart-wrap" id="category-analytics-pie-wrap" aria-label="Shared spending by category chart container">
-    <canvas id="shared-category-pie-chart" aria-label="Shared spending by category pie chart"></canvas>
+  <div class="spend-details-chart-panel">
+    <div class="spend-details-back-row" id="spend-details-back-row" hidden>
+      <button type="button" class="button button-secondary spend-details-back-button" id="spend-details-back-button">Back to categories</button>
+    </div>
+    <div class="chart-wrap" id="spend-details-chart-wrap" aria-label="Spend details chart container">
+      <canvas id="spend-details-chart" aria-label="Spend details chart"></canvas>
+    </div>
+    <p class="spend-details-empty" id="spend-details-empty" hidden>No shared expenses in selected period.</p>
   </div>
-  {% else %}
-  <p id="category-analytics-pie-wrap">No shared expenses in selected period.</p>
-  {% endif %}
 
   <div class="spend-table-controls">
     <button type="button" id="expand-all-categories" class="button button-secondary">Expand All</button>
@@ -555,36 +563,82 @@
 
       const sharedCategoryAnalytics = {{ shared_category_analytics|tojson }};
       const spendModeButtons = Array.from(document.querySelectorAll('[data-spend-mode]'));
+      const spendViewButtons = Array.from(document.querySelectorAll('[data-spend-view]'));
       const spendDetailsSubtitle = document.getElementById('spend-details-subtitle');
-      const chartCanvas = document.getElementById('shared-category-pie-chart');
+      const chartCanvas = document.getElementById('spend-details-chart');
+      const chartWrap = document.getElementById('spend-details-chart-wrap');
+      const emptyState = document.getElementById('spend-details-empty');
+      const backRow = document.getElementById('spend-details-back-row');
+      const backButton = document.getElementById('spend-details-back-button');
       let spendMode = 'period';
+      let spendView = 'mix';
+      let yoyDrilldownKey = null;
       let sharedChart = null;
 
       const piePalette = ['#1d4ed8', '#0f766e', '#b45309', '#9333ea', '#be123c'];
+      const yoyPalette = { current: '#274690', prior: '#93c5fd' };
       const maxLabelLength = 22;
       const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
-      const emptyPieCopy = {
-        period: 'No shared expenses in selected period.',
-        ytd: `No shared ${sharedCategoryAnalytics.ytd_label}.`
+      const emptyCopy = {
+        mix: {
+          period: 'No shared expenses in selected period.',
+          ytd: `No shared ${sharedCategoryAnalytics.ytd_label}.`
+        },
+        yoy: {
+          period: 'No year-over-year category data for the selected period.',
+          ytd: 'No year-over-year category data for the selected year-to-date range.'
+        }
       };
 
-      function getModeRows(mode) {
+      function shortenLabel(label) {
+        return label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label;
+      }
+
+      function getMixRows(mode) {
         return mode === 'ytd'
           ? (sharedCategoryAnalytics.pie_ytd || [])
           : (sharedCategoryAnalytics.pie_period || []);
       }
 
-      function updateSpendSubtitle(mode) {
-        if (!spendDetailsSubtitle) return;
-        spendDetailsSubtitle.textContent = mode === 'ytd'
-          ? `Shared categories ${sharedCategoryAnalytics.ytd_label}`
-          : `Shared categories for ${sharedCategoryAnalytics.period_label}`;
+      function getYoyBucket(mode) {
+        return mode === 'ytd' ? (sharedCategoryAnalytics.yoy?.ytd || {}) : (sharedCategoryAnalytics.yoy?.period || {});
       }
 
-      function ensureEmptyPieMessage(mode) {
-        const pieWrap = document.getElementById('category-analytics-pie-wrap');
-        if (!pieWrap || pieWrap.tagName !== 'P') return;
-        pieWrap.textContent = emptyPieCopy[mode];
+      function getCurrentYoyState() {
+        const bucket = getYoyBucket(spendMode);
+        if (yoyDrilldownKey) {
+          const detail = bucket.subcategories?.[String(yoyDrilldownKey)] || null;
+          if (detail) {
+            return {
+              level: 'subcategories',
+              categoryLabel: detail.category_label,
+              currentLabel: bucket.current_label || '',
+              priorLabel: bucket.prior_label || '',
+              rows: detail.rows || []
+            };
+          }
+        }
+        return {
+          level: 'categories',
+          currentLabel: bucket.current_label || '',
+          priorLabel: bucket.prior_label || '',
+          rows: bucket.categories || []
+        };
+      }
+
+      function updateSpendSubtitle() {
+        if (!spendDetailsSubtitle) return;
+        if (spendView === 'mix') {
+          spendDetailsSubtitle.textContent = spendMode === 'ytd'
+            ? `Shared categories ${sharedCategoryAnalytics.ytd_label}`
+            : `Shared categories for ${sharedCategoryAnalytics.period_label}`;
+          return;
+        }
+        const yoyState = getCurrentYoyState();
+        const comparisonText = `${yoyState.currentLabel} vs ${yoyState.priorLabel}`.trim();
+        spendDetailsSubtitle.textContent = yoyState.level === 'subcategories'
+          ? `${yoyState.categoryLabel} — ${comparisonText}`
+          : comparisonText;
       }
 
       function syncDashboardStateInputs(name, value) {
@@ -604,138 +658,195 @@
         syncDashboardStateInputs(name, value);
       }
 
-      function applySpendMode(mode) {
-        spendMode = mode;
-        setDashboardStateInUrl('spend_mode', mode);
+      function destroySharedChart() {
+        if (sharedChart) {
+          sharedChart.destroy();
+          sharedChart = null;
+        }
+      }
+
+      function showEmptyState(message) {
+        destroySharedChart();
+        if (chartWrap) chartWrap.hidden = true;
+        if (emptyState) {
+          emptyState.hidden = false;
+          emptyState.textContent = message;
+        }
+      }
+
+      function showChartWrap() {
+        if (chartWrap) chartWrap.hidden = false;
+        if (emptyState) emptyState.hidden = true;
+      }
+
+      function renderMixChart(rows) {
+        if (!chartCanvas || !window.Chart) return;
+        if (!rows.length) {
+          showEmptyState(emptyCopy.mix[spendMode]);
+          return;
+        }
+        showChartWrap();
+        const labels = rows.map((row) => row.label);
+        const shortLabels = labels.map(shortenLabel);
+        const values = rows.map((row) => Number(row.value));
+        const pieColors = labels.map((label, index) => label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
+        destroySharedChart();
+        sharedChart = new window.Chart(chartCanvas, {
+          type: 'pie',
+          data: {
+            labels: shortLabels,
+            datasets: [{ label: 'Shared spending', data: values, backgroundColor: pieColors }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            layout: { padding: { left: 10, right: 6, top: 4, bottom: 4 } },
+            plugins: {
+              legend: {
+                display: true,
+                position: 'bottom',
+                labels: { boxWidth: 12, boxHeight: 12, padding: 10, usePointStyle: true, pointStyle: 'circle' }
+              },
+              tooltip: {
+                callbacks: {
+                  title: function (context) {
+                    const index = context[0]?.dataIndex ?? 0;
+                    return labels[index] || '';
+                  },
+                  label: function (context) {
+                    const value = values[context.dataIndex] ?? 0;
+                    const total = values.reduce((sum, current) => sum + current, 0);
+                    const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
+                    return [formatCurrency(value), `${percent}% of total`];
+                  },
+                  afterLabel: function (context) {
+                    const row = rows[context.dataIndex] || {};
+                    const lines = [];
+                    const subcategories = row.subcategories || [];
+                    const includedCategories = row.included_categories || [];
+                    if (subcategories.length > 0) {
+                      lines.push('Subcategories:');
+                      subcategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
+                    } else if (includedCategories.length > 0) {
+                      lines.push('Includes categories:');
+                      includedCategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
+                    } else {
+                      lines.push('Subcategories:');
+                      lines.push('• No subcategory: ' + formatCurrency(row.value || 0));
+                    }
+                    return lines;
+                  }
+                }
+              }
+            }
+          }
+        });
+      }
+
+      function renderYoyChart(state) {
+        if (!chartCanvas || !window.Chart) return;
+        const rows = state.rows || [];
+        if (!rows.length) {
+          showEmptyState(emptyCopy.yoy[spendMode]);
+          return;
+        }
+        showChartWrap();
+        const fullLabels = rows.map((row) => row.label);
+        const chartHeight = Math.max(220, rows.length * 48 + 36);
+        chartCanvas.style.minHeight = `${chartHeight}px`;
+        chartWrap.style.height = `${Math.min(chartHeight, 420)}px`;
+        destroySharedChart();
+        sharedChart = new window.Chart(chartCanvas, {
+          type: 'bar',
+          data: {
+            labels: fullLabels.map(shortenLabel),
+            datasets: [
+              { label: state.currentLabel, data: rows.map((row) => row.current_value), backgroundColor: yoyPalette.current, borderRadius: 6, barThickness: 14 },
+              { label: state.priorLabel, data: rows.map((row) => row.prior_value), backgroundColor: yoyPalette.prior, borderRadius: 6, barThickness: 14 }
+            ]
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            onClick: function (_event, elements) {
+              if (state.level !== 'categories' || !elements.length) return;
+              const row = rows[elements[0].index];
+              if (!row || !(getYoyBucket(spendMode).subcategories?.[String(row.id)])) return;
+              yoyDrilldownKey = String(row.id);
+              renderSpendDetails();
+            },
+            plugins: {
+              legend: { display: true, position: 'bottom' },
+              tooltip: {
+                callbacks: {
+                  title: function (context) {
+                    const index = context[0]?.dataIndex ?? 0;
+                    return fullLabels[index] || '';
+                  },
+                  label: function (context) {
+                    return `${context.dataset.label}: ${formatCurrency(context.raw || 0)}`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                beginAtZero: true,
+                ticks: { callback: function (value) { return `$${Number(value).toFixed(0)}`; } }
+              },
+              y: { ticks: { autoSkip: false } }
+            }
+          }
+        });
+        chartCanvas.style.cursor = state.level === 'categories' ? 'pointer' : 'default';
+      }
+
+      function renderSpendDetails() {
         spendModeButtons.forEach((button) => {
-          const active = button.dataset.spendMode === mode;
+          const active = button.dataset.spendMode === spendMode;
           button.classList.toggle('active', active);
           button.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
-        updateSpendSubtitle(mode);
-        ensureEmptyPieMessage(mode);
-
-        const rows = getModeRows(mode);
-        if (!sharedChart || !chartCanvas) return;
-        const labels = rows.map((row) => row.label);
-        const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
-        const values = rows.map((row) => Number(row.value));
-        const pieColors = labels.map((label, index) => label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
-
-        sharedChart.data.labels = shortLabels;
-        sharedChart.data.datasets[0].data = values;
-        sharedChart.data.datasets[0].backgroundColor = pieColors;
-        sharedChart.options.plugins.tooltip.callbacks.title = function (context) {
-          const index = context[0]?.dataIndex ?? 0;
-          return labels[index] || '';
-        };
-        sharedChart.options.plugins.tooltip.callbacks.label = function (context) {
-          const value = values[context.dataIndex] ?? 0;
-          const total = values.reduce((sum, current) => sum + current, 0);
-          const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
-          return [formatCurrency(value), `${percent}% of total`];
-        };
-        sharedChart.options.plugins.tooltip.callbacks.afterLabel = function (context) {
-          const row = rows[context.dataIndex] || {};
-          const lines = [];
-          const subcategories = row.subcategories || [];
-          const includedCategories = row.included_categories || [];
-
-          if (subcategories.length > 0) {
-            lines.push('Subcategories:');
-            subcategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
-          } else if (includedCategories.length > 0) {
-            lines.push('Includes categories:');
-            includedCategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
-          } else {
-            lines.push('Subcategories:');
-            lines.push('• No subcategory: ' + formatCurrency(row.value || 0));
-          }
-          return lines;
-        };
-        sharedChart.update();
-      }
-
-      if (chartCanvas && window.Chart) {
-        const initialRows = getModeRows('period');
-        if (initialRows.length > 0) {
-          const labels = initialRows.map((row) => row.label);
-          const shortLabels = labels.map((label) => label.length > maxLabelLength ? `${label.slice(0, maxLabelLength - 1)}…` : label);
-          const values = initialRows.map((row) => Number(row.value));
-          const pieColors = labels.map((label, index) => label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
-
-          sharedChart = new window.Chart(chartCanvas, {
-            type: 'pie',
-            data: {
-              labels: shortLabels,
-              datasets: [{
-                label: 'Shared spending',
-                data: values,
-                backgroundColor: pieColors
-              }]
-            },
-            options: {
-              responsive: true,
-              maintainAspectRatio: false,
-              layout: {
-                padding: { left: 10, right: 6, top: 4, bottom: 4 }
-              },
-              plugins: {
-                legend: {
-                  display: true,
-                  position: 'bottom',
-                  labels: {
-                    boxWidth: 12,
-                    boxHeight: 12,
-                    padding: 10,
-                    usePointStyle: true,
-                    pointStyle: 'circle'
-                  }
-                },
-                tooltip: {
-                  callbacks: {
-                    title: function (context) {
-                      const index = context[0]?.dataIndex ?? 0;
-                      return labels[index] || '';
-                    },
-                    label: function (context) {
-                      const value = values[context.dataIndex] ?? 0;
-                      const total = values.reduce((sum, current) => sum + current, 0);
-                      const percent = total > 0 ? ((value / total) * 100).toFixed(1) : '0.0';
-                      return [formatCurrency(value), `${percent}% of total`];
-                    },
-                    afterLabel: function (context) {
-                      const row = initialRows[context.dataIndex] || {};
-                      const lines = [];
-                      const subcategories = row.subcategories || [];
-                      const includedCategories = row.included_categories || [];
-
-                      if (subcategories.length > 0) {
-                        lines.push('Subcategories:');
-                        subcategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
-                      } else if (includedCategories.length > 0) {
-                        lines.push('Includes categories:');
-                        includedCategories.forEach((item) => lines.push(`• ${item.label}: ${formatCurrency(item.value)}`));
-                      } else {
-                        lines.push('Subcategories:');
-                        lines.push('• No subcategory: ' + formatCurrency(row.value || 0));
-                      }
-                      return lines;
-                    }
-                  }
-                }
-              },
-              scales: {}
-            }
-          });
+        spendViewButtons.forEach((button) => {
+          const active = button.dataset.spendView === spendView;
+          button.classList.toggle('active', active);
+          button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+        if (backRow) backRow.hidden = !(spendView === 'yoy' && yoyDrilldownKey);
+        if (spendView === 'mix') {
+          if (chartWrap) chartWrap.style.height = '';
+          if (chartCanvas) chartCanvas.style.minHeight = '';
+          renderMixChart(getMixRows(spendMode));
+        } else {
+          renderYoyChart(getCurrentYoyState());
         }
+        updateSpendSubtitle();
       }
 
       spendModeButtons.forEach((button) => {
         button.addEventListener('click', function () {
-          applySpendMode(button.dataset.spendMode);
+          spendMode = button.dataset.spendMode;
+          yoyDrilldownKey = null;
+          setDashboardStateInUrl('spend_mode', spendMode);
+          renderSpendDetails();
         });
       });
+
+      spendViewButtons.forEach((button) => {
+        button.addEventListener('click', function () {
+          spendView = button.dataset.spendView;
+          yoyDrilldownKey = null;
+          renderSpendDetails();
+        });
+      });
+
+      if (backButton) {
+        backButton.addEventListener('click', function () {
+          yoyDrilldownKey = null;
+          renderSpendDetails();
+        });
+      }
 
       const toggleButtons = Array.from(document.querySelectorAll('[data-row-toggle]'));
       function setCategoryExpanded(id, expanded) {
@@ -821,11 +932,9 @@
       }
       syncDashboardStateInputs('settlement_tab', initialSettlementTab);
 
-      if (initialSpendMode === 'ytd' || initialSpendMode === 'period') {
-        applySpendMode(initialSpendMode);
-      } else {
-        applySpendMode('period');
-      }
+      spendMode = (initialSpendMode === 'ytd' || initialSpendMode === 'period') ? initialSpendMode : 'period';
+      renderSpendDetails();
+      setDashboardStateInUrl('spend_mode', spendMode);
     })();
   </script>
 </section>
