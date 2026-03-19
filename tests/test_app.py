@@ -1488,6 +1488,7 @@ def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     assert 'data-spend-detail-mode="mix"' in text
     assert 'data-spend-detail-mode="period-vs-ly"' in text
     assert 'data-spend-detail-mode="yoy"' in text
+    assert '>Spend Mix<' in text
     assert '>Period vs LY<' in text
     assert 'id="spend-yoy-current-heading">Current period<' in text
     assert 'id="spend-yoy-comparison-heading">Prior-year same period<' in text
@@ -1498,6 +1499,8 @@ def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     assert 'applySpendDetailModeState(spendDetailMode);' in text
     assert 'chartCanvas.title = ""' in text
     assert 'legend: { display: false }' in text
+    assert "const spendDetailsBreakdown = document.getElementById('spend-details-breakdown');" in text
+    assert "spendDetailsBreakdown.hidden = spendDetailMode !== 'mix';" in text
 
 
 def test_dashboard_spend_details_compare_query_state_is_preserved_in_markup(client):
