@@ -1398,10 +1398,11 @@ def test_dashboard_spend_details_yoy_category_aggregation_for_custom_date_range(
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
 
     assert analytics["yoy"]["period"]["current_label"] == "2025-07-01 to 2025-09-30"
+    assert analytics["yoy"]["period"]["previous_period_label"] == "2025-03-31 to 2025-06-30"
     assert analytics["yoy"]["period"]["prior_label"] == "2024-07-01 to 2024-09-30"
     assert analytics["yoy"]["period"]["categories"] == [
-        {"id": groceries_id, "label": "Groceries", "current_value": 80.0, "prior_value": 50.0},
-        {"id": gifts_id, "label": "Gifts & Presents", "current_value": 35.0, "prior_value": 70.0},
+        {"id": groceries_id, "label": "Groceries", "current_value": 80.0, "previous_period_value": 0.0, "prior_value": 50.0},
+        {"id": gifts_id, "label": "Gifts & Presents", "current_value": 35.0, "previous_period_value": 0.0, "prior_value": 70.0},
     ]
 
 
@@ -1434,10 +1435,11 @@ def test_dashboard_spend_details_yoy_category_aggregation_for_ytd(client):
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
 
     assert analytics["yoy"]["ytd"]["current_label"] == "2025-01-01 to 2025-09-30"
+    assert analytics["yoy"]["ytd"]["previous_period_label"] == "2024-04-02 to 2024-12-31"
     assert analytics["yoy"]["ytd"]["prior_label"] == "2024-01-01 to 2024-09-30"
     assert analytics["yoy"]["ytd"]["categories"] == [
-        {"id": groceries_id, "label": "Groceries", "current_value": 50.0, "prior_value": 10.0},
-        {"id": utilities_id, "label": "Utilities", "current_value": 40.0, "prior_value": 60.0},
+        {"id": groceries_id, "label": "Groceries", "current_value": 50.0, "previous_period_value": 0.0, "prior_value": 10.0},
+        {"id": utilities_id, "label": "Utilities", "current_value": 40.0, "previous_period_value": 0.0, "prior_value": 60.0},
     ]
 
 
@@ -1473,9 +1475,43 @@ def test_dashboard_spend_details_yoy_subcategory_drilldown_data(client):
 
     assert drilldown["category_label"] == "Groceries"
     assert drilldown["rows"] == [
-        {"label": "Produce", "current_value": 25.0, "prior_value": 10.0},
-        {"label": "Dairy", "current_value": 15.0, "prior_value": 22.0},
+        {"label": "Produce", "current_value": 25.0, "previous_period_value": 0.0, "prior_value": 10.0},
+        {"label": "Dairy", "current_value": 15.0, "previous_period_value": 0.0, "prior_value": 22.0},
     ]
+
+
+def test_dashboard_spend_details_yoy_markup_includes_custom_legend_and_comparison_table(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        long_name = "Very Long Household Groceries Category Name"
+        db.execute("UPDATE categories SET name = ? WHERE id = ?", (long_name, groceries_id))
+        for expense_date, amount, description in [
+            ("2025-07-05", -80, "Current groceries"),
+            ("2025-04-15", -45, "Previous comparable groceries"),
+            ("2024-07-05", -50, "Prior year groceries"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, groceries_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    text = response.get_data(as_text=True)
+
+    assert 'id="spend-chart-legend"' in text
+    assert 'id="spend-yoy-table-wrap"' in text
+    assert 'Previous comparable period' in text
+    assert 'Same period last year' in text
+    assert 'chartCanvas.title = ""' in text
+    assert 'legend: { display: false }' in text
 
 
 def test_dashboard_spend_details_mode_switch_keeps_mix_markup(client):

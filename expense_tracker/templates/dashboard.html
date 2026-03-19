@@ -46,6 +46,22 @@
     <div class="chart-wrap" id="spend-details-chart-wrap" aria-label="Spend details chart container">
       <canvas id="spend-details-chart" aria-label="Spend details chart"></canvas>
     </div>
+    <div class="spend-chart-legend" id="spend-chart-legend" aria-label="Spend details legend"></div>
+    <div class="spend-yoy-table-wrap" id="spend-yoy-table-wrap" hidden>
+      <table class="spend-yoy-table">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th id="spend-yoy-current-heading">Current period</th>
+            <th id="spend-yoy-previous-heading">Previous comparable period</th>
+            <th>Period delta</th>
+            <th id="spend-yoy-prior-heading">Same period last year</th>
+            <th>YoY delta</th>
+          </tr>
+        </thead>
+        <tbody id="spend-yoy-table-body"></tbody>
+      </table>
+    </div>
     <p class="spend-details-empty" id="spend-details-empty" hidden>No shared expenses in selected period.</p>
   </div>
 
@@ -579,6 +595,12 @@
       const backButton = document.getElementById('spend-details-back-button');
       const yoyScopeRow = document.getElementById('spend-yoy-scope-row');
       const yoyScopeButtons = Array.from(document.querySelectorAll('[data-yoy-scope]'));
+      const legendContainer = document.getElementById('spend-chart-legend');
+      const yoyTableWrap = document.getElementById('spend-yoy-table-wrap');
+      const yoyTableBody = document.getElementById('spend-yoy-table-body');
+      const yoyCurrentHeading = document.getElementById('spend-yoy-current-heading');
+      const yoyPreviousHeading = document.getElementById('spend-yoy-previous-heading');
+      const yoyPriorHeading = document.getElementById('spend-yoy-prior-heading');
       let spendMode = 'period';
       let spendView = 'mix';
       let yoyDrilldownKey = null;
@@ -632,6 +654,7 @@
               level: 'subcategories',
               categoryLabel: detail.category_label,
               currentLabel: bucket.current_label || '',
+              previousPeriodLabel: bucket.previous_period_label || '',
               priorLabel: bucket.prior_label || '',
               rows: detail.rows || []
             };
@@ -640,6 +663,7 @@
         return {
           level: 'categories',
           currentLabel: bucket.current_label || '',
+          previousPeriodLabel: bucket.previous_period_label || '',
           priorLabel: bucket.prior_label || '',
           rows: getVisibleYoyRows(bucket.categories || [], 'categories')
         };
@@ -686,6 +710,8 @@
 
       function showEmptyState(message) {
         destroySharedChart();
+        renderLegend([]);
+        renderYoyComparisonTable({ level: 'empty', rows: [] });
         if (chartWrap) chartWrap.hidden = true;
         if (emptyState) {
           emptyState.hidden = false;
@@ -696,6 +722,59 @@
       function showChartWrap() {
         if (chartWrap) chartWrap.hidden = false;
         if (emptyState) emptyState.hidden = true;
+      }
+
+      function renderLegend(items) {
+        if (!legendContainer) return;
+        if (!items.length) {
+          legendContainer.innerHTML = '';
+          legendContainer.hidden = true;
+          return;
+        }
+        legendContainer.hidden = false;
+        legendContainer.innerHTML = items.map((item) => {
+          const safeLabel = String(item.label || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          const displayLabel = shortenLabel(String(item.label || ''), 24);
+          const safeDisplay = displayLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          return `<span class="spend-chart-legend-item" title="${safeLabel}"><span class="spend-chart-legend-swatch" style="background:${item.color}"></span><span class="spend-chart-legend-label">${safeDisplay}</span></span>`;
+        }).join('');
+      }
+
+      function formatDelta(value) {
+        const number = Number(value || 0);
+        if (number > 0) return `+$${number.toFixed(2)}`;
+        if (number < 0) return `-$${Math.abs(number).toFixed(2)}`;
+        return '$0.00';
+      }
+
+      function renderYoyComparisonTable(state) {
+        if (!yoyTableWrap || !yoyTableBody || !yoyCurrentHeading || !yoyPreviousHeading || !yoyPriorHeading) return;
+        const rows = state.rows || [];
+        if (spendView !== 'yoy' || state.level !== 'categories' || !rows.length) {
+          yoyTableWrap.hidden = true;
+          yoyTableBody.innerHTML = '';
+          return;
+        }
+        yoyCurrentHeading.textContent = state.currentLabel || 'Current period';
+        yoyPreviousHeading.textContent = state.previousPeriodLabel || 'Previous comparable period';
+        yoyPriorHeading.textContent = state.priorLabel || 'Same period last year';
+        yoyTableBody.innerHTML = rows.map((row) => {
+          const periodDelta = Number(row.current_value || 0) - Number(row.previous_period_value || 0);
+          const yoyDelta = Number(row.current_value || 0) - Number(row.prior_value || 0);
+          const label = String(row.label || '');
+          const displayLabel = shortenLabel(label, 30);
+          const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          const safeDisplay = displayLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          return `<tr>
+            <td title="${safeLabel}">${safeDisplay}</td>
+            <td>${formatCurrency(row.current_value || 0)}</td>
+            <td>${formatCurrency(row.previous_period_value || 0)}</td>
+            <td class="${periodDelta === 0 ? '' : (periodDelta > 0 ? 'delta-positive' : 'delta-negative')}">${formatDelta(periodDelta)}</td>
+            <td>${formatCurrency(row.prior_value || 0)}</td>
+            <td class="${yoyDelta === 0 ? '' : (yoyDelta > 0 ? 'delta-positive' : 'delta-negative')}">${formatDelta(yoyDelta)}</td>
+          </tr>`;
+        }).join('');
+        yoyTableWrap.hidden = false;
       }
 
       function renderMixChart(rows) {
@@ -709,6 +788,8 @@
         const shortLabels = labels.map(shortenLabel);
         const values = rows.map((row) => Number(row.value));
         const pieColors = labels.map((label, index) => label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
+        if (chartCanvas) chartCanvas.title = '';
+        renderLegend(labels.map((label, index) => ({ label, color: pieColors[index] })));
         destroySharedChart();
         sharedChart = new window.Chart(chartCanvas, {
           type: 'pie',
@@ -721,11 +802,7 @@
             maintainAspectRatio: false,
             layout: { padding: { left: 10, right: 6, top: 4, bottom: 4 } },
             plugins: {
-              legend: {
-                display: true,
-                position: 'bottom',
-                labels: { boxWidth: 12, boxHeight: 12, padding: 10, usePointStyle: true, pointStyle: 'circle' }
-              },
+              legend: { display: false },
               tooltip: {
                 callbacks: {
                   title: function (context) {
@@ -775,7 +852,11 @@
         const chartHeight = Math.max(260, rows.length * 56 + 40);
         chartCanvas.style.minHeight = `${chartHeight}px`;
         chartWrap.style.height = `${Math.min(chartHeight, rows.length <= topYoyCategoryCount ? 520 : 560)}px`;
-        chartCanvas.title = fullLabels.join(' | ');
+        if (chartCanvas) chartCanvas.title = '';
+        renderLegend([
+          { label: state.currentLabel, color: yoyPalette.current },
+          { label: state.priorLabel, color: yoyPalette.prior }
+        ]);
         destroySharedChart();
         sharedChart = new window.Chart(chartCanvas, {
           type: 'bar',
@@ -799,7 +880,7 @@
             },
             layout: { padding: { left: 18, right: 10, top: 4, bottom: 6 } },
             plugins: {
-              legend: { display: true, position: 'bottom' },
+              legend: { display: false },
               tooltip: {
                 callbacks: {
                   title: function (context) {
@@ -850,9 +931,12 @@
         if (spendView === 'mix') {
           if (chartWrap) chartWrap.style.height = '';
           if (chartCanvas) chartCanvas.style.minHeight = '';
+          renderYoyComparisonTable({ level: 'mix', rows: [] });
           renderMixChart(getMixRows(spendMode));
         } else {
-          renderYoyChart(getCurrentYoyState());
+          const yoyState = getCurrentYoyState();
+          renderYoyChart(yoyState);
+          renderYoyComparisonTable(yoyState);
         }
         updateSpendSubtitle();
       }
