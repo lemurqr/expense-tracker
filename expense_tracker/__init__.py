@@ -1834,19 +1834,16 @@ def create_app(test_config=None):
             return value.replace(year=value.year - 1, day=28)
         return value.replace(year=value.year - 1)
 
-    def _build_yoy_rows(current_rows, prior_rows, previous_period_rows=None):
-        previous_period_rows = previous_period_rows or {}
-        row_keys = set(current_rows.keys()) | set(prior_rows.keys()) | set(previous_period_rows.keys())
+    def _build_yoy_rows(current_rows, prior_rows):
+        row_keys = set(current_rows.keys()) | set(prior_rows.keys())
         results = []
         for key in row_keys:
             current_value = round(float(current_rows.get(key, {}).get("value", 0.0)), 2)
-            previous_period_value = round(float(previous_period_rows.get(key, {}).get("value", 0.0)), 2)
             prior_value = round(float(prior_rows.get(key, {}).get("value", 0.0)), 2)
-            if current_value <= 0 and previous_period_value <= 0 and prior_value <= 0:
+            if current_value <= 0 and prior_value <= 0:
                 continue
             label = (
                 current_rows.get(key, {}).get("label")
-                or previous_period_rows.get(key, {}).get("label")
                 or prior_rows.get(key, {}).get("label")
                 or "Uncategorized"
             )
@@ -1854,11 +1851,26 @@ def create_app(test_config=None):
                 "id": key,
                 "label": _label_or_fallback(label, "Uncategorized"),
                 "current_value": current_value,
-                "previous_period_value": previous_period_value,
                 "prior_value": prior_value,
             })
         results.sort(key=lambda row: (-row["current_value"], -row["prior_value"], row["label"]))
         return results
+
+    def _build_compact_comparison_rows(rows, top_n=8):
+        if len(rows) <= top_n:
+            return rows
+
+        top_rows = [dict(row) for row in rows[:top_n]]
+        remaining_rows = rows[top_n:]
+        other_row = {
+            "id": "other",
+            "label": "Other",
+            "current_value": round(sum(float(row.get("current_value") or 0) for row in remaining_rows), 2),
+            "prior_value": round(sum(float(row.get("prior_value") or 0) for row in remaining_rows), 2),
+            "children": [dict(row) for row in remaining_rows],
+        }
+        top_rows.append(other_row)
+        return top_rows
 
     def _fetch_shared_category_totals_for_period(db, household_id, start_date, end_date):
         if db.backend == "postgres":
@@ -2066,37 +2078,27 @@ def create_app(test_config=None):
 
         yoy_period_current_start = pie_period_start
         yoy_period_current_end = pie_period_end
-        yoy_period_day_span = (yoy_period_current_end - yoy_period_current_start).days
-        yoy_period_previous_end = yoy_period_current_start - timedelta(days=1)
-        yoy_period_previous_start = yoy_period_previous_end - timedelta(days=yoy_period_day_span)
         yoy_period_prior_start = _safe_same_day_last_year(yoy_period_current_start)
         yoy_period_prior_end = _safe_same_day_last_year(yoy_period_current_end)
 
         yoy_ytd_current_start = current_end.replace(month=1, day=1)
         yoy_ytd_current_end = current_end
-        yoy_ytd_day_span = (yoy_ytd_current_end - yoy_ytd_current_start).days
-        yoy_ytd_previous_end = yoy_ytd_current_start - timedelta(days=1)
-        yoy_ytd_previous_start = yoy_ytd_previous_end - timedelta(days=yoy_ytd_day_span)
         yoy_ytd_prior_start = _safe_same_day_last_year(yoy_ytd_current_start)
         yoy_ytd_prior_end = _safe_same_day_last_year(yoy_ytd_current_end)
 
         yoy_period_current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_period_current_start, yoy_period_current_end)
-        yoy_period_previous_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_period_previous_start, yoy_period_previous_end)
         yoy_period_prior_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_period_prior_start, yoy_period_prior_end)
         yoy_ytd_current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_ytd_current_start, yoy_ytd_current_end)
-        yoy_ytd_previous_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_ytd_previous_start, yoy_ytd_previous_end)
         yoy_ytd_prior_rows = _fetch_shared_category_totals_for_period(db, g.household_id, yoy_ytd_prior_start, yoy_ytd_prior_end)
 
-        yoy_category_period = _build_yoy_rows(yoy_period_current_rows, yoy_period_prior_rows, yoy_period_previous_rows)
-        yoy_category_ytd = _build_yoy_rows(yoy_ytd_current_rows, yoy_ytd_prior_rows, yoy_ytd_previous_rows)
+        yoy_category_period = _build_compact_comparison_rows(_build_yoy_rows(yoy_period_current_rows, yoy_period_prior_rows))
+        yoy_category_ytd = _build_compact_comparison_rows(_build_yoy_rows(yoy_ytd_current_rows, yoy_ytd_prior_rows))
 
-        def build_yoy_subcategory_rows(current_rows, prior_rows, previous_period_rows=None):
-            previous_period_rows = previous_period_rows or {}
+        def build_yoy_subcategory_rows(current_rows, prior_rows):
             result = {}
-            for key in set(current_rows.keys()) | set(prior_rows.keys()) | set(previous_period_rows.keys()):
+            for key in set(current_rows.keys()) | set(prior_rows.keys()):
                 label = (
                     current_rows.get(key, {}).get("label")
-                    or previous_period_rows.get(key, {}).get("label")
                     or prior_rows.get(key, {}).get("label")
                     or "Uncategorized"
                 )
@@ -2104,25 +2106,19 @@ def create_app(test_config=None):
                     item["label"]: round(float(item.get("value") or 0), 2)
                     for item in current_rows.get(key, {}).get("subcategories", [])
                 }
-                previous_period_subs = {
-                    item["label"]: round(float(item.get("value") or 0), 2)
-                    for item in previous_period_rows.get(key, {}).get("subcategories", [])
-                }
                 prior_subs = {
                     item["label"]: round(float(item.get("value") or 0), 2)
                     for item in prior_rows.get(key, {}).get("subcategories", [])
                 }
                 sub_rows = []
-                for sub_label in set(current_subs.keys()) | set(previous_period_subs.keys()) | set(prior_subs.keys()):
+                for sub_label in set(current_subs.keys()) | set(prior_subs.keys()):
                     current_value = current_subs.get(sub_label, 0.0)
-                    previous_period_value = previous_period_subs.get(sub_label, 0.0)
                     prior_value = prior_subs.get(sub_label, 0.0)
-                    if current_value <= 0 and previous_period_value <= 0 and prior_value <= 0:
+                    if current_value <= 0 and prior_value <= 0:
                         continue
                     sub_rows.append({
                         "label": _label_or_fallback(sub_label, "No subcategory"),
                         "current_value": current_value,
-                        "previous_period_value": previous_period_value,
                         "prior_value": prior_value,
                     })
                 sub_rows.sort(key=lambda row: (-row["current_value"], -row["prior_value"], row["label"]))
@@ -2142,17 +2138,15 @@ def create_app(test_config=None):
             "yoy": {
                 "period": {
                     "current_label": f"{yoy_period_current_start.isoformat()} to {yoy_period_current_end.isoformat()}",
-                    "previous_period_label": f"{yoy_period_previous_start.isoformat()} to {yoy_period_previous_end.isoformat()}",
                     "prior_label": f"{yoy_period_prior_start.isoformat()} to {yoy_period_prior_end.isoformat()}",
                     "categories": yoy_category_period,
-                    "subcategories": build_yoy_subcategory_rows(yoy_period_current_rows, yoy_period_prior_rows, yoy_period_previous_rows),
+                    "subcategories": build_yoy_subcategory_rows(yoy_period_current_rows, yoy_period_prior_rows),
                 },
                 "ytd": {
-                    "current_label": f"{yoy_ytd_current_start.isoformat()} to {yoy_ytd_current_end.isoformat()}",
-                    "previous_period_label": f"{yoy_ytd_previous_start.isoformat()} to {yoy_ytd_previous_end.isoformat()}",
-                    "prior_label": f"{yoy_ytd_prior_start.isoformat()} to {yoy_ytd_prior_end.isoformat()}",
+                    "current_label": f"{yoy_ytd_current_start.year} YTD through {yoy_ytd_current_end.isoformat()}",
+                    "prior_label": f"{yoy_ytd_prior_start.year} YTD through {yoy_ytd_prior_end.isoformat()}",
                     "categories": yoy_category_ytd,
-                    "subcategories": build_yoy_subcategory_rows(yoy_ytd_current_rows, yoy_ytd_prior_rows, yoy_ytd_previous_rows),
+                    "subcategories": build_yoy_subcategory_rows(yoy_ytd_current_rows, yoy_ytd_prior_rows),
                 },
             },
         }

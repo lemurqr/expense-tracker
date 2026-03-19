@@ -20,21 +20,11 @@
   <div class="spend-details-header">
     <h3>Spend details</h3>
     <div class="spend-details-toolbar">
-      <div class="spend-view-toggle" role="group" aria-label="Spend details chart view">
-        <button type="button" class="spend-view-button active" data-spend-view="mix" aria-pressed="true">Mix</button>
-        <button type="button" class="spend-view-button" data-spend-view="compare" aria-pressed="false">Compare</button>
+      <div class="spend-view-toggle" role="group" aria-label="Spend details mode">
+        <button type="button" class="spend-view-button active" data-spend-detail-mode="mix" aria-pressed="true">Mix</button>
+        <button type="button" class="spend-view-button" data-spend-detail-mode="period-vs-ly" aria-pressed="false">Period vs LY</button>
+        <button type="button" class="spend-view-button" data-spend-detail-mode="yoy" aria-pressed="false">YoY</button>
       </div>
-      <div class="spend-mode-toggle" role="group" aria-label="Spend details time scope">
-        <button type="button" class="spend-mode-button active" data-spend-mode="period" aria-pressed="true">Period</button>
-        <button type="button" class="spend-mode-button" data-spend-mode="ytd" aria-pressed="false">YTD</button>
-      </div>
-    </div>
-  </div>
-  <div class="spend-yoy-scope-row" id="spend-yoy-scope-row" hidden>
-    <span class="spend-yoy-scope-label">Compare mode</span>
-    <div class="spend-yoy-scope-toggle" role="group" aria-label="Spend details comparison mode">
-      <button type="button" class="spend-yoy-scope-button active" data-spend-compare="pop" aria-pressed="true">PoP</button>
-      <button type="button" class="spend-yoy-scope-button" data-spend-compare="yoy" aria-pressed="false">YoY</button>
     </div>
   </div>
   <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.period_label }}</p>
@@ -53,8 +43,8 @@
           <tr>
             <th>Category</th>
             <th id="spend-yoy-current-heading">Current period</th>
-            <th id="spend-yoy-comparison-heading">Previous period</th>
-            <th id="spend-yoy-delta-heading">Period delta</th>
+            <th id="spend-yoy-comparison-heading">Prior-year same period</th>
+            <th id="spend-yoy-delta-heading">Delta</th>
           </tr>
         </thead>
         <tbody id="spend-yoy-table-body"></tbody>
@@ -593,68 +583,47 @@
       });
 
       const sharedCategoryAnalytics = {{ shared_category_analytics|tojson }};
-      const spendModeButtons = Array.from(document.querySelectorAll('[data-spend-mode]'));
-      const spendViewButtons = Array.from(document.querySelectorAll('[data-spend-view]'));
+      const spendDetailModeButtons = Array.from(document.querySelectorAll('[data-spend-detail-mode]'));
       const spendDetailsSubtitle = document.getElementById('spend-details-subtitle');
       const chartCanvas = document.getElementById('spend-details-chart');
       const chartWrap = document.getElementById('spend-details-chart-wrap');
       const emptyState = document.getElementById('spend-details-empty');
       const backRow = document.getElementById('spend-details-back-row');
       const backButton = document.getElementById('spend-details-back-button');
-      const yoyScopeRow = document.getElementById('spend-yoy-scope-row');
-      const yoyScopeButtons = Array.from(document.querySelectorAll('[data-spend-compare]'));
       const legendContainer = document.getElementById('spend-chart-legend');
       const yoyTableWrap = document.getElementById('spend-yoy-table-wrap');
       const yoyTableBody = document.getElementById('spend-yoy-table-body');
       const yoyCurrentHeading = document.getElementById('spend-yoy-current-heading');
       const yoyComparisonHeading = document.getElementById('spend-yoy-comparison-heading');
       const yoyDeltaHeading = document.getElementById('spend-yoy-delta-heading');
-      let spendMode = 'period';
-      let spendView = 'mix';
+      let spendDetailMode = 'mix';
       let yoyDrilldownKey = null;
-      let spendCompareMode = 'pop';
+      let expandedComparisonRows = {};
       let sharedChart = null;
 
       const piePalette = ['#1d4ed8', '#0f766e', '#b45309', '#9333ea', '#be123c'];
-      const yoyPalette = { current: '#274690', prior: '#93c5fd', previous: '#60a5fa' };
+      const yoyPalette = { current: '#274690', prior: '#93c5fd' };
       const maxLabelLength = 22;
       const maxYoyLabelLength = 26;
-      const topYoyCategoryCount = 8;
       const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
       const emptyCopy = {
-        mix: {
-          period: 'No shared expenses in selected period.',
-          ytd: `No shared ${sharedCategoryAnalytics.ytd_label}.`
-        },
-        yoy: {
-          period: 'No year-over-year category data for the selected period.',
-          ytd: 'No year-over-year category data for the selected year-to-date range.'
-        }
+        mix: 'No shared expenses in selected period.',
+        'period-vs-ly': 'No category data for the selected period versus last year.',
+        yoy: 'No year-over-year category data through the selected end date.'
       };
 
       function shortenLabel(label, maxLength = maxLabelLength) {
         return label.length > maxLength ? `${label.slice(0, maxLength - 1).trimEnd()}…` : label;
       }
 
-      function getVisibleYoyRows(rows, level) {
-        if (level !== 'categories') {
-          return rows;
-        }
-        return rows.slice(0, topYoyCategoryCount);
+      function getCurrentComparisonBucket() {
+        return spendDetailMode === 'yoy'
+          ? (sharedCategoryAnalytics.yoy?.ytd || {})
+          : (sharedCategoryAnalytics.yoy?.period || {});
       }
 
-      function getMixRows(mode) {
-        return mode === 'ytd'
-          ? (sharedCategoryAnalytics.pie_ytd || [])
-          : (sharedCategoryAnalytics.pie_period || []);
-      }
-
-      function getYoyBucket(mode) {
-        return mode === 'ytd' ? (sharedCategoryAnalytics.yoy?.ytd || {}) : (sharedCategoryAnalytics.yoy?.period || {});
-      }
-
-      function getCurrentYoyState() {
-        const bucket = getYoyBucket(spendMode);
+      function getCurrentComparisonState() {
+        const bucket = getCurrentComparisonBucket();
         if (yoyDrilldownKey) {
           const detail = bucket.subcategories?.[String(yoyDrilldownKey)] || null;
           if (detail) {
@@ -662,9 +631,7 @@
               level: 'subcategories',
               categoryLabel: detail.category_label,
               currentLabel: bucket.current_label || '',
-              previousPeriodLabel: bucket.previous_period_label || '',
               priorLabel: bucket.prior_label || '',
-              compareMode: spendCompareMode,
               rows: detail.rows || []
             };
           }
@@ -672,26 +639,21 @@
         return {
           level: 'categories',
           currentLabel: bucket.current_label || '',
-          previousPeriodLabel: bucket.previous_period_label || '',
           priorLabel: bucket.prior_label || '',
-          compareMode: spendCompareMode,
-          rows: getVisibleYoyRows(bucket.categories || [], 'categories')
+          rows: bucket.categories || []
         };
       }
 
       function updateSpendSubtitle() {
         if (!spendDetailsSubtitle) return;
-        if (spendView === 'mix') {
-          spendDetailsSubtitle.textContent = spendMode === 'ytd'
-            ? `Shared categories ${sharedCategoryAnalytics.ytd_label}`
-            : `Shared categories for ${sharedCategoryAnalytics.period_label}`;
+        if (spendDetailMode === 'mix') {
+          spendDetailsSubtitle.textContent = `Shared categories for ${sharedCategoryAnalytics.period_label}`;
           return;
         }
-        const yoyState = getCurrentYoyState();
-        const comparisonLabel = yoyState.compareMode === 'yoy' ? yoyState.priorLabel : yoyState.previousPeriodLabel;
-        const comparisonText = `${yoyState.currentLabel} vs ${comparisonLabel}`.trim();
-        spendDetailsSubtitle.textContent = yoyState.level === 'subcategories'
-          ? `${yoyState.categoryLabel} — ${comparisonText}`
+        const comparisonState = getCurrentComparisonState();
+        const comparisonText = `${comparisonState.currentLabel} vs ${comparisonState.priorLabel}`.trim();
+        spendDetailsSubtitle.textContent = comparisonState.level === 'subcategories'
+          ? `${comparisonState.categoryLabel} — ${comparisonText}`
           : comparisonText;
       }
 
@@ -761,38 +723,66 @@
       function renderYoyComparisonTable(state) {
         if (!yoyTableWrap || !yoyTableBody || !yoyCurrentHeading || !yoyComparisonHeading || !yoyDeltaHeading) return;
         const rows = state.rows || [];
-        if (spendView !== 'compare' || state.level !== 'categories' || !rows.length) {
+        if (spendDetailMode === 'mix' || state.level !== 'categories' || !rows.length) {
           yoyTableWrap.hidden = true;
           yoyTableBody.innerHTML = '';
+          expandedComparisonRows = {};
           return;
         }
-        const isYoyMode = state.compareMode === 'yoy';
-        yoyCurrentHeading.textContent = state.currentLabel || 'Current period';
-        yoyComparisonHeading.textContent = isYoyMode
-          ? (state.priorLabel || 'Same period last year')
-          : (state.previousPeriodLabel || 'Previous comparable period');
-        yoyDeltaHeading.textContent = isYoyMode ? 'YoY delta' : 'Period delta';
-        yoyTableBody.innerHTML = rows.map((row) => {
-          const comparisonValue = state.compareMode === 'yoy' ? Number(row.prior_value || 0) : Number(row.previous_period_value || 0);
+        const isYoyMode = spendDetailMode === 'yoy';
+        yoyCurrentHeading.textContent = isYoyMode ? 'Current YTD' : 'Current period';
+        yoyComparisonHeading.textContent = isYoyMode ? 'Prior-year YTD' : 'Prior-year same period';
+        yoyDeltaHeading.textContent = 'Delta';
+
+        const renderRow = (row, options = {}) => {
+          const comparisonValue = Number(row.prior_value || 0);
           const comparisonDelta = Number(row.current_value || 0) - comparisonValue;
           const label = String(row.label || '');
-          const displayLabel = shortenLabel(label, 30);
+          const displayLabel = shortenLabel(label, options.isChild ? 26 : 30);
           const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
           const safeDisplay = displayLabel.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-          return `<tr>
-            <td title="${safeLabel}">${safeDisplay}</td>
+          const hasChildren = Array.isArray(row.children) && row.children.length > 0 && !options.isChild;
+          const rowKey = String(row.id || row.label || 'row');
+          const isExpanded = !!expandedComparisonRows[rowKey];
+          const toggleMarkup = hasChildren
+            ? `<button type="button" class="row-toggle spend-compare-toggle" data-compare-row-toggle="${rowKey}" aria-expanded="${isExpanded ? 'true' : 'false'}" title="Expand grouped categories">${isExpanded ? '▾' : '▸'}</button>`
+            : '<span class="spend-compare-toggle-spacer"></span>';
+          const labelMarkup = options.isChild
+            ? `<span class="subcategory-cell">${safeDisplay}</span>`
+            : `${toggleMarkup}<strong>${safeDisplay}</strong>`;
+          const rowClass = options.isChild ? 'spend-compare-child-row' : 'spend-compare-parent-row';
+          const rowAttrs = options.isChild ? ` data-compare-row-child="${options.parentKey}"` : '';
+          return `<tr class="${rowClass}"${rowAttrs} ${options.isChild && !options.expanded ? 'hidden' : ''}>
+            <td title="${safeLabel}">${labelMarkup}</td>
             <td>${formatCurrency(row.current_value || 0)}</td>
             <td>${formatCurrency(comparisonValue)}</td>
             <td class="${comparisonDelta === 0 ? '' : (comparisonDelta > 0 ? 'delta-positive' : 'delta-negative')}">${formatDelta(comparisonDelta)}</td>
           </tr>`;
+        };
+
+        yoyTableBody.innerHTML = rows.map((row) => {
+          const rowKey = String(row.id || row.label || 'row');
+          const parentMarkup = renderRow(row);
+          const childMarkup = Array.isArray(row.children) && row.children.length > 0
+            ? row.children.map((child) => renderRow(child, { isChild: true, parentKey: rowKey, expanded: !!expandedComparisonRows[rowKey] })).join('')
+            : '';
+          return parentMarkup + childMarkup;
         }).join('');
+
+        yoyTableBody.querySelectorAll('[data-compare-row-toggle]').forEach((button) => {
+          button.addEventListener('click', function () {
+            const rowKey = button.dataset.compareRowToggle;
+            expandedComparisonRows[rowKey] = !expandedComparisonRows[rowKey];
+            renderYoyComparisonTable(state);
+          });
+        });
         yoyTableWrap.hidden = false;
       }
 
       function renderMixChart(rows) {
         if (!chartCanvas || !window.Chart) return;
         if (!rows.length) {
-          showEmptyState(emptyCopy.mix[spendMode]);
+          showEmptyState(emptyCopy.mix);
           return;
         }
         showChartWrap();
@@ -855,7 +845,7 @@
         if (!chartCanvas || !window.Chart) return;
         const rows = state.rows || [];
         if (!rows.length) {
-          showEmptyState(emptyCopy.yoy[spendMode]);
+          showEmptyState(emptyCopy[spendDetailMode]);
           return;
         }
         showChartWrap();
@@ -863,11 +853,11 @@
         const truncatedLabels = fullLabels.map((label) => shortenLabel(label, maxYoyLabelLength));
         const chartHeight = Math.max(260, rows.length * 56 + 40);
         chartCanvas.style.minHeight = `${chartHeight}px`;
-        chartWrap.style.height = `${Math.min(chartHeight, rows.length <= topYoyCategoryCount ? 520 : 560)}px`;
+        chartWrap.style.height = `${Math.min(chartHeight, rows.length <= 8 ? 520 : 560)}px`;
         if (chartCanvas) chartCanvas.title = '';
-        const comparisonLabel = state.compareMode === 'yoy' ? state.priorLabel : state.previousPeriodLabel;
-        const comparisonDatasetKey = state.compareMode === 'yoy' ? 'prior_value' : 'previous_period_value';
-        const comparisonColor = state.compareMode === 'yoy' ? yoyPalette.prior : yoyPalette.previous;
+        const comparisonLabel = state.priorLabel;
+        const comparisonDatasetKey = 'prior_value';
+        const comparisonColor = yoyPalette.prior;
         renderLegend([
           { label: state.currentLabel, color: yoyPalette.current },
           { label: comparisonLabel, color: comparisonColor }
@@ -889,7 +879,7 @@
             onClick: function (_event, elements) {
               if (state.level !== 'categories' || !elements.length) return;
               const row = rows[elements[0].index];
-              if (!row || !(getYoyBucket(spendMode).subcategories?.[String(row.id)])) return;
+              if (!row || row.id === 'other' || !(getCurrentComparisonBucket().subcategories?.[String(row.id)])) return;
               yoyDrilldownKey = String(row.id);
               renderSpendDetails();
             },
@@ -925,63 +915,63 @@
         chartCanvas.style.cursor = state.level === 'categories' ? 'pointer' : 'default';
       }
 
+      function applySpendDetailModeState(mode) {
+        if (mode === 'yoy') {
+          setDashboardStateInUrl('spend_view', 'compare');
+          setDashboardStateInUrl('spend_mode', 'ytd');
+          setDashboardStateInUrl('spend_compare', 'yoy');
+          return;
+        }
+        if (mode === 'period-vs-ly') {
+          setDashboardStateInUrl('spend_view', 'compare');
+          setDashboardStateInUrl('spend_mode', 'period');
+          setDashboardStateInUrl('spend_compare', 'yoy');
+          return;
+        }
+        setDashboardStateInUrl('spend_view', 'mix');
+        setDashboardStateInUrl('spend_mode', 'period');
+        setDashboardStateInUrl('spend_compare', '');
+      }
+
       function renderSpendDetails() {
-        spendModeButtons.forEach((button) => {
-          const active = button.dataset.spendMode === spendMode;
+        spendDetailModeButtons.forEach((button) => {
+          const active = button.dataset.spendDetailMode === spendDetailMode;
           button.classList.toggle('active', active);
           button.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
-        spendViewButtons.forEach((button) => {
-          const active = button.dataset.spendView === spendView;
-          button.classList.toggle('active', active);
-          button.setAttribute('aria-pressed', active ? 'true' : 'false');
-        });
-        if (backRow) backRow.hidden = !(spendView === 'compare' && yoyDrilldownKey);
-        if (yoyScopeRow) yoyScopeRow.hidden = spendView !== 'compare';
-        yoyScopeButtons.forEach((button) => {
-          const active = button.dataset.spendCompare === spendCompareMode;
-          button.classList.toggle('active', active);
-          button.setAttribute('aria-pressed', active ? 'true' : 'false');
-        });
-        if (spendView === 'mix') {
+        if (backRow) backRow.hidden = !(spendDetailMode !== 'mix' && yoyDrilldownKey);
+        if (spendDetailMode === 'mix') {
+          expandedComparisonRows = {};
           if (chartWrap) chartWrap.style.height = '';
           if (chartCanvas) chartCanvas.style.minHeight = '';
           renderYoyComparisonTable({ level: 'mix', rows: [] });
-          renderMixChart(getMixRows(spendMode));
+          renderMixChart(sharedCategoryAnalytics.pie_period || []);
         } else {
-          const yoyState = getCurrentYoyState();
-          renderYoyChart(yoyState);
-          renderYoyComparisonTable(yoyState);
+          const comparisonState = getCurrentComparisonState();
+          renderYoyChart(comparisonState);
+          renderYoyComparisonTable(comparisonState);
         }
         updateSpendSubtitle();
       }
 
-      spendModeButtons.forEach((button) => {
+      spendDetailModeButtons.forEach((button) => {
         button.addEventListener('click', function () {
-          spendMode = button.dataset.spendMode;
+          spendDetailMode = button.dataset.spendDetailMode || 'mix';
           yoyDrilldownKey = null;
-          setDashboardStateInUrl('spend_mode', spendMode);
+          expandedComparisonRows = {};
+          applySpendDetailModeState(spendDetailMode);
           renderSpendDetails();
         });
       });
 
-      spendViewButtons.forEach((button) => {
-        button.addEventListener('click', function () {
-          spendView = button.dataset.spendView === 'compare' ? 'compare' : 'mix';
-          yoyDrilldownKey = null;
-          setDashboardStateInUrl('spend_view', spendView);
-          renderSpendDetails();
-        });
-      });
-
-      yoyScopeButtons.forEach((button) => {
-        button.addEventListener('click', function () {
-          spendCompareMode = button.dataset.spendCompare === 'yoy' ? 'yoy' : 'pop';
-          yoyDrilldownKey = null;
-          setDashboardStateInUrl('spend_compare', spendCompareMode);
-          renderSpendDetails();
-        });
-      });
+      const initialSpendView = new URL(window.location.href).searchParams.get('spend_view') || '';
+      const initialSpendMode = new URL(window.location.href).searchParams.get('spend_mode') || '';
+      if (initialSpendView === 'compare' && initialSpendMode === 'ytd') {
+        spendDetailMode = 'yoy';
+      } else if (initialSpendView === 'compare') {
+        spendDetailMode = 'period-vs-ly';
+      }
+      applySpendDetailModeState(spendDetailMode);
 
       if (backButton) {
         backButton.addEventListener('click', function () {
@@ -1065,9 +1055,6 @@
       });
 
       const dashboardUrl = new URL(window.location.href);
-      const initialSpendMode = dashboardUrl.searchParams.get('spend_mode') || 'period';
-      const initialSpendView = dashboardUrl.searchParams.get('spend_view') || 'mix';
-      const initialSpendCompare = dashboardUrl.searchParams.get('spend_compare') || 'pop';
       const initialSettlementTab = dashboardUrl.searchParams.get('settlement_tab') || 'shared-expenses-panel';
       if (settlementTabPanels.some((panel) => panel.id === initialSettlementTab)) {
         activateSettlementTab(initialSettlementTab);
@@ -1076,13 +1063,7 @@
       }
       syncDashboardStateInputs('settlement_tab', initialSettlementTab);
 
-      spendMode = (initialSpendMode === 'ytd' || initialSpendMode === 'period') ? initialSpendMode : 'period';
-      spendView = initialSpendView === 'compare' ? 'compare' : 'mix';
-      spendCompareMode = initialSpendCompare === 'yoy' ? 'yoy' : 'pop';
       renderSpendDetails();
-      setDashboardStateInUrl('spend_mode', spendMode);
-      setDashboardStateInUrl('spend_view', spendView);
-      setDashboardStateInUrl('spend_compare', spendCompareMode);
     })();
   </script>
 </section>

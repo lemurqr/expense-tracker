@@ -1398,11 +1398,10 @@ def test_dashboard_spend_details_yoy_category_aggregation_for_custom_date_range(
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
 
     assert analytics["yoy"]["period"]["current_label"] == "2025-07-01 to 2025-09-30"
-    assert analytics["yoy"]["period"]["previous_period_label"] == "2025-03-31 to 2025-06-30"
     assert analytics["yoy"]["period"]["prior_label"] == "2024-07-01 to 2024-09-30"
     assert analytics["yoy"]["period"]["categories"] == [
-        {"id": groceries_id, "label": "Groceries", "current_value": 80.0, "previous_period_value": 0.0, "prior_value": 50.0},
-        {"id": gifts_id, "label": "Gifts & Presents", "current_value": 35.0, "previous_period_value": 0.0, "prior_value": 70.0},
+        {"id": groceries_id, "label": "Groceries", "current_value": 80.0, "prior_value": 50.0},
+        {"id": gifts_id, "label": "Gifts & Presents", "current_value": 35.0, "prior_value": 70.0},
     ]
 
 
@@ -1434,12 +1433,11 @@ def test_dashboard_spend_details_yoy_category_aggregation_for_ytd(client):
     response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
 
-    assert analytics["yoy"]["ytd"]["current_label"] == "2025-01-01 to 2025-09-30"
-    assert analytics["yoy"]["ytd"]["previous_period_label"] == "2024-04-02 to 2024-12-31"
-    assert analytics["yoy"]["ytd"]["prior_label"] == "2024-01-01 to 2024-09-30"
+    assert analytics["yoy"]["ytd"]["current_label"] == "2025 YTD through 2025-09-30"
+    assert analytics["yoy"]["ytd"]["prior_label"] == "2024 YTD through 2024-09-30"
     assert analytics["yoy"]["ytd"]["categories"] == [
-        {"id": groceries_id, "label": "Groceries", "current_value": 50.0, "previous_period_value": 0.0, "prior_value": 10.0},
-        {"id": utilities_id, "label": "Utilities", "current_value": 40.0, "previous_period_value": 0.0, "prior_value": 60.0},
+        {"id": groceries_id, "label": "Groceries", "current_value": 50.0, "prior_value": 10.0},
+        {"id": utilities_id, "label": "Utilities", "current_value": 40.0, "prior_value": 60.0},
     ]
 
 
@@ -1475,47 +1473,29 @@ def test_dashboard_spend_details_yoy_subcategory_drilldown_data(client):
 
     assert drilldown["category_label"] == "Groceries"
     assert drilldown["rows"] == [
-        {"label": "Produce", "current_value": 25.0, "previous_period_value": 0.0, "prior_value": 10.0},
-        {"label": "Dairy", "current_value": 15.0, "previous_period_value": 0.0, "prior_value": 22.0},
+        {"label": "Produce", "current_value": 25.0, "prior_value": 10.0},
+        {"label": "Dairy", "current_value": 15.0, "prior_value": 22.0},
     ]
 
 
-def test_dashboard_spend_details_compare_markup_includes_separate_pop_and_yoy_modes(client):
+def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     register(client)
     login(client)
 
-    with client.application.app_context():
-        db = client.application.get_db()
-        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
-        long_name = "Very Long Household Groceries Category Name"
-        db.execute("UPDATE categories SET name = ? WHERE id = ?", (long_name, groceries_id))
-        for expense_date, amount, description in [
-            ("2025-07-05", -80, "Current groceries"),
-            ("2025-04-15", -45, "Previous comparable groceries"),
-            ("2024-07-05", -50, "Prior year groceries"),
-        ]:
-            db.execute(
-                """
-                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-                """,
-                (None, 1, expense_date, amount, groceries_id, description),
-            )
-        db.commit()
-
-    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30&spend_view=compare&spend_compare=pop")
+    response = client.get("/dashboard?start=2026-02-01&end=2026-02-28&spend_view=compare&spend_mode=period")
     text = response.get_data(as_text=True)
 
-    assert 'data-spend-view="mix"' in text
-    assert 'data-spend-view="compare"' in text
-    assert 'data-spend-compare="pop"' in text
-    assert 'data-spend-compare="yoy"' in text
-    assert 'id="spend-chart-legend"' in text
-    assert 'id="spend-yoy-table-wrap"' in text
-    assert 'id="spend-yoy-comparison-heading">Previous period<' in text
-    assert 'id="spend-yoy-delta-heading">Period delta<' in text
-    assert "const comparisonLabel = yoyState.compareMode === 'yoy'" in text
-    assert "comparisonDatasetKey = state.compareMode === 'yoy' ? 'prior_value' : 'previous_period_value'" in text
+    assert 'data-spend-detail-mode="mix"' in text
+    assert 'data-spend-detail-mode="period-vs-ly"' in text
+    assert 'data-spend-detail-mode="yoy"' in text
+    assert '>Period vs LY<' in text
+    assert 'id="spend-yoy-current-heading">Current period<' in text
+    assert 'id="spend-yoy-comparison-heading">Prior-year same period<' in text
+    assert 'id="spend-yoy-delta-heading">Delta<' in text
+    assert 'Current YTD' in text
+    assert 'Prior-year YTD' in text
+    assert "const initialSpendView = new URL(window.location.href).searchParams.get('spend_view') || ''" in text
+    assert 'applySpendDetailModeState(spendDetailMode);' in text
     assert 'chartCanvas.title = ""' in text
     assert 'legend: { display: false }' in text
 
@@ -1534,6 +1514,7 @@ def test_dashboard_spend_details_compare_query_state_is_preserved_in_markup(clie
     assert 'name="spend_compare" value="yoy"' in text
     assert 'spend_view=compare' in text
     assert 'spend_compare=yoy' in text
+    assert 'name="spend_mode" value="ytd"' in text
 
 
 def test_dashboard_spend_details_mode_switch_keeps_mix_markup(client):
@@ -1556,10 +1537,67 @@ def test_dashboard_spend_details_mode_switch_keeps_mix_markup(client):
     text = response.get_data(as_text=True)
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
 
-    assert 'data-spend-view="mix"' in text
-    assert 'data-spend-view="compare"' in text
+    assert 'data-spend-detail-mode="mix"' in text
+    assert 'data-spend-detail-mode="period-vs-ly"' in text
+    assert 'data-spend-detail-mode="yoy"' in text
     assert 'id="spend-details-chart"' in text
     assert analytics["pie_period"] == [{"label": "Groceries", "value": 42.0, "subcategories": []}]
+
+
+def test_dashboard_spend_details_groups_other_rows_for_compact_comparison_tables(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        category_names = [
+            "Groceries",
+            "Utilities",
+            "Dining",
+            "Pets",
+            "Home",
+            "Travel",
+            "Health",
+            "Entertainment",
+            "Shopping",
+        ]
+        category_ids = {}
+        for index, name in enumerate(category_names, start=1):
+            existing = db.execute("SELECT id FROM categories WHERE name = ?", (name,)).fetchone()
+            if existing:
+                category_ids[name] = existing["id"]
+                continue
+            db.execute("INSERT INTO categories (user_id, name) VALUES (?, ?)", (1, name))
+            category_ids[name] = db.execute("SELECT id FROM categories WHERE name = ?", (name,)).fetchone()["id"]
+
+        for index, name in enumerate(category_names, start=1):
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, f"2026-02-{index:02d}", -(100 - index), category_ids[name], f"Current {name}"),
+            )
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, f"2025-02-{index:02d}", -(50 - index), category_ids[name], f"Prior {name}"),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2026-02-01&end=2026-02-28")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    rows = analytics["yoy"]["period"]["categories"]
+    assert len(rows) == 9
+    assert rows[-1]["label"] == "Other"
+    assert rows[-1]["current_value"] == 91.0
+    assert rows[-1]["prior_value"] == 41.0
+    assert [child["label"] for child in rows[-1]["children"]] == ["Shopping"]
+
+
 
 
 def test_shared_category_chart_nets_reimbursements_and_excludes_nonpositive_categories(client):
