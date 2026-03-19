@@ -93,6 +93,17 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .spend-details-back-row { margin: 0 0 .5rem; }
 .spend-details-back-button { padding: .28rem .55rem; font-size: .78rem; }
 .spend-details-empty { margin: .3rem 0 .4rem; color: #5b6477; font-size: .9rem; }
+.spend-chart-legend { display: flex; flex-wrap: wrap; gap: .45rem .75rem; margin: .55rem 0 0; }
+.spend-chart-legend-item { display: inline-flex; align-items: center; gap: .35rem; min-width: 0; max-width: 100%; padding: .18rem .4rem; border-radius: 999px; background: #f8faff; color: #334155; font-size: .8rem; }
+.spend-chart-legend-swatch { width: .7rem; height: .7rem; border-radius: 999px; flex: 0 0 auto; }
+.spend-chart-legend-label { display: inline-block; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spend-yoy-table-wrap { margin-top: .7rem; overflow-x: auto; }
+.spend-yoy-table { font-size: .85rem; }
+.spend-yoy-table th { font-size: .76rem; text-transform: uppercase; letter-spacing: .03em; color: #5b6477; white-space: nowrap; }
+.spend-yoy-table td { padding: .45rem .4rem; white-space: nowrap; }
+.spend-yoy-table td:first-child { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; }
+.delta-positive { color: #166534; font-weight: 600; }
+.delta-negative { color: #b42318; font-weight: 600; }
 .spend-details-table th { font-size: .82rem; text-transform: uppercase; letter-spacing: .03em; color: #5b6477; }
 .spend-details-table td { padding: .55rem .45rem; }
 .spend-details-table tbody tr:hover { background: #f8faff; }
