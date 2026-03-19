@@ -22,7 +22,7 @@
     <div class="spend-details-toolbar">
       <div class="spend-view-toggle" role="group" aria-label="Spend details chart view">
         <button type="button" class="spend-view-button active" data-spend-view="mix" aria-pressed="true">Mix</button>
-        <button type="button" class="spend-view-button" data-spend-view="yoy" aria-pressed="false">YoY</button>
+        <button type="button" class="spend-view-button" data-spend-view="compare" aria-pressed="false">Compare</button>
       </div>
       <div class="spend-mode-toggle" role="group" aria-label="Spend details time scope">
         <button type="button" class="spend-mode-button active" data-spend-mode="period" aria-pressed="true">Period</button>
@@ -31,10 +31,10 @@
     </div>
   </div>
   <div class="spend-yoy-scope-row" id="spend-yoy-scope-row" hidden>
-    <span class="spend-yoy-scope-label">YoY categories</span>
-    <div class="spend-yoy-scope-toggle" role="group" aria-label="YoY category scope">
-      <button type="button" class="spend-yoy-scope-button active" data-yoy-scope="top" aria-pressed="true">Top 8</button>
-      <button type="button" class="spend-yoy-scope-button" data-yoy-scope="all" aria-pressed="false">All</button>
+    <span class="spend-yoy-scope-label">Compare mode</span>
+    <div class="spend-yoy-scope-toggle" role="group" aria-label="Spend details comparison mode">
+      <button type="button" class="spend-yoy-scope-button active" data-spend-compare="pop" aria-pressed="true">PoP</button>
+      <button type="button" class="spend-yoy-scope-button" data-spend-compare="yoy" aria-pressed="false">YoY</button>
     </div>
   </div>
   <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.period_label }}</p>
@@ -53,10 +53,8 @@
           <tr>
             <th>Category</th>
             <th id="spend-yoy-current-heading">Current period</th>
-            <th id="spend-yoy-previous-heading">Previous comparable period</th>
-            <th>Period delta</th>
-            <th id="spend-yoy-prior-heading">Same period last year</th>
-            <th>YoY delta</th>
+            <th id="spend-yoy-comparison-heading">Previous period</th>
+            <th id="spend-yoy-delta-heading">Period delta</th>
           </tr>
         </thead>
         <tbody id="spend-yoy-table-body"></tbody>
@@ -184,6 +182,8 @@
       <input type="hidden" name="end" value="{{ end_date or '' }}">
       <input type="hidden" name="settlement_tab" value="{{ dashboard_state_params.settlement_tab or '' }}" data-dashboard-state-input="settlement_tab">
       <input type="hidden" name="spend_mode" value="{{ dashboard_state_params.spend_mode or '' }}" data-dashboard-state-input="spend_mode">
+      <input type="hidden" name="spend_view" value="{{ dashboard_state_params.spend_view or '' }}" data-dashboard-state-input="spend_view">
+      <input type="hidden" name="spend_compare" value="{{ dashboard_state_params.spend_compare or '' }}" data-dashboard-state-input="spend_compare">
       <input type="hidden" name="tx_date_from" value="{{ tx_filter_values.tx_date_from }}">
       <input type="hidden" name="tx_date_to" value="{{ tx_filter_values.tx_date_to }}">
       <input type="hidden" name="tx_amount_min" value="{{ tx_filter_values.tx_amount_min }}">
@@ -247,6 +247,8 @@
               <input type="hidden" name="end" value="{{ end_date or '' }}">
               <input type="hidden" name="settlement_tab" value="{{ dashboard_state_params.settlement_tab or '' }}" data-dashboard-state-input="settlement_tab">
               <input type="hidden" name="spend_mode" value="{{ dashboard_state_params.spend_mode or '' }}" data-dashboard-state-input="spend_mode">
+      <input type="hidden" name="spend_view" value="{{ dashboard_state_params.spend_view or '' }}" data-dashboard-state-input="spend_view">
+      <input type="hidden" name="spend_compare" value="{{ dashboard_state_params.spend_compare or '' }}" data-dashboard-state-input="spend_compare">
               <input type="hidden" name="tx_date_from" value="{{ tx_filter_values.tx_date_from }}">
               <input type="hidden" name="tx_date_to" value="{{ tx_filter_values.tx_date_to }}">
               <input type="hidden" name="tx_amount_min" value="{{ tx_filter_values.tx_amount_min }}">
@@ -259,7 +261,7 @@
               <input type="hidden" name="tx_source" value="{{ tx_filter_values.tx_source }}">
               <input type="hidden" name="tx_transfer_mode" value="{{ tx_filter_values.tx_transfer_mode }}">
               <button type="submit">Save</button>
-              <a href="{{ url_for('dashboard', month=selected_month, start=start_date or '', end=end_date or '', tx_date_from=tx_filter_values.tx_date_from, tx_date_to=tx_filter_values.tx_date_to, tx_amount_min=tx_filter_values.tx_amount_min, tx_amount_max=tx_filter_values.tx_amount_max, tx_paid_by=tx_filter_values.tx_paid_by, tx_category_id=tx_filter_values.tx_category_id, tx_vendor_q=tx_filter_values.tx_vendor_q, tx_description_q=tx_filter_values.tx_description_q, tx_confidence_bucket=tx_filter_values.tx_confidence_bucket, tx_source=tx_filter_values.tx_source, tx_transfer_mode=tx_filter_values.tx_transfer_mode, settlement_tab=dashboard_state_params.settlement_tab or '', spend_mode=dashboard_state_params.spend_mode or '') }}">Cancel</a>
+              <a href="{{ url_for('dashboard', month=selected_month, start=start_date or '', end=end_date or '', tx_date_from=tx_filter_values.tx_date_from, tx_date_to=tx_filter_values.tx_date_to, tx_amount_min=tx_filter_values.tx_amount_min, tx_amount_max=tx_filter_values.tx_amount_max, tx_paid_by=tx_filter_values.tx_paid_by, tx_category_id=tx_filter_values.tx_category_id, tx_vendor_q=tx_filter_values.tx_vendor_q, tx_description_q=tx_filter_values.tx_description_q, tx_confidence_bucket=tx_filter_values.tx_confidence_bucket, tx_source=tx_filter_values.tx_source, tx_transfer_mode=tx_filter_values.tx_transfer_mode, settlement_tab=dashboard_state_params.settlement_tab or '', spend_mode=dashboard_state_params.spend_mode or '', spend_view=dashboard_state_params.spend_view or '', spend_compare=dashboard_state_params.spend_compare or '') }}">Cancel</a>
             </td>
           </form>
           {% else %}
@@ -276,6 +278,8 @@
               <input type="hidden" name="end" value="{{ end_date or '' }}">
               <input type="hidden" name="settlement_tab" value="{{ dashboard_state_params.settlement_tab or '' }}" data-dashboard-state-input="settlement_tab">
               <input type="hidden" name="spend_mode" value="{{ dashboard_state_params.spend_mode or '' }}" data-dashboard-state-input="spend_mode">
+      <input type="hidden" name="spend_view" value="{{ dashboard_state_params.spend_view or '' }}" data-dashboard-state-input="spend_view">
+      <input type="hidden" name="spend_compare" value="{{ dashboard_state_params.spend_compare or '' }}" data-dashboard-state-input="spend_compare">
               <input type="hidden" name="tx_date_from" value="{{ tx_filter_values.tx_date_from }}">
               <input type="hidden" name="tx_date_to" value="{{ tx_filter_values.tx_date_to }}">
               <input type="hidden" name="tx_amount_min" value="{{ tx_filter_values.tx_amount_min }}">
@@ -363,6 +367,8 @@
     <input type="hidden" name="tx_transfer_mode" value="{{ tx_filter_values.tx_transfer_mode }}">
     <input type="hidden" name="settlement_tab" value="{{ dashboard_state_params.settlement_tab or '' }}" data-dashboard-state-input="settlement_tab">
     <input type="hidden" name="spend_mode" value="{{ dashboard_state_params.spend_mode or '' }}" data-dashboard-state-input="spend_mode">
+      <input type="hidden" name="spend_view" value="{{ dashboard_state_params.spend_view or '' }}" data-dashboard-state-input="spend_view">
+      <input type="hidden" name="spend_compare" value="{{ dashboard_state_params.spend_compare or '' }}" data-dashboard-state-input="spend_compare">
 
     <details id="transactions-bulk-actions" class="transactions-subcard bulk-subcard">
       <summary>
@@ -477,7 +483,7 @@
         <td>{{ expense.vendor or expense.description or '—' }}</td>
         <td>{{ expense.description or '—' }}</td>
         <td>{% if expense.category_source == 'transfer' %}<span class="confidence-badge confidence-transfer" title="Source: {{ expense.category_source or 'unknown' }}">Transfer</span>{% elif expense.category_confidence is not none %}{% if expense.category_confidence >= 80 %}<span class="confidence-badge confidence-high" title="Source: {{ expense.category_source or 'unknown' }}">{{ expense.category_confidence }}</span>{% elif expense.category_confidence >= 50 %}<span class="confidence-badge confidence-medium" title="Source: {{ expense.category_source or 'unknown' }}">{{ expense.category_confidence }}</span>{% else %}<span class="confidence-badge confidence-low" title="Source: {{ expense.category_source or 'unknown' }}">{{ expense.category_confidence }}</span>{% endif %}{% else %}<span class="confidence-badge confidence-low" title="Source: {{ expense.category_source or 'unknown' }}">N/A</span>{% endif %}</td>
-        <td><div class="tx-actions"><a class="tx-btn tx-btn-outline" href="{{ url_for('edit_expense', expense_id=expense.id, month=selected_month, start=start_date, end=end_date, tx_date_from=tx_filter_values.tx_date_from, tx_date_to=tx_filter_values.tx_date_to, tx_amount_min=tx_filter_values.tx_amount_min, tx_amount_max=tx_filter_values.tx_amount_max, tx_paid_by=tx_filter_values.tx_paid_by, tx_category_id=tx_filter_values.tx_category_id, tx_vendor_q=tx_filter_values.tx_vendor_q, tx_description_q=tx_filter_values.tx_description_q, tx_confidence_bucket=tx_filter_values.tx_confidence_bucket, tx_source=tx_filter_values.tx_source, tx_transfer_mode=tx_filter_values.tx_transfer_mode, settlement_tab=dashboard_state_params.settlement_tab or '', spend_mode=dashboard_state_params.spend_mode or '') }}">Edit</a><form method="post" action="{{ url_for('bulk_expense_action') }}" class="inline-form" onsubmit="return confirm('Delete this transaction?');"><input type="hidden" name="month" value="{{ selected_month }}"><input type="hidden" name="start" value="{{ start_date or '' }}"><input type="hidden" name="end" value="{{ end_date or '' }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="selected_ids" value="{{ expense.id }}"><input type="hidden" name="tx_date_from" value="{{ tx_filter_values.tx_date_from }}"><input type="hidden" name="tx_date_to" value="{{ tx_filter_values.tx_date_to }}"><input type="hidden" name="tx_amount_min" value="{{ tx_filter_values.tx_amount_min }}"><input type="hidden" name="tx_amount_max" value="{{ tx_filter_values.tx_amount_max }}"><input type="hidden" name="tx_paid_by" value="{{ tx_filter_values.tx_paid_by }}"><input type="hidden" name="tx_category_id" value="{{ tx_filter_values.tx_category_id }}"><input type="hidden" name="tx_vendor_q" value="{{ tx_filter_values.tx_vendor_q }}"><input type="hidden" name="tx_description_q" value="{{ tx_filter_values.tx_description_q }}"><input type="hidden" name="tx_confidence_bucket" value="{{ tx_filter_values.tx_confidence_bucket }}"><input type="hidden" name="tx_source" value="{{ tx_filter_values.tx_source }}"><input type="hidden" name="tx_transfer_mode" value="{{ tx_filter_values.tx_transfer_mode }}"><input type="hidden" name="settlement_tab" value="{{ dashboard_state_params.settlement_tab or '' }}" data-dashboard-state-input="settlement_tab"><input type="hidden" name="spend_mode" value="{{ dashboard_state_params.spend_mode or '' }}" data-dashboard-state-input="spend_mode"><button type="submit" class="tx-btn tx-btn-danger">Delete</button></form></div></td>
+        <td><div class="tx-actions"><a class="tx-btn tx-btn-outline" href="{{ url_for('edit_expense', expense_id=expense.id, month=selected_month, start=start_date, end=end_date, tx_date_from=tx_filter_values.tx_date_from, tx_date_to=tx_filter_values.tx_date_to, tx_amount_min=tx_filter_values.tx_amount_min, tx_amount_max=tx_filter_values.tx_amount_max, tx_paid_by=tx_filter_values.tx_paid_by, tx_category_id=tx_filter_values.tx_category_id, tx_vendor_q=tx_filter_values.tx_vendor_q, tx_description_q=tx_filter_values.tx_description_q, tx_confidence_bucket=tx_filter_values.tx_confidence_bucket, tx_source=tx_filter_values.tx_source, tx_transfer_mode=tx_filter_values.tx_transfer_mode, settlement_tab=dashboard_state_params.settlement_tab or '', spend_mode=dashboard_state_params.spend_mode or '', spend_view=dashboard_state_params.spend_view or '', spend_compare=dashboard_state_params.spend_compare or '') }}">Edit</a><form method="post" action="{{ url_for('bulk_expense_action') }}" class="inline-form" onsubmit="return confirm('Delete this transaction?');"><input type="hidden" name="month" value="{{ selected_month }}"><input type="hidden" name="start" value="{{ start_date or '' }}"><input type="hidden" name="end" value="{{ end_date or '' }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="selected_ids" value="{{ expense.id }}"><input type="hidden" name="tx_date_from" value="{{ tx_filter_values.tx_date_from }}"><input type="hidden" name="tx_date_to" value="{{ tx_filter_values.tx_date_to }}"><input type="hidden" name="tx_amount_min" value="{{ tx_filter_values.tx_amount_min }}"><input type="hidden" name="tx_amount_max" value="{{ tx_filter_values.tx_amount_max }}"><input type="hidden" name="tx_paid_by" value="{{ tx_filter_values.tx_paid_by }}"><input type="hidden" name="tx_category_id" value="{{ tx_filter_values.tx_category_id }}"><input type="hidden" name="tx_vendor_q" value="{{ tx_filter_values.tx_vendor_q }}"><input type="hidden" name="tx_description_q" value="{{ tx_filter_values.tx_description_q }}"><input type="hidden" name="tx_confidence_bucket" value="{{ tx_filter_values.tx_confidence_bucket }}"><input type="hidden" name="tx_source" value="{{ tx_filter_values.tx_source }}"><input type="hidden" name="tx_transfer_mode" value="{{ tx_filter_values.tx_transfer_mode }}"><input type="hidden" name="settlement_tab" value="{{ dashboard_state_params.settlement_tab or '' }}" data-dashboard-state-input="settlement_tab"><input type="hidden" name="spend_mode" value="{{ dashboard_state_params.spend_mode or '' }}" data-dashboard-state-input="spend_mode"><input type="hidden" name="spend_view" value="{{ dashboard_state_params.spend_view or '' }}" data-dashboard-state-input="spend_view"><input type="hidden" name="spend_compare" value="{{ dashboard_state_params.spend_compare or '' }}" data-dashboard-state-input="spend_compare"><button type="submit" class="tx-btn tx-btn-danger">Delete</button></form></div></td>
       </tr>
       {% else %}
       <tr><td colspan="10">No expenses added yet.</td></tr>
@@ -503,6 +509,8 @@
     <input type="hidden" name="tx_transfer_mode" value="{{ tx_filter_values.tx_transfer_mode }}">
     <input type="hidden" name="settlement_tab" value="{{ dashboard_state_params.settlement_tab or '' }}" data-dashboard-state-input="settlement_tab">
     <input type="hidden" name="spend_mode" value="{{ dashboard_state_params.spend_mode or '' }}" data-dashboard-state-input="spend_mode">
+      <input type="hidden" name="spend_view" value="{{ dashboard_state_params.spend_view or '' }}" data-dashboard-state-input="spend_view">
+      <input type="hidden" name="spend_compare" value="{{ dashboard_state_params.spend_compare or '' }}" data-dashboard-state-input="spend_compare">
   </form>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script>
@@ -594,21 +602,21 @@
       const backRow = document.getElementById('spend-details-back-row');
       const backButton = document.getElementById('spend-details-back-button');
       const yoyScopeRow = document.getElementById('spend-yoy-scope-row');
-      const yoyScopeButtons = Array.from(document.querySelectorAll('[data-yoy-scope]'));
+      const yoyScopeButtons = Array.from(document.querySelectorAll('[data-spend-compare]'));
       const legendContainer = document.getElementById('spend-chart-legend');
       const yoyTableWrap = document.getElementById('spend-yoy-table-wrap');
       const yoyTableBody = document.getElementById('spend-yoy-table-body');
       const yoyCurrentHeading = document.getElementById('spend-yoy-current-heading');
-      const yoyPreviousHeading = document.getElementById('spend-yoy-previous-heading');
-      const yoyPriorHeading = document.getElementById('spend-yoy-prior-heading');
+      const yoyComparisonHeading = document.getElementById('spend-yoy-comparison-heading');
+      const yoyDeltaHeading = document.getElementById('spend-yoy-delta-heading');
       let spendMode = 'period';
       let spendView = 'mix';
       let yoyDrilldownKey = null;
-      let yoyCategoryScope = 'top';
+      let spendCompareMode = 'pop';
       let sharedChart = null;
 
       const piePalette = ['#1d4ed8', '#0f766e', '#b45309', '#9333ea', '#be123c'];
-      const yoyPalette = { current: '#274690', prior: '#93c5fd' };
+      const yoyPalette = { current: '#274690', prior: '#93c5fd', previous: '#60a5fa' };
       const maxLabelLength = 22;
       const maxYoyLabelLength = 26;
       const topYoyCategoryCount = 8;
@@ -629,7 +637,7 @@
       }
 
       function getVisibleYoyRows(rows, level) {
-        if (level !== 'categories' || yoyCategoryScope !== 'top') {
+        if (level !== 'categories') {
           return rows;
         }
         return rows.slice(0, topYoyCategoryCount);
@@ -656,6 +664,7 @@
               currentLabel: bucket.current_label || '',
               previousPeriodLabel: bucket.previous_period_label || '',
               priorLabel: bucket.prior_label || '',
+              compareMode: spendCompareMode,
               rows: detail.rows || []
             };
           }
@@ -665,6 +674,7 @@
           currentLabel: bucket.current_label || '',
           previousPeriodLabel: bucket.previous_period_label || '',
           priorLabel: bucket.prior_label || '',
+          compareMode: spendCompareMode,
           rows: getVisibleYoyRows(bucket.categories || [], 'categories')
         };
       }
@@ -678,7 +688,8 @@
           return;
         }
         const yoyState = getCurrentYoyState();
-        const comparisonText = `${yoyState.currentLabel} vs ${yoyState.priorLabel}`.trim();
+        const comparisonLabel = yoyState.compareMode === 'yoy' ? yoyState.priorLabel : yoyState.previousPeriodLabel;
+        const comparisonText = `${yoyState.currentLabel} vs ${comparisonLabel}`.trim();
         spendDetailsSubtitle.textContent = yoyState.level === 'subcategories'
           ? `${yoyState.categoryLabel} — ${comparisonText}`
           : comparisonText;
@@ -748,19 +759,22 @@
       }
 
       function renderYoyComparisonTable(state) {
-        if (!yoyTableWrap || !yoyTableBody || !yoyCurrentHeading || !yoyPreviousHeading || !yoyPriorHeading) return;
+        if (!yoyTableWrap || !yoyTableBody || !yoyCurrentHeading || !yoyComparisonHeading || !yoyDeltaHeading) return;
         const rows = state.rows || [];
-        if (spendView !== 'yoy' || state.level !== 'categories' || !rows.length) {
+        if (spendView !== 'compare' || state.level !== 'categories' || !rows.length) {
           yoyTableWrap.hidden = true;
           yoyTableBody.innerHTML = '';
           return;
         }
+        const isYoyMode = state.compareMode === 'yoy';
         yoyCurrentHeading.textContent = state.currentLabel || 'Current period';
-        yoyPreviousHeading.textContent = state.previousPeriodLabel || 'Previous comparable period';
-        yoyPriorHeading.textContent = state.priorLabel || 'Same period last year';
+        yoyComparisonHeading.textContent = isYoyMode
+          ? (state.priorLabel || 'Same period last year')
+          : (state.previousPeriodLabel || 'Previous comparable period');
+        yoyDeltaHeading.textContent = isYoyMode ? 'YoY delta' : 'Period delta';
         yoyTableBody.innerHTML = rows.map((row) => {
-          const periodDelta = Number(row.current_value || 0) - Number(row.previous_period_value || 0);
-          const yoyDelta = Number(row.current_value || 0) - Number(row.prior_value || 0);
+          const comparisonValue = state.compareMode === 'yoy' ? Number(row.prior_value || 0) : Number(row.previous_period_value || 0);
+          const comparisonDelta = Number(row.current_value || 0) - comparisonValue;
           const label = String(row.label || '');
           const displayLabel = shortenLabel(label, 30);
           const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -768,10 +782,8 @@
           return `<tr>
             <td title="${safeLabel}">${safeDisplay}</td>
             <td>${formatCurrency(row.current_value || 0)}</td>
-            <td>${formatCurrency(row.previous_period_value || 0)}</td>
-            <td class="${periodDelta === 0 ? '' : (periodDelta > 0 ? 'delta-positive' : 'delta-negative')}">${formatDelta(periodDelta)}</td>
-            <td>${formatCurrency(row.prior_value || 0)}</td>
-            <td class="${yoyDelta === 0 ? '' : (yoyDelta > 0 ? 'delta-positive' : 'delta-negative')}">${formatDelta(yoyDelta)}</td>
+            <td>${formatCurrency(comparisonValue)}</td>
+            <td class="${comparisonDelta === 0 ? '' : (comparisonDelta > 0 ? 'delta-positive' : 'delta-negative')}">${formatDelta(comparisonDelta)}</td>
           </tr>`;
         }).join('');
         yoyTableWrap.hidden = false;
@@ -853,9 +865,12 @@
         chartCanvas.style.minHeight = `${chartHeight}px`;
         chartWrap.style.height = `${Math.min(chartHeight, rows.length <= topYoyCategoryCount ? 520 : 560)}px`;
         if (chartCanvas) chartCanvas.title = '';
+        const comparisonLabel = state.compareMode === 'yoy' ? state.priorLabel : state.previousPeriodLabel;
+        const comparisonDatasetKey = state.compareMode === 'yoy' ? 'prior_value' : 'previous_period_value';
+        const comparisonColor = state.compareMode === 'yoy' ? yoyPalette.prior : yoyPalette.previous;
         renderLegend([
           { label: state.currentLabel, color: yoyPalette.current },
-          { label: state.priorLabel, color: yoyPalette.prior }
+          { label: comparisonLabel, color: comparisonColor }
         ]);
         destroySharedChart();
         sharedChart = new window.Chart(chartCanvas, {
@@ -864,7 +879,7 @@
             labels: truncatedLabels,
             datasets: [
               { label: state.currentLabel, data: rows.map((row) => row.current_value), backgroundColor: yoyPalette.current, borderRadius: 6, barThickness: 18, categoryPercentage: 0.8, barPercentage: 0.9 },
-              { label: state.priorLabel, data: rows.map((row) => row.prior_value), backgroundColor: yoyPalette.prior, borderRadius: 6, barThickness: 18, categoryPercentage: 0.8, barPercentage: 0.9 }
+              { label: comparisonLabel, data: rows.map((row) => row[comparisonDatasetKey] || 0), backgroundColor: comparisonColor, borderRadius: 6, barThickness: 18, categoryPercentage: 0.8, barPercentage: 0.9 }
             ]
           },
           options: {
@@ -921,10 +936,10 @@
           button.classList.toggle('active', active);
           button.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
-        if (backRow) backRow.hidden = !(spendView === 'yoy' && yoyDrilldownKey);
-        if (yoyScopeRow) yoyScopeRow.hidden = !(spendView === 'yoy' && !yoyDrilldownKey);
+        if (backRow) backRow.hidden = !(spendView === 'compare' && yoyDrilldownKey);
+        if (yoyScopeRow) yoyScopeRow.hidden = spendView !== 'compare';
         yoyScopeButtons.forEach((button) => {
-          const active = button.dataset.yoyScope === yoyCategoryScope;
+          const active = button.dataset.spendCompare === spendCompareMode;
           button.classList.toggle('active', active);
           button.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
@@ -952,16 +967,18 @@
 
       spendViewButtons.forEach((button) => {
         button.addEventListener('click', function () {
-          spendView = button.dataset.spendView;
+          spendView = button.dataset.spendView === 'compare' ? 'compare' : 'mix';
           yoyDrilldownKey = null;
+          setDashboardStateInUrl('spend_view', spendView);
           renderSpendDetails();
         });
       });
 
       yoyScopeButtons.forEach((button) => {
         button.addEventListener('click', function () {
-          yoyCategoryScope = button.dataset.yoyScope === 'all' ? 'all' : 'top';
+          spendCompareMode = button.dataset.spendCompare === 'yoy' ? 'yoy' : 'pop';
           yoyDrilldownKey = null;
+          setDashboardStateInUrl('spend_compare', spendCompareMode);
           renderSpendDetails();
         });
       });
@@ -1049,6 +1066,8 @@
 
       const dashboardUrl = new URL(window.location.href);
       const initialSpendMode = dashboardUrl.searchParams.get('spend_mode') || 'period';
+      const initialSpendView = dashboardUrl.searchParams.get('spend_view') || 'mix';
+      const initialSpendCompare = dashboardUrl.searchParams.get('spend_compare') || 'pop';
       const initialSettlementTab = dashboardUrl.searchParams.get('settlement_tab') || 'shared-expenses-panel';
       if (settlementTabPanels.some((panel) => panel.id === initialSettlementTab)) {
         activateSettlementTab(initialSettlementTab);
@@ -1058,8 +1077,12 @@
       syncDashboardStateInputs('settlement_tab', initialSettlementTab);
 
       spendMode = (initialSpendMode === 'ytd' || initialSpendMode === 'period') ? initialSpendMode : 'period';
+      spendView = initialSpendView === 'compare' ? 'compare' : 'mix';
+      spendCompareMode = initialSpendCompare === 'yoy' ? 'yoy' : 'pop';
       renderSpendDetails();
       setDashboardStateInUrl('spend_mode', spendMode);
+      setDashboardStateInUrl('spend_view', spendView);
+      setDashboardStateInUrl('spend_compare', spendCompareMode);
     })();
   </script>
 </section>

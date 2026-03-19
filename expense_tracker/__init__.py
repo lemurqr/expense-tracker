@@ -1657,6 +1657,8 @@ def create_app(test_config=None):
         for key in [
             "settlement_tab",
             "spend_mode",
+            "spend_view",
+            "spend_compare",
             "tx_date_from",
             "tx_date_to",
             "tx_amount_min",
