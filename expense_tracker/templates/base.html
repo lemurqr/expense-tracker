@@ -12,6 +12,7 @@
     <nav>
       {% if g.user %}
         <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('budget_page') }}">Budget</a>
         <a href="{{ url_for('create_expense') }}">Add Expense</a>
         <a href="{{ url_for('categories') }}">Categories</a>
         <a href="{{ url_for('import_csv') }}">Import CSV</a>

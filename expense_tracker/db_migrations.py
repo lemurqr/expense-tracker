@@ -93,6 +93,23 @@ REQUIRED_TABLES = {
             "idx_settlement_payments_household_to",
         },
     },
+    "monthly_budgets": {
+        "columns": {
+            "id",
+            "household_id",
+            "month",
+            "view_mode",
+            "scope_mode",
+            "category_id",
+            "subcategory_id",
+            "budget_type",
+            "budget_amount",
+            "rollover_amount",
+            "created_at",
+            "updated_at",
+        },
+        "indexes": {"idx_monthly_budgets_household_month", "uq_monthly_budgets_scope_row"},
+    },
 }
 
 
@@ -732,6 +749,41 @@ def migration_013(conn):
     add_column_if_missing(conn, "expenses", "subcategory_id INTEGER")
 
 
+def migration_014(conn):
+    ensure_table(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS monthly_budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            household_id INTEGER NOT NULL,
+            month TEXT NOT NULL,
+            view_mode TEXT NOT NULL,
+            scope_mode TEXT NOT NULL,
+            category_id INTEGER NOT NULL,
+            subcategory_id INTEGER NOT NULL DEFAULT 0,
+            budget_type TEXT NOT NULL,
+            budget_amount REAL NOT NULL DEFAULT 0,
+            rollover_amount REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(household_id, month, view_mode, scope_mode, category_id, subcategory_id),
+            FOREIGN KEY (household_id) REFERENCES households (id),
+            FOREIGN KEY (category_id) REFERENCES categories (id)
+        )
+        """,
+    )
+    create_index_if_missing(
+        conn,
+        "idx_monthly_budgets_household_month",
+        "CREATE INDEX IF NOT EXISTS idx_monthly_budgets_household_month ON monthly_budgets(household_id, month)",
+    )
+    create_index_if_missing(
+        conn,
+        "uq_monthly_budgets_scope_row",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_monthly_budgets_scope_row ON monthly_budgets(household_id, month, view_mode, scope_mode, category_id, subcategory_id)",
+    )
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
@@ -746,6 +798,7 @@ MIGRATIONS = [
     (11, migration_011),
     (12, migration_012),
     (13, migration_013),
+    (14, migration_014),
 ]
 
 

@@ -16,6 +16,7 @@ POSTGRES_CLEANUP_TABLES = [
     "audit_logs",
     "import_staging",
     "settlement_payments",
+    "monthly_budgets",
     "expenses",
     "category_rules",
     "categories",

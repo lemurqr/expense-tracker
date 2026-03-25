@@ -1676,6 +1676,161 @@ def create_app(test_config=None):
                 params[key] = value
         return params
 
+    BUDGET_TYPES = {"Fixed", "Flexible", "Non-monthly", "Personal"}
+
+    def parse_budget_month(raw_value):
+        value = (raw_value or "").strip()
+        if re.fullmatch(r"\d{4}-\d{2}", value):
+            return value
+        return date.today().strftime("%Y-%m")
+
+    def normalize_budget_view(raw_value):
+        value = (raw_value or "").strip().lower()
+        if value in {"household", "dk", "yz"}:
+            return value
+        return "household"
+
+    def normalize_budget_scope(raw_value):
+        value = (raw_value or "").strip().lower()
+        if value in {"shared", "personal", "all"}:
+            return value
+        return "shared"
+
+    def _budget_expense_filters(view_mode, scope_mode):
+        where_parts = ["e.household_id = ?", "e.is_transfer = 0"]
+        params = [g.household_id]
+        if view_mode in {"dk", "yz"}:
+            where_parts.append("e.paid_by = ?")
+            params.append(view_mode.upper())
+        if scope_mode == "shared":
+            where_parts.append("e.is_personal = 0")
+        elif scope_mode == "personal":
+            where_parts.append("e.is_personal = 1")
+        return where_parts, params
+
+    def _fetch_budget_settings(db, month_value, view_mode, scope_mode):
+        rows = db.execute(
+            """
+            SELECT category_id, subcategory_id, budget_type, budget_amount, rollover_amount
+            FROM monthly_budgets
+            WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ?
+            """,
+            (g.household_id, month_value, view_mode, scope_mode),
+        ).fetchall()
+        return {(row["category_id"], row["subcategory_id"]): row for row in rows}
+
+    def _fetch_actual_map(db, month_value, view_mode, scope_mode):
+        where_parts, params = _budget_expense_filters(view_mode, scope_mode)
+        where_parts.append("e.date LIKE ?")
+        params.append(f"{month_value}%")
+        rows = db.execute(
+            """
+            SELECT e.category_id, COALESCE(e.subcategory_id, 0) AS subcategory_id, COALESCE(SUM(-e.amount), 0) AS actual
+            FROM expenses e
+            WHERE {where_sql}
+            GROUP BY e.category_id, COALESCE(e.subcategory_id, 0)
+            """.format(where_sql=" AND ".join(where_parts)),
+            tuple(params),
+        ).fetchall()
+        return {(row["category_id"], row["subcategory_id"]): float(row["actual"] or 0) for row in rows}
+
+    def _build_budget_rows(db, month_value, view_mode, scope_mode):
+        categories = db.execute(
+            "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name",
+            (g.user["id"],),
+        ).fetchall()
+        category_map = {row["id"]: row["name"] for row in categories}
+        subcategories = db.execute(
+            "SELECT id, category_id, name FROM subcategories WHERE user_id = ? ORDER BY name",
+            (g.user["id"],),
+        ).fetchall()
+        subcategory_map = {row["id"]: row for row in subcategories}
+
+        settings_map = _fetch_budget_settings(db, month_value, view_mode, scope_mode)
+        actual_map = _fetch_actual_map(db, month_value, view_mode, scope_mode)
+
+        last_month = (datetime.strptime(f"{month_value}-01", "%Y-%m-%d").date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        last_actual_map = _fetch_actual_map(db, last_month, view_mode, scope_mode)
+
+        rows = []
+        for category in categories:
+            key = (category["id"], 0)
+            setting = settings_map.get(key)
+            default_type = "Personal" if scope_mode == "personal" else "Flexible"
+            budget_type = setting["budget_type"] if setting else default_type
+            budget_amount = float(setting["budget_amount"] or 0) if setting else 0.0
+            rollover_amount = float(setting["rollover_amount"] or 0) if setting else 0.0
+            actual = float(actual_map.get(key, 0.0))
+            remaining = budget_amount - actual
+            progress = 0 if budget_amount <= 0 else min(200, max(0, (actual / budget_amount) * 100))
+            rows.append(
+                {
+                    "category_id": category["id"],
+                    "category_name": category["name"],
+                    "subcategory_id": 0,
+                    "subcategory_name": "",
+                    "budget_type": budget_type,
+                    "budget_amount": round(budget_amount, 2),
+                    "actual": round(actual, 2),
+                    "remaining": round(remaining, 2),
+                    "progress": round(progress, 1),
+                    "rollover_amount": round(rollover_amount, 2),
+                    "last_month_actual": round(float(last_actual_map.get(key, 0.0)), 2),
+                }
+            )
+
+        for (category_id, subcategory_id), setting in settings_map.items():
+            if subcategory_id == 0:
+                continue
+            category_name = category_map.get(category_id)
+            subcategory = subcategory_map.get(subcategory_id)
+            if not category_name or not subcategory:
+                continue
+            key = (category_id, subcategory_id)
+            budget_amount = float(setting["budget_amount"] or 0)
+            actual = float(actual_map.get(key, 0.0))
+            rows.append(
+                {
+                    "category_id": category_id,
+                    "category_name": category_name,
+                    "subcategory_id": subcategory_id,
+                    "subcategory_name": subcategory["name"],
+                    "budget_type": setting["budget_type"],
+                    "budget_amount": round(budget_amount, 2),
+                    "actual": round(actual, 2),
+                    "remaining": round(budget_amount - actual, 2),
+                    "progress": round(0 if budget_amount <= 0 else min(200, max(0, (actual / budget_amount) * 100)), 1),
+                    "rollover_amount": round(float(setting["rollover_amount"] or 0), 2),
+                    "last_month_actual": round(float(last_actual_map.get(key, 0.0)), 2),
+                }
+            )
+
+        groups = {"Fixed": [], "Flexible": [], "Non-monthly": [], "Personal": []}
+        for row in rows:
+            groups[row["budget_type"] if row["budget_type"] in groups else "Flexible"].append(row)
+
+        budgeted_total = round(sum(row["budget_amount"] for row in rows), 2)
+        actual_total = round(sum(row["actual"] for row in rows), 2)
+        remaining_total = round(budgeted_total - actual_total, 2)
+        progress_total = 0 if budgeted_total <= 0 else round(min(200, max(0, (actual_total / budgeted_total) * 100)), 1)
+        fixed_budget_total = round(sum(row["budget_amount"] for row in rows if row["budget_type"] == "Fixed"), 2)
+        flexible_left = round(sum(row["remaining"] for row in rows if row["budget_type"] == "Flexible"), 2)
+
+        return {
+            "groups": groups,
+            "rows": rows,
+            "summary": {
+                "budgeted": budgeted_total,
+                "actual": actual_total,
+                "remaining": remaining_total,
+                "progress": progress_total,
+                "fixed_budget": fixed_budget_total,
+                "flexible_left": flexible_left,
+                "is_over_budget": remaining_total < 0,
+            },
+            "last_month": last_month,
+        }
+
 
     def get_period_start_for_opening(filters):
         if filters["start_date"]:
@@ -2785,6 +2940,134 @@ def create_app(test_config=None):
             edit_repayment_id=edit_repayment_id,
             dashboard_state_params=current_filter_redirect_params(request.args),
         )
+
+    @app.route("/budget")
+    @login_required
+    def budget_page():
+        month_value = parse_budget_month(request.args.get("month"))
+        view_mode = normalize_budget_view(request.args.get("view"))
+        scope_mode = normalize_budget_scope(request.args.get("scope"))
+        budget_data = _build_budget_rows(get_db(), month_value, view_mode, scope_mode)
+        return render_template(
+            "budget.html",
+            month_value=month_value,
+            view_mode=view_mode,
+            scope_mode=scope_mode,
+            budget_groups=budget_data["groups"],
+            summary=budget_data["summary"],
+            last_month=budget_data["last_month"],
+        )
+
+    @app.post("/budget/save")
+    @login_required
+    def save_budget_settings():
+        month_value = parse_budget_month(request.form.get("month"))
+        view_mode = normalize_budget_view(request.form.get("view"))
+        scope_mode = normalize_budget_scope(request.form.get("scope"))
+        row_keys = request.form.getlist("row_key")
+        db = get_db()
+
+        for row_key in row_keys:
+            try:
+                category_id_raw, subcategory_id_raw = row_key.split(":", 1)
+                category_id = int(category_id_raw)
+                subcategory_id = int(subcategory_id_raw)
+            except (ValueError, TypeError):
+                continue
+            budget_type = (request.form.get(f"type_{row_key}") or "Flexible").strip()
+            if budget_type not in BUDGET_TYPES:
+                budget_type = "Flexible"
+            budget_amount = parse_money(request.form.get(f"budget_{row_key}") or "")
+            rollover_amount = parse_money(request.form.get(f"rollover_{row_key}") or "")
+            budget_amount = round(float(budget_amount or 0), 2)
+            rollover_amount = round(float(rollover_amount or 0), 2)
+
+            db.upsert(
+                "monthly_budgets",
+                [
+                    "household_id",
+                    "month",
+                    "view_mode",
+                    "scope_mode",
+                    "category_id",
+                    "subcategory_id",
+                    "budget_type",
+                    "budget_amount",
+                    "rollover_amount",
+                    "updated_at",
+                ],
+                [
+                    g.household_id,
+                    month_value,
+                    view_mode,
+                    scope_mode,
+                    category_id,
+                    subcategory_id,
+                    budget_type,
+                    budget_amount,
+                    rollover_amount,
+                    datetime.utcnow().isoformat(),
+                ],
+                ["household_id", "month", "view_mode", "scope_mode", "category_id", "subcategory_id"],
+                ["budget_type", "budget_amount", "rollover_amount", "updated_at"],
+            )
+
+        db.commit()
+        flash("Budget changes saved.")
+        return redirect(url_for("budget_page", month=month_value, view=view_mode, scope=scope_mode))
+
+    @app.post("/budget/copy-last-month")
+    @login_required
+    def copy_budget_from_last_month():
+        month_value = parse_budget_month(request.form.get("month"))
+        view_mode = normalize_budget_view(request.form.get("view"))
+        scope_mode = normalize_budget_scope(request.form.get("scope"))
+        previous_month = (datetime.strptime(f"{month_value}-01", "%Y-%m-%d").date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+
+        db = get_db()
+        source_rows = db.execute(
+            """
+            SELECT category_id, subcategory_id, budget_type, budget_amount, rollover_amount
+            FROM monthly_budgets
+            WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ?
+            """,
+            (g.household_id, previous_month, view_mode, scope_mode),
+        ).fetchall()
+
+        for row in source_rows:
+            db.upsert(
+                "monthly_budgets",
+                [
+                    "household_id",
+                    "month",
+                    "view_mode",
+                    "scope_mode",
+                    "category_id",
+                    "subcategory_id",
+                    "budget_type",
+                    "budget_amount",
+                    "rollover_amount",
+                    "updated_at",
+                ],
+                [
+                    g.household_id,
+                    month_value,
+                    view_mode,
+                    scope_mode,
+                    row["category_id"],
+                    row["subcategory_id"],
+                    row["budget_type"],
+                    row["budget_amount"],
+                    row["rollover_amount"],
+                    datetime.utcnow().isoformat(),
+                ],
+                ["household_id", "month", "view_mode", "scope_mode", "category_id", "subcategory_id"],
+                ["budget_type", "budget_amount", "rollover_amount", "updated_at"],
+            )
+
+        db.commit()
+        flash("Copied budget settings from last month." if source_rows else "No budget settings found in last month.")
+        return redirect(url_for("budget_page", month=month_value, view=view_mode, scope=scope_mode))
 
     @app.post("/settlement-payments")
     @login_required

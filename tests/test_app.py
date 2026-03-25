@@ -4986,3 +4986,117 @@ def test_import_skipped_selected_with_empty_selection_is_safe(client):
         db = client.application.get_db()
         count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = ?", ("Freshco empty selection",)).fetchone()["c"]
         assert count == 1
+
+
+def test_budget_page_renders_with_defaults(client):
+    register(client)
+    login(client)
+
+    response = client.get("/budget")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Budget" in html
+    assert "Save budget changes" in html
+    assert "Copy from last month" in html
+
+
+def test_budget_save_and_summary_numbers(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute(
+            "SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'",
+            (1,),
+        ).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, paid_by, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (1, 1, "2026-03-05", -120.0, groceries, "DK"),
+        )
+        db.commit()
+
+    save_response = client.post(
+        "/budget/save",
+        data={
+            "month": "2026-03",
+            "view": "household",
+            "scope": "shared",
+            "row_key": [f"{groceries}:0"],
+            f"type_{groceries}:0": "Fixed",
+            f"budget_{groceries}:0": "300",
+            f"rollover_{groceries}:0": "10",
+        },
+        follow_redirects=True,
+    )
+    html = save_response.get_data(as_text=True)
+
+    assert save_response.status_code == 200
+    assert "Budget changes saved." in html
+    assert "$300.00" in html
+    assert "$120.00" in html
+    assert "$180.00" in html
+
+
+def test_budget_copy_from_last_month(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute(
+            "SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'",
+            (1,),
+        ).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO monthly_budgets (
+                household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, "2026-02", "household", "shared", groceries, 0, "Flexible", 450.0, 25.0),
+        )
+        db.commit()
+
+    response = client.post(
+        "/budget/copy-last-month",
+        data={"month": "2026-03", "view": "household", "scope": "shared"},
+        follow_redirects=True,
+    )
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Copied budget settings from last month." in html
+    assert "$450.00" in html
+    assert "25.00" in html
+
+
+def test_budget_view_and_scope_filters(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (1,)).fetchone()["id"]
+        personal = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Personal'", (1,)).fetchone()["id"]
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, paid_by, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+            (1, 1, "2026-03-01", -60.0, groceries, "DK"),
+        )
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, paid_by, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, 0, 1)",
+            (1, 1, "2026-03-02", -20.0, personal, "DK"),
+        )
+        db.commit()
+
+    shared_html = client.get("/budget?month=2026-03&view=household&scope=shared").get_data(as_text=True)
+    personal_html = client.get("/budget?month=2026-03&view=household&scope=personal").get_data(as_text=True)
+    dk_html = client.get("/budget?month=2026-03&view=dk&scope=all").get_data(as_text=True)
+
+    assert "$60.00" in shared_html
+    assert "$20.00" in personal_html
+    assert "$80.00" in dk_html

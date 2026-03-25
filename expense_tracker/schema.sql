@@ -91,6 +91,27 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_expenses_household_txn_hash
 ON expenses(household_id, txn_hash);
 
+CREATE TABLE IF NOT EXISTS monthly_budgets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    household_id INTEGER NOT NULL,
+    month TEXT NOT NULL,
+    view_mode TEXT NOT NULL,
+    scope_mode TEXT NOT NULL,
+    category_id INTEGER NOT NULL,
+    subcategory_id INTEGER NOT NULL DEFAULT 0,
+    budget_type TEXT NOT NULL,
+    budget_amount REAL NOT NULL DEFAULT 0,
+    rollover_amount REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(household_id, month, view_mode, scope_mode, category_id, subcategory_id),
+    FOREIGN KEY (household_id) REFERENCES households (id),
+    FOREIGN KEY (category_id) REFERENCES categories (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_monthly_budgets_household_month
+ON monthly_budgets(household_id, month);
+
 CREATE TABLE IF NOT EXISTS category_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
