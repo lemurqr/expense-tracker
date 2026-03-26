@@ -177,3 +177,14 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
   .spend-yoy-scope-toggle { width: 100%; }
   .spend-yoy-scope-button { flex: 1 1 0; text-align: center; }
 }
+
+.budget-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .6rem; margin-bottom: 1rem; }
+.budget-summary-card { padding: .75rem; }
+.budget-summary-card h3 { margin: 0; font-size: .95rem; }
+.budget-summary-card p { margin: .4rem 0 0; font-weight: 700; }
+.budget-over { color: #b42318; font-weight: 700; }
+.budget-table { width: 100%; font-size: .9rem; }
+.budget-table input, .budget-table select { width: 100%; max-width: 130px; }
+.budget-section-row td { background: #f5f6f8; }
+.budget-progress { width: 100%; max-width: 110px; height: 8px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+.budget-progress span { display: block; height: 100%; background: #2a7cff; }

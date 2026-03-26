@@ -1,0 +1,120 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <h2>Budget</h2>
+  <form method="get" class="inline-form">
+    <label>Month <input type="month" name="month" value="{{ month_value }}"></label>
+    <label>View
+      <select name="view">
+        <option value="household" {{ 'selected' if view_mode == 'household' else '' }}>Household</option>
+        <option value="dk" {{ 'selected' if view_mode == 'dk' else '' }}>DK</option>
+        <option value="yz" {{ 'selected' if view_mode == 'yz' else '' }}>YZ</option>
+      </select>
+    </label>
+    <label>Scope
+      <select name="scope">
+        <option value="shared" {{ 'selected' if scope_mode == 'shared' else '' }}>Shared</option>
+        <option value="personal" {{ 'selected' if scope_mode == 'personal' else '' }}>Personal</option>
+        <option value="all" {{ 'selected' if scope_mode == 'all' else '' }}>All</option>
+      </select>
+    </label>
+    <button type="submit">Apply</button>
+  </form>
+</section>
+
+<section class="budget-summary-grid">
+  <article class="card budget-summary-card">
+    <h3>Budgeted</h3>
+    <p>${{ '%.2f'|format(summary.budgeted) }}</p>
+  </article>
+  <article class="card budget-summary-card">
+    <h3>Actual</h3>
+    <p>${{ '%.2f'|format(summary.actual) }}</p>
+  </article>
+  <article class="card budget-summary-card {{ 'budget-over' if summary.is_over_budget else '' }}">
+    <h3>Remaining</h3>
+    <p>${{ '%.2f'|format(summary.remaining) }}</p>
+  </article>
+  <article class="card budget-summary-card">
+    <h3>Progress</h3>
+    <p>{{ '%.1f'|format(summary.progress) }}%</p>
+    <div class="budget-progress"><span style="width: {{ summary.progress }}%"></span></div>
+  </article>
+  <article class="card budget-summary-card">
+    <h3>Fixed budget</h3>
+    <p>${{ '%.2f'|format(summary.fixed_budget) }}</p>
+  </article>
+  <article class="card budget-summary-card">
+    <h3>Flexible left</h3>
+    <p>${{ '%.2f'|format(summary.flexible_left) }}</p>
+  </article>
+</section>
+
+<section class="card">
+  <div class="budget-actions">
+    <form method="post" action="{{ url_for('save_budget_settings') }}">
+      <input type="hidden" name="month" value="{{ month_value }}">
+      <input type="hidden" name="view" value="{{ view_mode }}">
+      <input type="hidden" name="scope" value="{{ scope_mode }}">
+      <button type="submit">Save budget changes</button>
+
+      <table class="budget-table">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Subcategory</th>
+            <th>Type</th>
+            <th>Budget</th>
+            <th>Actual</th>
+            <th>Remaining</th>
+            <th>Progress</th>
+            <th>Rollover</th>
+            <th>Last month</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for section_name, rows in budget_groups.items() %}
+            <tr class="budget-section-row">
+              <td colspan="9"><strong>{{ section_name }}</strong></td>
+            </tr>
+            {% for row in rows %}
+              {% set row_key = row.category_id ~ ':' ~ row.subcategory_id %}
+              <tr>
+                <td>{{ row.category_name }}</td>
+                <td>{{ row.subcategory_name }}</td>
+                <td>
+                  <input type="hidden" name="row_key" value="{{ row_key }}">
+                  <select name="type_{{ row_key }}">
+                    <option value="Fixed" {{ 'selected' if row.budget_type == 'Fixed' else '' }}>Fixed</option>
+                    <option value="Flexible" {{ 'selected' if row.budget_type == 'Flexible' else '' }}>Flexible</option>
+                    <option value="Non-monthly" {{ 'selected' if row.budget_type == 'Non-monthly' else '' }}>Non-monthly</option>
+                    <option value="Personal" {{ 'selected' if row.budget_type == 'Personal' else '' }}>Personal</option>
+                  </select>
+                </td>
+                <td><input type="number" step="0.01" name="budget_{{ row_key }}" value="{{ '%.2f'|format(row.budget_amount) }}"></td>
+                <td>${{ '%.2f'|format(row.actual) }}</td>
+                <td class="{{ 'budget-over' if row.remaining < 0 else '' }}">${{ '%.2f'|format(row.remaining) }}</td>
+                <td>
+                  <span>{{ '%.1f'|format(row.progress) }}%</span>
+                  <div class="budget-progress"><span style="width: {{ row.progress }}%"></span></div>
+                </td>
+                <td><input type="number" step="0.01" name="rollover_{{ row_key }}" value="{{ '%.2f'|format(row.rollover_amount) }}"></td>
+                <td>${{ '%.2f'|format(row.last_month_actual) }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="9">No rows in this section.</td></tr>
+            {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </form>
+
+    <form method="post" action="{{ url_for('copy_budget_from_last_month') }}" class="inline-form">
+      <input type="hidden" name="month" value="{{ month_value }}">
+      <input type="hidden" name="view" value="{{ view_mode }}">
+      <input type="hidden" name="scope" value="{{ scope_mode }}">
+      <button type="submit">Copy from last month ({{ last_month }})</button>
+    </form>
+  </div>
+</section>
+{% endblock %}
