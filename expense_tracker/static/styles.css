@@ -184,7 +184,30 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .budget-summary-card p { margin: .4rem 0 0; font-weight: 700; }
 .budget-over { color: #b42318; font-weight: 700; }
 .budget-table { width: 100%; font-size: .9rem; }
-.budget-table input, .budget-table select { width: 100%; max-width: 130px; }
+.budget-table th { text-align: left; }
+.budget-table .amount-col { text-align: right; white-space: nowrap; }
+.budget-table .category-col { min-width: 220px; }
+.budget-table .progress-col { min-width: 140px; }
+.budget-table select { width: 100%; max-width: 130px; }
+.budget-table .amount-input { width: 92px; max-width: 92px; text-align: right; }
 .budget-section-row td { background: #f5f6f8; }
+.budget-parent-row .category-col { font-weight: 600; }
+.budget-sub-row .category-col { font-weight: 500; }
+.budget-sub-label { opacity: .9; }
+.budget-collapse-toggle,
+.budget-collapse-spacer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  margin-right: .25rem;
+}
+.budget-collapse-toggle {
+  border: 0;
+  background: transparent;
+  color: #344054;
+  cursor: pointer;
+  padding: 0;
+}
 .budget-progress { width: 100%; max-width: 110px; height: 8px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
 .budget-progress span { display: block; height: 100%; background: #2a7cff; }

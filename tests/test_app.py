@@ -4999,6 +4999,7 @@ def test_budget_page_renders_with_defaults(client):
     assert "Budget" in html
     assert "Save budget changes" in html
     assert "Copy from last month" in html
+    assert "<th>Subcategory</th>" not in html
 
 
 def test_budget_save_and_summary_numbers(client):
@@ -5100,3 +5101,34 @@ def test_budget_view_and_scope_filters(client):
     assert "$60.00" in shared_html
     assert "$20.00" in personal_html
     assert "$80.00" in dk_html
+
+
+def test_budget_page_renders_nested_subcategory_rows(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (1,)).fetchone()["id"]
+        cursor = db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)",
+            (1, groceries, "Produce"),
+        )
+        subcategory_id = cursor.lastrowid
+        db.execute(
+            """
+            INSERT INTO monthly_budgets (
+                household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, "2026-03", "household", "shared", groceries, subcategory_id, "Flexible", 80.0, 0.0),
+        )
+        db.commit()
+
+    response = client.get("/budget?month=2026-03&view=household&scope=shared")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "budget-collapse-toggle" in html
+    assert "budget-sub-row" in html
+    assert "Produce" in html
