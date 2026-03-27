@@ -62,26 +62,34 @@
         <thead>
           <tr>
             <th>Category</th>
-            <th>Subcategory</th>
             <th>Type</th>
-            <th>Budget</th>
-            <th>Actual</th>
-            <th>Remaining</th>
+            <th class="amount-col">Budget</th>
+            <th class="amount-col">Actual</th>
+            <th class="amount-col">Remaining</th>
             <th>Progress</th>
-            <th>Rollover</th>
-            <th>Last month</th>
+            <th class="amount-col">Rollover</th>
+            <th class="amount-col">Last month</th>
           </tr>
         </thead>
         <tbody>
-          {% for section_name, rows in budget_groups.items() %}
+          {% for section_name, display_rows in budget_display_groups.items() %}
             <tr class="budget-section-row">
-              <td colspan="9"><strong>{{ section_name }}</strong></td>
+              <td colspan="8"><strong>{{ section_name }}</strong></td>
             </tr>
-            {% for row in rows %}
+            {% for row_group in display_rows %}
+              {% set row = row_group.parent %}
               {% set row_key = row.category_id ~ ':' ~ row.subcategory_id %}
-              <tr>
-                <td>{{ row.category_name }}</td>
-                <td>{{ row.subcategory_name }}</td>
+              {% set has_children = row_group.children|length > 0 %}
+              {% set group_key = section_name ~ '-' ~ row.category_id %}
+              <tr class="budget-parent-row">
+                <td class="category-col">
+                  {% if has_children %}
+                    <button type="button" class="budget-collapse-toggle" data-target="{{ group_key }}" aria-expanded="true" title="Collapse or expand subcategories">▾</button>
+                  {% else %}
+                    <span class="budget-collapse-spacer"></span>
+                  {% endif %}
+                  <span class="budget-label">{{ row.category_name }}</span>
+                </td>
                 <td>
                   <input type="hidden" name="row_key" value="{{ row_key }}">
                   <select name="type_{{ row_key }}">
@@ -91,18 +99,45 @@
                     <option value="Personal" {{ 'selected' if row.budget_type == 'Personal' else '' }}>Personal</option>
                   </select>
                 </td>
-                <td><input type="number" step="0.01" name="budget_{{ row_key }}" value="{{ '%.2f'|format(row.budget_amount) }}"></td>
-                <td>${{ '%.2f'|format(row.actual) }}</td>
-                <td class="{{ 'budget-over' if row.remaining < 0 else '' }}">${{ '%.2f'|format(row.remaining) }}</td>
-                <td>
+                <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ row_key }}" value="{{ '%.2f'|format(row.budget_amount) }}"></td>
+                <td class="amount-col">${{ '%.2f'|format(row.actual) }}</td>
+                <td class="amount-col {{ 'budget-over' if row.remaining < 0 else '' }}">${{ '%.2f'|format(row.remaining) }}</td>
+                <td class="progress-col">
                   <span>{{ '%.1f'|format(row.progress) }}%</span>
                   <div class="budget-progress"><span style="width: {{ row.progress }}%"></span></div>
                 </td>
-                <td><input type="number" step="0.01" name="rollover_{{ row_key }}" value="{{ '%.2f'|format(row.rollover_amount) }}"></td>
-                <td>${{ '%.2f'|format(row.last_month_actual) }}</td>
+                <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="rollover_{{ row_key }}" value="{{ '%.2f'|format(row.rollover_amount) }}"></td>
+                <td class="amount-col">${{ '%.2f'|format(row.last_month_actual) }}</td>
               </tr>
+              {% for child in row_group.children %}
+                {% set child_row_key = child.category_id ~ ':' ~ child.subcategory_id %}
+                <tr class="budget-sub-row" data-parent="{{ group_key }}">
+                  <td class="category-col">
+                    <span class="budget-collapse-spacer"></span>
+                    <span class="budget-label budget-sub-label">{{ child.subcategory_name }}</span>
+                  </td>
+                  <td>
+                    <input type="hidden" name="row_key" value="{{ child_row_key }}">
+                    <select name="type_{{ child_row_key }}">
+                      <option value="Fixed" {{ 'selected' if child.budget_type == 'Fixed' else '' }}>Fixed</option>
+                      <option value="Flexible" {{ 'selected' if child.budget_type == 'Flexible' else '' }}>Flexible</option>
+                      <option value="Non-monthly" {{ 'selected' if child.budget_type == 'Non-monthly' else '' }}>Non-monthly</option>
+                      <option value="Personal" {{ 'selected' if child.budget_type == 'Personal' else '' }}>Personal</option>
+                    </select>
+                  </td>
+                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ child_row_key }}" value="{{ '%.2f'|format(child.budget_amount) }}"></td>
+                  <td class="amount-col">${{ '%.2f'|format(child.actual) }}</td>
+                  <td class="amount-col {{ 'budget-over' if child.remaining < 0 else '' }}">${{ '%.2f'|format(child.remaining) }}</td>
+                  <td class="progress-col">
+                    <span>{{ '%.1f'|format(child.progress) }}%</span>
+                    <div class="budget-progress"><span style="width: {{ child.progress }}%"></span></div>
+                  </td>
+                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="rollover_{{ child_row_key }}" value="{{ '%.2f'|format(child.rollover_amount) }}"></td>
+                  <td class="amount-col">${{ '%.2f'|format(child.last_month_actual) }}</td>
+                </tr>
+              {% endfor %}
             {% else %}
-              <tr><td colspan="9">No rows in this section.</td></tr>
+              <tr><td colspan="8">No rows in this section.</td></tr>
             {% endfor %}
           {% endfor %}
         </tbody>
@@ -117,4 +152,17 @@
     </form>
   </div>
 </section>
+<script>
+  document.querySelectorAll(".budget-collapse-toggle").forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = button.dataset.target;
+      const expanded = button.getAttribute("aria-expanded") === "true";
+      document.querySelectorAll(`.budget-sub-row[data-parent="${target}"]`).forEach((row) => {
+        row.hidden = expanded;
+      });
+      button.setAttribute("aria-expanded", expanded ? "false" : "true");
+      button.textContent = expanded ? "▸" : "▾";
+    });
+  });
+</script>
 {% endblock %}

@@ -1760,7 +1760,7 @@ def create_app(test_config=None):
             budget_type = setting["budget_type"] if setting else default_type
             budget_amount = float(setting["budget_amount"] or 0) if setting else 0.0
             rollover_amount = float(setting["rollover_amount"] or 0) if setting else 0.0
-            actual = float(actual_map.get(key, 0.0))
+            actual = abs(float(actual_map.get(key, 0.0)))
             remaining = budget_amount - actual
             progress = 0 if budget_amount <= 0 else min(200, max(0, (actual / budget_amount) * 100))
             rows.append(
@@ -1788,7 +1788,7 @@ def create_app(test_config=None):
                 continue
             key = (category_id, subcategory_id)
             budget_amount = float(setting["budget_amount"] or 0)
-            actual = float(actual_map.get(key, 0.0))
+            actual = abs(float(actual_map.get(key, 0.0)))
             rows.append(
                 {
                     "category_id": category_id,
@@ -1809,6 +1809,31 @@ def create_app(test_config=None):
         for row in rows:
             groups[row["budget_type"] if row["budget_type"] in groups else "Flexible"].append(row)
 
+        grouped_display_rows = {}
+        for section_name, section_rows in groups.items():
+            parent_rows = sorted(
+                [row for row in section_rows if row["subcategory_id"] == 0],
+                key=lambda row: row["category_name"].lower(),
+            )
+            child_rows_by_category = {}
+            for row in section_rows:
+                if row["subcategory_id"] == 0:
+                    continue
+                child_rows_by_category.setdefault(row["category_id"], []).append(row)
+            for child_rows in child_rows_by_category.values():
+                child_rows.sort(key=lambda row: row["subcategory_name"].lower())
+
+            section_display_rows = []
+            for parent_row in parent_rows:
+                child_rows = child_rows_by_category.get(parent_row["category_id"], [])
+                section_display_rows.append(
+                    {
+                        "parent": parent_row,
+                        "children": child_rows,
+                    }
+                )
+            grouped_display_rows[section_name] = section_display_rows
+
         budgeted_total = round(sum(row["budget_amount"] for row in rows), 2)
         actual_total = round(sum(row["actual"] for row in rows), 2)
         remaining_total = round(budgeted_total - actual_total, 2)
@@ -1818,6 +1843,7 @@ def create_app(test_config=None):
 
         return {
             "groups": groups,
+            "display_groups": grouped_display_rows,
             "rows": rows,
             "summary": {
                 "budgeted": budgeted_total,
@@ -2954,6 +2980,7 @@ def create_app(test_config=None):
             view_mode=view_mode,
             scope_mode=scope_mode,
             budget_groups=budget_data["groups"],
+            budget_display_groups=budget_data["display_groups"],
             summary=budget_data["summary"],
             last_month=budget_data["last_month"],
         )
