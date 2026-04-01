@@ -3947,21 +3947,51 @@ def create_app(test_config=None):
     @login_required
     def delete_category(category_id):
         db = get_db()
-        db.execute(
-            "UPDATE expenses SET subcategory_id = NULL WHERE category_id = ? AND user_id = ?",
+        category = db.execute(
+            "SELECT id FROM categories WHERE id = ? AND user_id = ?",
             (category_id, g.user["id"]),
-        )
-        db.execute(
-            "UPDATE expenses SET category_id = NULL WHERE category_id = ? AND user_id = ?",
+        ).fetchone()
+        if category is None:
+            flash("Category not found.")
+            return redirect(url_for("categories"))
+
+        linked_expenses = db.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM expenses e
+            LEFT JOIN subcategories sc ON sc.id = e.subcategory_id
+            WHERE e.user_id = ? AND (e.category_id = ? OR sc.category_id = ?)
+            """,
+            (g.user["id"], category_id, category_id),
+        ).fetchone()["c"]
+        if linked_expenses:
+            flash("Cannot delete category while expenses still reference it.")
+            return redirect(url_for("categories"))
+
+        subcategory_rows = db.execute(
+            "SELECT id FROM subcategories WHERE category_id = ? AND user_id = ?",
             (category_id, g.user["id"]),
-        )
+        ).fetchall()
+        subcategory_ids = [row["id"] for row in subcategory_rows]
+
+        db.execute("DELETE FROM monthly_budgets WHERE category_id = ?", (category_id,))
+        if subcategory_ids:
+            placeholders = ",".join("?" for _ in subcategory_ids)
+            db.execute(
+                f"DELETE FROM monthly_budgets WHERE subcategory_id IN ({placeholders})",
+                tuple(subcategory_ids),
+            )
         db.execute(
             "DELETE FROM subcategories WHERE category_id = ? AND user_id = ?",
             (category_id, g.user["id"]),
         )
-        db.execute("DELETE FROM categories WHERE id = ? AND user_id = ?", (category_id, g.user["id"]))
-        db.commit()
-        flash("Category deleted.")
+        try:
+            db.execute("DELETE FROM categories WHERE id = ? AND user_id = ?", (category_id, g.user["id"]))
+            db.commit()
+            flash("Category deleted.")
+        except DB_INTEGRITY_ERRORS:
+            db.rollback()
+            flash("Category could not be deleted due to related data.")
         return redirect(url_for("categories"))
 
     @app.route("/export/csv")

@@ -1805,6 +1805,89 @@ def test_subcategory_rollup_and_category_page_subcategory_crud(client):
     assert b"Cannot delete subcategory while expenses still reference it." in blocked_delete.data
 
 
+def test_category_delete_blocked_when_expenses_reference_category(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+
+    response = client.post(
+        f"/categories/{groceries_id}/delete",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Cannot delete category while expenses still reference it." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        still_exists = db.execute("SELECT id FROM categories WHERE id = ?", (groceries_id,)).fetchone()
+        assert still_exists is not None
+
+
+def test_category_delete_removes_subcategories_and_budget_rows_without_500(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        household_id = db.execute("SELECT household_id FROM household_members WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()[
+            "household_id"
+        ]
+
+        db.execute(
+            "DELETE FROM expenses WHERE user_id = ? AND category_id = ?",
+            (user_id, groceries_id),
+        )
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, groceries_id, "Delete Me", datetime.utcnow().isoformat()),
+        )
+        subcategory_id = db.last_insert_id()
+        db.execute(
+            """
+            INSERT INTO monthly_budgets
+            (household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (household_id, "2026-04", "household", "shared", groceries_id, 0, "Flexible", 100, 0),
+        )
+        db.execute(
+            """
+            INSERT INTO monthly_budgets
+            (household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (household_id, "2026-04", "household", "shared", groceries_id, subcategory_id, "Flexible", 50, 0),
+        )
+        db.commit()
+
+    response = client.post(
+        f"/categories/{groceries_id}/delete",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Category deleted." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        category_row = db.execute("SELECT id FROM categories WHERE id = ?", (groceries_id,)).fetchone()
+        subcategory_row = db.execute("SELECT id FROM subcategories WHERE id = ?", (subcategory_id,)).fetchone()
+        budget_rows = db.execute(
+            "SELECT COUNT(*) AS c FROM monthly_budgets WHERE category_id = ? OR subcategory_id = ?",
+            (groceries_id, subcategory_id),
+        ).fetchone()["c"]
+
+        assert category_row is None
+        assert subcategory_row is None
+        assert budget_rows == 0
+
+
 def test_categories_csv_export_includes_categories_with_and_without_subcategories(client):
     register(client)
     login(client)
