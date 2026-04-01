@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS expenses (
     description TEXT,
     vendor TEXT,
     paid_by TEXT,
+    scope TEXT NOT NULL DEFAULT 'shared',
     is_transfer INTEGER NOT NULL DEFAULT 0,
     is_personal INTEGER NOT NULL DEFAULT 0,
     category_confidence INTEGER,

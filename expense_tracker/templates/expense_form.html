@@ -13,6 +13,7 @@
     <input type="hidden" name="tx_amount_min" value="{{ filter_params.tx_amount_min if filter_params else "" }}">
     <input type="hidden" name="tx_amount_max" value="{{ filter_params.tx_amount_max if filter_params else "" }}">
     <input type="hidden" name="tx_paid_by" value="{{ filter_params.tx_paid_by if filter_params else "" }}">
+    <input type="hidden" name="tx_scope" value="{{ filter_params.tx_scope if filter_params else "" }}">
     <input type="hidden" name="tx_category_id" value="{{ filter_params.tx_category_id if filter_params else "" }}">
     <input type="hidden" name="tx_vendor_q" value="{{ filter_params.tx_vendor_q if filter_params else "" }}">
     <input type="hidden" name="tx_description_q" value="{{ filter_params.tx_description_q if filter_params else "" }}">
@@ -51,6 +52,13 @@
         <option value="" {% if not expense or not expense.paid_by %}selected{% endif %}>-- Select --</option>
         <option value="DK" {% if expense and expense.paid_by == 'DK' %}selected{% endif %}>DK</option>
         <option value="YZ" {% if expense and expense.paid_by == 'YZ' %}selected{% endif %}>YZ</option>
+      </select>
+    </label>
+    <label>Scope
+      <select name="scope" required>
+        <option value="shared" {% if (expense and expense.scope == 'shared') or not expense %}selected{% endif %}>Shared</option>
+        <option value="dk_personal" {% if expense and expense.scope == 'dk_personal' %}selected{% endif %}>DK Personal</option>
+        <option value="yz_personal" {% if expense and expense.scope == 'yz_personal' %}selected{% endif %}>YZ Personal</option>
       </select>
     </label>
     <button type="submit">Save</button>

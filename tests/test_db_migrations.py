@@ -262,3 +262,54 @@ def test_migration_010_adds_selection_and_txn_hash_indexes(tmp_path):
     assert "txn_hash" in expense_cols
     assert "uq_expenses_household_txn_hash" in indexes
     conn.close()
+
+
+def test_migration_015_adds_scope_and_backfills_personal_rows(tmp_path):
+    db_path = tmp_path / "migration_015.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        );
+        CREATE TABLE categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            household_id INTEGER,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            category_id INTEGER,
+            paid_by TEXT
+        );
+
+        INSERT INTO users(id, username, password_hash) VALUES (1, 'u1', 'x');
+        INSERT INTO categories(id, user_id, name) VALUES (1, 1, 'Personal');
+        INSERT INTO categories(id, user_id, name) VALUES (2, 1, 'Groceries');
+        INSERT INTO expenses(id, user_id, household_id, date, amount, category_id, paid_by) VALUES (1, 1, 1, '2026-01-01', -10.0, 1, 'DK');
+        INSERT INTO expenses(id, user_id, household_id, date, amount, category_id, paid_by) VALUES (2, 1, 1, '2026-01-02', -20.0, 1, 'YZ');
+        INSERT INTO expenses(id, user_id, household_id, date, amount, category_id, paid_by) VALUES (3, 1, 1, '2026-01-03', -30.0, 1, '');
+        INSERT INTO expenses(id, user_id, household_id, date, amount, category_id, paid_by) VALUES (4, 1, 1, '2026-01-04', -40.0, 2, 'DK');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    apply_migrations(str(db_path))
+
+    conn = sqlite3.connect(db_path)
+    scopes = {
+        row[0]: row[1]
+        for row in conn.execute("SELECT id, scope FROM expenses ORDER BY id ASC").fetchall()
+    }
+    assert scopes[1] == "dk_personal"
+    assert scopes[2] == "yz_personal"
+    assert scopes[3] == "shared"
+    assert scopes[4] == "shared"
+    conn.close()

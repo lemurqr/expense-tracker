@@ -285,6 +285,16 @@ def normalize_paid_by(value):
     return ""
 
 
+EXPENSE_SCOPE_OPTIONS = {"shared", "dk_personal", "yz_personal"}
+
+
+def normalize_expense_scope(value, default="shared"):
+    cleaned = (value or "").strip().lower()
+    if cleaned in EXPENSE_SCOPE_OPTIONS:
+        return cleaned
+    return default
+
+
 def extract_embedded_amount(description):
     text = (description or "").strip()
     match = re.search(r"(?<!\d)([-+]?\d[\d,]*\.\d{1,2})(?!\d)", text)
@@ -1454,6 +1464,7 @@ def create_app(test_config=None):
         tx_amount_min = (args.get("tx_amount_min") or "").strip()
         tx_amount_max = (args.get("tx_amount_max") or "").strip()
         tx_paid_by = (args.get("tx_paid_by") or "").strip().upper()
+        tx_scope = normalize_expense_scope(args.get("tx_scope"), default="")
         tx_category_id = (args.get("tx_category_id") or "").strip()
         tx_vendor_q = (args.get("tx_vendor_q") or "").strip()
         tx_description_q = (args.get("tx_description_q") or "").strip()
@@ -1564,6 +1575,10 @@ def create_app(test_config=None):
         elif tx_paid_by == "BLANK":
             tx_sql_parts.append("COALESCE(TRIM(e.paid_by), '') = ''")
 
+        if tx_scope in EXPENSE_SCOPE_OPTIONS:
+            tx_sql_parts.append("e.scope = ?")
+            tx_params.append(tx_scope)
+
         if tx_category_id:
             if tx_category_id == "uncategorized":
                 tx_sql_parts.append("e.category_id IS NULL")
@@ -1618,6 +1633,7 @@ def create_app(test_config=None):
             "tx_amount_min": tx_amount_min,
             "tx_amount_max": tx_amount_max,
             "tx_paid_by": tx_paid_by if tx_paid_by in {"DK", "YZ", "BLANK"} else "",
+            "tx_scope": tx_scope if tx_scope in EXPENSE_SCOPE_OPTIONS else "",
             "tx_category_id": tx_category_id,
             "tx_vendor_q": tx_vendor_q,
             "tx_description_q": tx_description_q,
@@ -1664,6 +1680,7 @@ def create_app(test_config=None):
             "tx_amount_min",
             "tx_amount_max",
             "tx_paid_by",
+            "tx_scope",
             "tx_category_id",
             "tx_vendor_q",
             "tx_description_q",
@@ -1703,9 +1720,9 @@ def create_app(test_config=None):
             where_parts.append("e.paid_by = ?")
             params.append(view_mode.upper())
         if scope_mode == "shared":
-            where_parts.append("e.is_personal = 0")
+            where_parts.append("e.scope = 'shared'")
         elif scope_mode == "personal":
-            where_parts.append("e.is_personal = 1")
+            where_parts.append("e.scope IN ('dk_personal', 'yz_personal')")
         return where_parts, params
 
     def _fetch_budget_settings(db, month_value, view_mode, scope_mode):
@@ -1867,7 +1884,7 @@ def create_app(test_config=None):
 
     def _fetch_settlement_expense_totals(db, household_id, start_date=None, end_date=None, before_date=None):
         pet_placeholders = ", ".join(["?"] * len(PET_CATEGORIES))
-        where_parts = ["e.household_id = ?", "e.is_transfer = 0", "e.is_personal = 0"]
+        where_parts = ["e.household_id = ?", "e.is_transfer = 0", "e.scope = 'shared'"]
         params = [household_id]
         if before_date:
             where_parts.append("e.date < ?")
@@ -1972,7 +1989,7 @@ def create_app(test_config=None):
             SELECT COALESCE(c.name, 'Uncategorized') AS category, {rounded_total_sql} AS total
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE {filter_sql} AND e.is_transfer = 0 AND e.is_personal = 0
+            WHERE {filter_sql} AND e.is_transfer = 0 AND e.scope = 'shared'
             GROUP BY COALESCE(c.name, 'Uncategorized')
             HAVING SUM(-e.amount) > 0
             ORDER BY total DESC, category ASC
@@ -2069,7 +2086,7 @@ def create_app(test_config=None):
             LEFT JOIN categories c ON e.category_id = c.id
             WHERE e.household_id = ?
               AND e.is_transfer = 0
-              AND e.is_personal = 0
+              AND e.scope = 'shared'
               AND e.date >= ?
               AND e.date <= ?
             GROUP BY c.id, COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized')
@@ -2097,7 +2114,7 @@ def create_app(test_config=None):
             JOIN subcategories sc ON e.subcategory_id = sc.id
             WHERE e.household_id = ?
               AND e.is_transfer = 0
-              AND e.is_personal = 0
+              AND e.scope = 'shared'
               AND e.date >= ?
               AND e.date <= ?
             GROUP BY c.id, sc.id, COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory')
@@ -2380,7 +2397,7 @@ def create_app(test_config=None):
                 COALESCE(SUM(-e.amount), 0) AS total_settlement_expenses
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.household_id = ? AND e.is_transfer = 0 AND e.is_personal = 0 AND e.date LIKE ?
+            WHERE e.household_id = ? AND e.is_transfer = 0 AND e.scope = 'shared' AND e.date LIKE ?
             """,
             tuple(PET_CATEGORIES * 5 + [household_id, month_prefix]),
         ).fetchone()
@@ -2425,7 +2442,7 @@ def create_app(test_config=None):
             FROM expenses
             WHERE household_id = ?
               AND is_transfer = 0
-              AND is_personal = 0
+              AND scope = 'shared'
               AND date >= ? AND date <= ?
             ORDER BY month ASC
             """,
@@ -2436,7 +2453,7 @@ def create_app(test_config=None):
             FROM expenses
             WHERE household_id = ?
               AND is_transfer = 0
-              AND is_personal = 0
+              AND scope = 'shared'
               AND date LIKE ?
             ORDER BY month ASC
             """,
@@ -2893,7 +2910,7 @@ def create_app(test_config=None):
             """
             SELECT e.id, e.date, e.amount, e.vendor, e.description, c.name as category,
                    sc.name AS subcategory, e.updated_at,
-                   e.category_confidence, e.category_source, e.paid_by
+                   e.category_confidence, e.category_source, e.paid_by, e.scope
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
             LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
@@ -3212,6 +3229,7 @@ def create_app(test_config=None):
             expense_date = request.form["date"]
             amount = request.form["amount"]
             paid_by = normalize_paid_by(request.form.get("paid_by", ""))
+            scope = normalize_expense_scope(request.form.get("scope", ""), default="shared")
             category_id = request.form.get("category_id") or None
             submitted_subcategory_id = request.form.get("subcategory_id") or None
             vendor = request.form.get("vendor", "").strip()
@@ -3280,14 +3298,22 @@ def create_app(test_config=None):
                     subcategories_by_category=subcategories_by_category,
                     expense=None,
                 )
+            if scope not in EXPENSE_SCOPE_OPTIONS:
+                flash("Scope must be Shared, DK Personal, or YZ Personal.")
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=None,
+                )
 
             db.execute(
                 """
                 INSERT INTO expenses (
                     user_id, household_id, date, amount, category_id, subcategory_id, description, vendor, paid_by,
-                    is_transfer, is_personal, category_confidence, category_source, tags
+                    scope, is_transfer, is_personal, category_confidence, category_source, tags
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     g.user["id"],
@@ -3299,6 +3325,7 @@ def create_app(test_config=None):
                     description,
                     vendor,
                     paid_by,
+                    scope,
                     1 if is_transfer_transaction(description, resolved_category) else 0,
                     1 if resolved_category == "Personal" else 0,
                     categorization["confidence"],
@@ -3407,6 +3434,7 @@ def create_app(test_config=None):
             expense_date = request.form["date"]
             amount = request.form["amount"]
             paid_by = normalize_paid_by(request.form.get("paid_by", ""))
+            scope = normalize_expense_scope(request.form.get("scope", ""), default="shared")
             category_id = request.form.get("category_id") or None
             submitted_subcategory_id = request.form.get("subcategory_id") or None
             vendor = request.form.get("vendor", "").strip()
@@ -3482,12 +3510,21 @@ def create_app(test_config=None):
                     expense=expense,
                     filter_params=redirect_params,
                 )
+            if scope not in EXPENSE_SCOPE_OPTIONS:
+                flash("Scope must be Shared, DK Personal, or YZ Personal.")
+                return render_template(
+                    "expense_form.html",
+                    categories=categories,
+                    subcategories_by_category=subcategories_by_category,
+                    expense=expense,
+                    filter_params=redirect_params,
+                )
 
             result = db.execute(
                 """
                 UPDATE expenses
                 SET date = ?, amount = ?, category_id = ?, subcategory_id = ?, description = ?, vendor = ?, is_transfer = ?, is_personal = ?,
-                    category_confidence = ?, category_source = ?, tags = ?, paid_by = ?, updated_at = CURRENT_TIMESTAMP
+                    category_confidence = ?, category_source = ?, tags = ?, paid_by = ?, scope = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND household_id = ? AND COALESCE(updated_at, '') = ?
                 """,
                 (
@@ -3503,6 +3540,7 @@ def create_app(test_config=None):
                     categorization["source"],
                     json.dumps(derive_tags(description)),
                     paid_by,
+                    scope,
                     expense_id,
                     g.household_id,
                     effective_updated_at,
@@ -4665,7 +4703,7 @@ def create_app(test_config=None):
                         "expenses",
                         [
                             "user_id", "household_id", "date", "amount", "category_id", "subcategory_id", "description", "vendor", "paid_by",
-                            "is_transfer", "is_personal", "category_confidence", "category_source", "tags", "txn_hash",
+                            "scope", "is_transfer", "is_personal", "category_confidence", "category_source", "tags", "txn_hash",
                         ],
                         [
                             g.user["id"],
@@ -4677,6 +4715,7 @@ def create_app(test_config=None):
                             row["description"],
                             row.get("vendor", "") or derive_vendor(row.get("description", "")),
                             row.get("paid_by", ""),
+                            "shared",
                             1 if is_transfer else 0,
                             1 if is_personal else 0,
                             categorized["confidence"],

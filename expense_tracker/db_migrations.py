@@ -34,6 +34,7 @@ REQUIRED_TABLES = {
             "paid_by",
             "household_id",
             "reviewed",
+            "scope",
             "category_confidence",
             "category_source",
             "txn_hash",
@@ -784,6 +785,27 @@ def migration_014(conn):
     )
 
 
+def migration_015(conn):
+    add_column_if_missing(conn, "expenses", "scope TEXT NOT NULL DEFAULT 'shared'")
+    conn.execute("UPDATE expenses SET scope = 'shared' WHERE scope IS NULL OR TRIM(scope) = ''")
+    conn.execute(
+        """
+        UPDATE expenses
+        SET scope = CASE
+            WHEN UPPER(COALESCE(paid_by, '')) = 'DK' THEN 'dk_personal'
+            WHEN UPPER(COALESCE(paid_by, '')) = 'YZ' THEN 'yz_personal'
+            ELSE 'shared'
+        END
+        WHERE category_id IN (
+            SELECT id FROM categories WHERE LOWER(name) = 'personal'
+        )
+        """
+    )
+    conn.execute(
+        "UPDATE expenses SET scope = 'shared' WHERE scope NOT IN ('shared', 'dk_personal', 'yz_personal')"
+    )
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
@@ -799,6 +821,7 @@ MIGRATIONS = [
     (12, migration_012),
     (13, migration_013),
     (14, migration_014),
+    (15, migration_015),
 ]
 
 

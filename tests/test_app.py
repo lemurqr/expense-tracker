@@ -2592,10 +2592,16 @@ def _insert_expense(client, *, date, amount, category, paid_by=None, is_transfer
             "SELECT id FROM categories WHERE user_id = ? AND name = ?",
             (user_id, category),
         ).fetchone()
+        scope = "shared"
+        if category == "Personal":
+            if paid_by == "DK":
+                scope = "dk_personal"
+            elif paid_by == "YZ":
+                scope = "yz_personal"
         db.execute(
             """
-            INSERT INTO expenses (user_id, date, amount, category_id, description, paid_by, is_transfer, is_personal)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO expenses (user_id, date, amount, category_id, description, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 user_id,
@@ -2604,6 +2610,7 @@ def _insert_expense(client, *, date, amount, category, paid_by=None, is_transfer
                 category_row["id"] if category_row else None,
                 f"{category} test",
                 paid_by if paid_by is not None else "",
+                scope,
                 is_transfer,
                 1 if category == "Personal" else 0,
             ),
@@ -2942,6 +2949,78 @@ def test_manual_add_edit_paid_by_saved_and_shown_on_dashboard(client):
     dashboard = client.get("/dashboard?month=2026-03")
     assert b"Manual" in dashboard.data
     assert b">YZ<" in dashboard.data
+
+
+def test_manual_add_and_edit_scope_saved(client):
+    register(client)
+    login(client)
+
+    add_response = client.post(
+        "/expenses/new",
+        data={"date": "2026-03-05", "amount": "21", "category_id": "", "description": "Scoped", "paid_by": "DK", "scope": "dk_personal"},
+        follow_redirects=True,
+    )
+    assert b"Expense added" in add_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense = db.execute("SELECT id, scope FROM expenses WHERE description = 'Scoped'").fetchone()
+        assert expense["scope"] == "dk_personal"
+        expense_id = expense["id"]
+
+    edit_response = client.post(
+        f"/expenses/{expense_id}/edit",
+        data={"date": "2026-03-05", "amount": "21", "category_id": "", "description": "Scoped", "paid_by": "DK", "scope": "shared"},
+        follow_redirects=True,
+    )
+    assert b"Expense updated" in edit_response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        updated_scope = db.execute("SELECT scope FROM expenses WHERE id = ?", (expense_id,)).fetchone()["scope"]
+    assert updated_scope == "shared"
+
+
+def test_dashboard_scope_filter(client):
+    register(client)
+    login(client)
+
+    client.post("/expenses/new", data={"date": "2026-03-01", "amount": "20", "category_id": "", "description": "Shared Row", "scope": "shared"}, follow_redirects=True)
+    client.post("/expenses/new", data={"date": "2026-03-02", "amount": "10", "category_id": "", "description": "DK Personal Row", "scope": "dk_personal", "paid_by": "DK"}, follow_redirects=True)
+
+    response = client.get("/dashboard?month=2026-03&tx_scope=dk_personal")
+    html = response.get_data(as_text=True)
+    assert "DK Personal Row" in html
+    assert "Shared Row" not in html
+
+
+def test_settlement_uses_scope_and_excludes_personal_scopes(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = 'user1'").fetchone()["id"]
+        groceries_id = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (user_id,)).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, 1, "2026-04-01", -100.0, groceries_id, "Shared expense", "DK", "shared"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, 1, "2026-04-02", -500.0, groceries_id, "Personal expense", "DK", "dk_personal"),
+        )
+        db.commit()
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+    assert "Total shared expenses (DK+YZ)</td><td>$100.00" in text
 
 
 
