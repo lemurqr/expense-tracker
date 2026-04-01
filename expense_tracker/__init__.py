@@ -3933,22 +3933,44 @@ def create_app(test_config=None):
         db = get_db()
 
         query = """
-            SELECT e.date, e.amount, COALESCE(c.name, 'Uncategorized') as category, e.description
+            SELECT
+                e.date,
+                e.amount,
+                e.paid_by,
+                COALESCE(c.name, 'Uncategorized') AS category,
+                sc.name AS subcategory,
+                e.vendor,
+                e.description,
+                e.category_confidence AS confidence,
+                e.category_source AS source
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE {filter_sql}
+            LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
+            WHERE {filter_sql} AND {tx_filter_sql}
         """
-        query = query.format(filter_sql=filters["filter_sql"])
-        params = list(filters["params"])
+        query = query.format(filter_sql=filters["filter_sql"], tx_filter_sql=filters["tx_filter_sql"])
+        params = list(filters["params"] + filters["tx_params"])
 
         query += " ORDER BY e.date ASC"
         rows = db.execute(query, tuple(params)).fetchall()
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["date", "amount", "category", "description"])
+        writer.writerow(["date", "amount", "paid_by", "category", "subcategory", "vendor", "description", "confidence", "source"])
         for row in rows:
-            writer.writerow([row["date"], row["amount"], row["category"], row["description"]])
+            writer.writerow(
+                [
+                    row["date"],
+                    row["amount"],
+                    row["paid_by"],
+                    row["category"],
+                    row["subcategory"],
+                    row["vendor"],
+                    row["description"],
+                    row["confidence"],
+                    row["source"],
+                ]
+            )
 
         return Response(
             output.getvalue(),

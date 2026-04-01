@@ -556,7 +556,7 @@ def test_category_expense_crud_and_export(client):
 
     csv_response = client.get("/export/csv")
     assert csv_response.status_code == 200
-    assert b"date,amount,category,description" in csv_response.data
+    assert b"date,amount,paid_by,category,subcategory,vendor,description,confidence,source" in csv_response.data
     assert b"Updated" in csv_response.data
 
     delete_response = client.post(f"/expenses/{expense_id}/delete", follow_redirects=True)
@@ -629,6 +629,73 @@ def test_export_csv_respects_date_range(client):
     assert csv_response.status_code == 200
     assert b"In CSV" in csv_response.data
     assert b"Out CSV" not in csv_response.data
+
+
+def test_export_csv_includes_extended_columns_and_respects_dashboard_tx_filters(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        household_id = db.execute("SELECT household_id FROM household_members WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()[
+            "household_id"
+        ]
+        category_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries' AND user_id = ?", (user_id,)).fetchone()["id"]
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, category_id, "Produce", datetime.utcnow().isoformat()),
+        )
+        subcategory_id = db.last_insert_id()
+        db.execute(
+            """
+            INSERT INTO expenses
+                (user_id, household_id, date, amount, category_id, subcategory_id, description, vendor, paid_by, category_confidence, category_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                household_id,
+                "2026-02-15",
+                -42.75,
+                category_id,
+                subcategory_id,
+                "Honeycrisp apples",
+                "Fresh Farm",
+                "DK",
+                88,
+                "manual",
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses
+                (user_id, household_id, date, amount, category_id, description, vendor, paid_by, category_confidence, category_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                household_id,
+                "2026-02-16",
+                -9.50,
+                category_id,
+                "Should be filtered out",
+                "Other Store",
+                "YZ",
+                55,
+                "rule",
+            ),
+        )
+        db.commit()
+
+    csv_response = client.get("/export/csv?start=2026-02-01&end=2026-02-28&tx_vendor_q=fresh")
+    assert csv_response.status_code == 200
+    text = csv_response.get_data(as_text=True)
+    rows = list(csv.reader(io.StringIO(text)))
+
+    assert rows[0] == ["date", "amount", "paid_by", "category", "subcategory", "vendor", "description", "confidence", "source"]
+    assert len(rows) == 2
+    assert rows[1] == ["2026-02-15", "-42.75", "DK", "Groceries", "Produce", "Fresh Farm", "Honeycrisp apples", "88", "manual"]
 
 
 def test_settlement_respects_date_range(client):
