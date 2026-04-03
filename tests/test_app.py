@@ -290,6 +290,57 @@ def test_import_preview_large_show_all_checkbox_state_persists_after_submit(clie
     assert 'name="confirm_show_all" value="1" checked' in both_checked_html
 
 
+def test_import_preview_large_show_all_rerun_with_duplicate_checkbox_params_renders_full_rows(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(655):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-02-01",
+                "amount": -10.0 - idx,
+                "description": f"Large Merchant {idx}",
+                "normalized_description": f"large merchant {idx}",
+                "vendor": f"Large Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-large-655-duplicate-flags")
+
+    limited = client.get(f"/import/csv?import_id={import_id}&show_all=0&confirm_show_all=0")
+    limited_html = limited.get_data(as_text=True)
+    assert limited.status_code == 200
+    assert "Showing 25 of 655 rows" in limited_html
+    assert limited_html.count('class="preview-row"') == 25
+
+    rerun = client.get(
+        f"/import/csv?import_id={import_id}&show_all=0&show_all=1&confirm_show_all=0&confirm_show_all=1"
+    )
+    rerun_html = rerun.get_data(as_text=True)
+    assert rerun.status_code == 200
+    assert "Showing 655 of 655 rows" in rerun_html
+    assert rerun_html.count('class="preview-row"') == 655
+    assert 'name="show_all" value="1" checked' in rerun_html
+    assert 'name="confirm_show_all" value="1" checked' in rerun_html
+
+    rerun_again = client.get(
+        f"/import/csv?import_id={import_id}&show_all=0&show_all=1&confirm_show_all=0&confirm_show_all=1"
+    )
+    rerun_again_html = rerun_again.get_data(as_text=True)
+    assert rerun_again.status_code == 200
+    assert "Showing 655 of 655 rows" in rerun_again_html
+    assert rerun_again_html.count('class="preview-row"') == 655
+    assert 'name="show_all" value="1" checked' in rerun_again_html
+    assert 'name="confirm_show_all" value="1" checked' in rerun_again_html
+
+
 
 def test_import_preview_selection_works_without_show_all_toggle(client):
     register(client)
