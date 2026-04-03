@@ -22,12 +22,22 @@
     <div class="spend-details-toolbar">
       <div class="spend-view-toggle" role="group" aria-label="Spend details mode">
         <button type="button" class="spend-view-button active" data-spend-detail-mode="mix" aria-pressed="true">Spend Mix</button>
+        <button type="button" class="spend-view-button" data-spend-detail-mode="trend" aria-pressed="false">Trend</button>
         <button type="button" class="spend-view-button" data-spend-detail-mode="period-vs-ly" aria-pressed="false">Period vs LY</button>
         <button type="button" class="spend-view-button" data-spend-detail-mode="yoy" aria-pressed="false">YoY</button>
       </div>
     </div>
   </div>
   <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.period_label }}</p>
+  <div class="spend-summary-row" id="spend-summary-row">
+    <div class="spend-summary-item"><span class="spend-summary-label">Total spend</span><strong id="spend-summary-total">$0.00</strong></div>
+    <div class="spend-summary-item"><span class="spend-summary-label">Avg / month</span><strong id="spend-summary-average">$0.00</strong></div>
+    <label class="spend-category-filter">Category
+      <select id="spend-category-select">
+        <option value="">All categories</option>
+      </select>
+    </label>
+  </div>
 
   <div class="spend-details-chart-panel">
     <div class="spend-details-back-row" id="spend-details-back-row" hidden>
@@ -101,6 +111,12 @@
       {% endfor %}
     </tbody>
   </table>
+  </div>
+  <div class="spend-trend-table-wrap" id="spend-trend-table-wrap" hidden>
+    <table class="spend-trend-table">
+      <thead id="spend-trend-table-head"></thead>
+      <tbody id="spend-trend-table-body"></tbody>
+    </table>
   </div>
 </section>
 
@@ -610,7 +626,15 @@
       const yoyComparisonHeading = document.getElementById('spend-yoy-comparison-heading');
       const yoyDeltaHeading = document.getElementById('spend-yoy-delta-heading');
       const spendDetailsBreakdown = document.getElementById('spend-details-breakdown');
+      const spendTrendTableWrap = document.getElementById('spend-trend-table-wrap');
+      const spendTrendTableHead = document.getElementById('spend-trend-table-head');
+      const spendTrendTableBody = document.getElementById('spend-trend-table-body');
+      const spendCategorySelect = document.getElementById('spend-category-select');
+      const spendSummaryRow = document.getElementById('spend-summary-row');
+      const spendSummaryTotal = document.getElementById('spend-summary-total');
+      const spendSummaryAverage = document.getElementById('spend-summary-average');
       let spendDetailMode = 'mix';
+      let spendSelectedCategory = '';
       let yoyDrilldownKey = null;
       let expandedComparisonRows = {};
       let sharedChart = null;
@@ -622,12 +646,24 @@
       const formatCurrency = (value) => `$${Number(value).toFixed(2)}`;
       const emptyCopy = {
         mix: 'No shared expenses in selected period.',
+        trend: 'No shared expense trend data in selected period.',
         'period-vs-ly': 'No category data for the selected period versus last year.',
         yoy: 'No year-over-year category data through the selected end date.'
       };
 
       function shortenLabel(label, maxLength = maxLabelLength) {
         return label.length > maxLength ? `${label.slice(0, maxLength - 1).trimEnd()}…` : label;
+      }
+
+      function monthLabel(monthKey) {
+        const [year, month] = String(monthKey || '').split('-');
+        const date = new Date(Number(year || 0), Number(month || 1) - 1, 1);
+        if (Number.isNaN(date.getTime())) return monthKey;
+        return date.toLocaleString('en-US', { month: 'short' });
+      }
+
+      function getSelectedCategoryOption() {
+        return (sharedCategoryAnalytics.category_options || []).find((item) => String(item.id) === String(spendSelectedCategory)) || null;
       }
 
       function getCurrentComparisonBucket() {
@@ -661,7 +697,17 @@
       function updateSpendSubtitle() {
         if (!spendDetailsSubtitle) return;
         if (spendDetailMode === 'mix') {
-          spendDetailsSubtitle.textContent = `Shared categories for ${sharedCategoryAnalytics.period_label}`;
+          const selectedCategory = getSelectedCategoryOption();
+          spendDetailsSubtitle.textContent = selectedCategory
+            ? `${selectedCategory.label} subcategories for ${sharedCategoryAnalytics.period_label}`
+            : `Shared categories for ${sharedCategoryAnalytics.period_label}`;
+          return;
+        }
+        if (spendDetailMode === 'trend') {
+          const selectedCategory = getSelectedCategoryOption();
+          spendDetailsSubtitle.textContent = selectedCategory
+            ? `Monthly trend — ${selectedCategory.label} subcategories`
+            : 'Monthly trend — top categories';
           return;
         }
         const comparisonState = getCurrentComparisonState();
@@ -688,6 +734,34 @@
         syncDashboardStateInputs(name, value);
       }
 
+      function syncSpendCategoryFilter() {
+        if (!spendCategorySelect) return;
+        const options = sharedCategoryAnalytics.category_options || [];
+        const currentValue = String(spendSelectedCategory || '');
+        const exists = options.some((item) => String(item.id) === currentValue);
+        if (currentValue && !exists) {
+          spendSelectedCategory = '';
+        }
+        let markup = '<option value="">All categories</option>';
+        options.forEach((item) => {
+          const selected = String(item.id) === String(spendSelectedCategory || '') ? ' selected' : '';
+          markup += `<option value="${item.id}"${selected}>${item.label}</option>`;
+        });
+        spendCategorySelect.innerHTML = markup;
+      }
+
+      function updateSpendSummary() {
+        if (!spendSummaryRow || !spendSummaryTotal || !spendSummaryAverage) return;
+        const summary = sharedCategoryAnalytics.summary || {};
+        const selectedCategory = getSelectedCategoryOption();
+        let total = Number(summary.period_total || 0);
+        if (selectedCategory) total = Number(selectedCategory.value || 0);
+        spendSummaryTotal.textContent = formatCurrency(total);
+        const monthCount = Number(summary.months_count || 1);
+        spendSummaryAverage.textContent = formatCurrency(monthCount > 0 ? total / monthCount : total);
+        spendSummaryRow.hidden = spendDetailMode === 'period-vs-ly' || spendDetailMode === 'yoy';
+      }
+
       function destroySharedChart() {
         if (sharedChart) {
           sharedChart.destroy();
@@ -699,6 +773,7 @@
         destroySharedChart();
         renderLegend([]);
         renderYoyComparisonTable({ level: 'empty', rows: [] });
+        renderTrendTable({ series: [] }, 'Category');
         if (chartWrap) chartWrap.hidden = true;
         if (emptyState) {
           emptyState.hidden = false;
@@ -793,6 +868,24 @@
         yoyTableWrap.hidden = false;
       }
 
+      function renderTrendTable(data, labelHeading) {
+        if (!spendTrendTableWrap || !spendTrendTableHead || !spendTrendTableBody) return;
+        const months = sharedCategoryAnalytics.trend?.months || [];
+        const rows = data?.series || [];
+        if (!months.length || !rows.length) {
+          spendTrendTableWrap.hidden = true;
+          spendTrendTableHead.innerHTML = '';
+          spendTrendTableBody.innerHTML = '';
+          return;
+        }
+        spendTrendTableHead.innerHTML = `<tr><th>${labelHeading}</th>${months.map((month) => `<th>${monthLabel(month)}</th>`).join('')}<th>Total</th></tr>`;
+        spendTrendTableBody.innerHTML = rows.map((row) => {
+          const monthCells = (row.values || []).map((value) => `<td>${formatCurrency(value || 0)}</td>`).join('');
+          return `<tr><td><strong>${row.label}</strong></td>${monthCells}<td><strong>${formatCurrency(row.total || 0)}</strong></td></tr>`;
+        }).join('');
+        spendTrendTableWrap.hidden = false;
+      }
+
       function renderMixChart(rows) {
         if (!chartCanvas || !window.Chart) return;
         if (!rows.length) {
@@ -849,6 +942,72 @@
                     return lines;
                   }
                 }
+              }
+            }
+          }
+        });
+      }
+
+      function renderTrendChart(data, totalLabel) {
+        if (!chartCanvas || !window.Chart) return;
+        const months = sharedCategoryAnalytics.trend?.months || [];
+        const series = data?.series || [];
+        const totalSeries = data?.total_series || [];
+        if (!months.length || !series.length) {
+          showEmptyState(emptyCopy.trend);
+          return;
+        }
+        showChartWrap();
+        const labels = months.map(monthLabel);
+        const colors = series.map((row, index) => row.label === 'Other' ? '#64748b' : piePalette[index % piePalette.length]);
+        renderLegend([
+          ...series.map((row, index) => ({ label: row.label, color: colors[index] })),
+          { label: totalLabel, color: '#1f2937' },
+        ]);
+        destroySharedChart();
+        sharedChart = new window.Chart(chartCanvas, {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [
+              ...series.map((row, index) => ({
+                type: 'bar',
+                label: row.label,
+                data: row.values || [],
+                backgroundColor: colors[index],
+                stack: 'stacked-spend'
+              })),
+              {
+                type: 'line',
+                label: totalLabel,
+                data: totalSeries,
+                borderColor: '#1f2937',
+                backgroundColor: '#1f2937',
+                borderWidth: 2,
+                tension: 0.25,
+                pointRadius: 2
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: function (context) {
+                    return `${context.dataset.label}: ${formatCurrency(context.raw || 0)}`;
+                  }
+                }
+              }
+            },
+            scales: {
+              x: { stacked: true },
+              y: {
+                stacked: true,
+                beginAtZero: true,
+                ticks: { callback: function (value) { return `$${Number(value).toFixed(0)}`; } }
               }
             }
           }
@@ -929,7 +1088,29 @@
         chartCanvas.style.cursor = state.level === 'categories' ? 'pointer' : 'default';
       }
 
+      function applyMixTableFilter() {
+        const categoryRows = Array.from(document.querySelectorAll('.category-row'));
+        const subcategoryRows = Array.from(document.querySelectorAll('.subcategory-row'));
+        const selected = String(spendSelectedCategory || '');
+        const hasSelected = !!selected;
+        categoryRows.forEach((row) => {
+          const rowId = String(row.dataset.categoryRow || '');
+          row.hidden = hasSelected ? rowId !== selected : false;
+        });
+        subcategoryRows.forEach((row) => {
+          const rowId = String(row.dataset.subcategoryGroup || '');
+          if (!hasSelected) return;
+          row.hidden = rowId !== selected;
+        });
+      }
+
       function applySpendDetailModeState(mode) {
+        if (mode === 'trend') {
+          setDashboardStateInUrl('spend_view', 'trend');
+          setDashboardStateInUrl('spend_mode', 'period');
+          setDashboardStateInUrl('spend_compare', '');
+          return;
+        }
         if (mode === 'yoy') {
           setDashboardStateInUrl('spend_view', 'compare');
           setDashboardStateInUrl('spend_mode', 'ytd');
@@ -955,17 +1136,37 @@
         });
         if (backRow) backRow.hidden = !(spendDetailMode !== 'mix' && yoyDrilldownKey);
         if (spendDetailsBreakdown) spendDetailsBreakdown.hidden = spendDetailMode !== 'mix';
+        if (spendCategorySelect) spendCategorySelect.disabled = spendDetailMode === 'period-vs-ly' || spendDetailMode === 'yoy';
         if (spendDetailMode === 'mix') {
           expandedComparisonRows = {};
           if (chartWrap) chartWrap.style.height = '';
           if (chartCanvas) chartCanvas.style.minHeight = '';
           renderYoyComparisonTable({ level: 'mix', rows: [] });
-          renderMixChart(sharedCategoryAnalytics.pie_period || []);
+          renderTrendTable({ series: [] }, 'Category');
+          const selectedMixData = sharedCategoryAnalytics.mix_by_category?.[String(spendSelectedCategory)] || null;
+          renderMixChart(selectedMixData ? (selectedMixData.pie_rows || []) : (sharedCategoryAnalytics.pie_period || []));
+          applyMixTableFilter();
+        } else if (spendDetailMode === 'trend') {
+          if (chartWrap) chartWrap.style.height = '';
+          if (chartCanvas) chartCanvas.style.minHeight = '';
+          renderYoyComparisonTable({ level: 'mix', rows: [] });
+          if (spendDetailsBreakdown) spendDetailsBreakdown.hidden = true;
+          const selectedTrendData = sharedCategoryAnalytics.trend?.by_category?.[String(spendSelectedCategory)] || null;
+          renderTrendChart(
+            selectedTrendData || sharedCategoryAnalytics.trend?.all_categories || { series: [], total_series: [] },
+            selectedTrendData ? `${selectedTrendData.category_label} total` : 'Total expenses'
+          );
+          renderTrendTable(
+            selectedTrendData || sharedCategoryAnalytics.trend?.all_categories || { series: [] },
+            selectedTrendData ? 'Subcategory' : 'Category'
+          );
         } else {
+          renderTrendTable({ series: [] }, 'Category');
           const comparisonState = getCurrentComparisonState();
           renderYoyChart(comparisonState);
           renderYoyComparisonTable(comparisonState);
         }
+        updateSpendSummary();
         updateSpendSubtitle();
       }
 
@@ -979,13 +1180,26 @@
         });
       });
 
+      if (spendCategorySelect) {
+        spendCategorySelect.addEventListener('change', function () {
+          spendSelectedCategory = spendCategorySelect.value || '';
+          setDashboardStateInUrl('spend_category', spendSelectedCategory);
+          renderSpendDetails();
+        });
+      }
+
       const initialSpendView = new URL(window.location.href).searchParams.get('spend_view') || '';
       const initialSpendMode = new URL(window.location.href).searchParams.get('spend_mode') || '';
+      const initialSpendCategory = new URL(window.location.href).searchParams.get('spend_category') || '';
       if (initialSpendView === 'compare' && initialSpendMode === 'ytd') {
         spendDetailMode = 'yoy';
       } else if (initialSpendView === 'compare') {
         spendDetailMode = 'period-vs-ly';
+      } else if (initialSpendView === 'trend') {
+        spendDetailMode = 'trend';
       }
+      spendSelectedCategory = initialSpendCategory;
+      syncSpendCategoryFilter();
       applySpendDetailModeState(spendDetailMode);
 
       if (backButton) {
