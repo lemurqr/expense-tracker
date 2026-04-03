@@ -3410,6 +3410,122 @@ def test_import_confirm_uses_default_paid_by(client):
     assert row["paid_by"] == "YZ"
 
 
+def test_import_confirm_persists_mapped_scope_column(client):
+    register(client)
+    login(client)
+
+    csv_content = (
+        "date,description,amount,paid_by,category,scope\n"
+        "2026-11-05,Scoped import,-20.00,DK,Groceries,DK Personal\n"
+    )
+    preview = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "map_date": "0",
+            "map_description": "1",
+            "map_amount": "2",
+            "map_paid_by": "3",
+            "map_category": "4",
+            "map_scope": "5",
+            "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "scope.csv"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert preview.status_code == 200
+    import_id = extract_import_id_from_html(preview.get_data(as_text=True))
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT scope FROM expenses WHERE description = 'Scoped import'").fetchone()
+    assert row["scope"] == "dk_personal"
+
+
+def test_import_preview_displays_mapped_scope(client):
+    register(client)
+    login(client)
+
+    csv_content = (
+        "date,description,amount,paid_by,category,scope\n"
+        "2026-11-06,Scope preview row,-21.00,YZ,Groceries,YZ Personal\n"
+    )
+    preview = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "map_date": "0",
+            "map_description": "1",
+            "map_amount": "2",
+            "map_paid_by": "3",
+            "map_category": "4",
+            "map_scope": "5",
+            "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "scope-preview.csv"),
+        },
+        content_type="multipart/form-data",
+    )
+
+    html = preview.get_data(as_text=True)
+    assert preview.status_code == 200
+    assert "Scope" in html
+    assert "YZ Personal" in html
+
+
+def test_import_confirm_scope_fallback_without_mapped_scope_column(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        personal_id = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Personal'", (1,)).fetchone()["id"]
+        groceries_id = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (1,)).fetchone()["id"]
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-11-07",
+            "amount": -12.0,
+            "description": "Fallback DK personal",
+            "normalized_description": "fallback dk personal",
+            "vendor": "Store",
+            "category": "Personal",
+            "category_id": personal_id,
+            "paid_by": "DK",
+        },
+        {
+            "row_index": 1,
+            "user_id": 1,
+            "date": "2026-11-08",
+            "amount": -13.0,
+            "description": "Fallback shared",
+            "normalized_description": "fallback shared",
+            "vendor": "Store",
+            "category": "Groceries",
+            "category_id": groceries_id,
+            "paid_by": "YZ",
+        },
+    ]
+
+    response = confirm_import(client, rows, import_default_paid_by="")
+    assert b"Imported 2 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        imported = db.execute(
+            "SELECT description, scope FROM expenses WHERE description IN ('Fallback DK personal', 'Fallback shared') ORDER BY description"
+        ).fetchall()
+    scopes = {row["description"]: row["scope"] for row in imported}
+    assert scopes["Fallback DK personal"] == "dk_personal"
+    assert scopes["Fallback shared"] == "shared"
+
+
 def test_import_preview_expiration_shows_friendly_message(client):
     register(client)
     login(client)
