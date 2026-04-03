@@ -188,6 +188,109 @@ def test_import_preview_show_all_toggle_and_confirm_imports_all_rows(client):
 
 
 
+def test_import_preview_large_show_all_defaults_to_limited_without_both_flags(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(501):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-02-01",
+                "amount": -10.0 - idx,
+                "description": f"Large Merchant {idx}",
+                "normalized_description": f"large merchant {idx}",
+                "vendor": f"Large Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-large-501")
+
+    response = client.get(f"/import/csv?import_id={import_id}&show_all=1")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Showing 25 of 501 rows" in html
+    assert html.count('class="preview-row"') == 25
+    assert "This preview has more than 500 rows." in html
+
+
+def test_import_preview_large_show_all_renders_all_rows_when_both_flags_set(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(501):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-02-01",
+                "amount": -10.0 - idx,
+                "description": f"Large Merchant {idx}",
+                "normalized_description": f"large merchant {idx}",
+                "vendor": f"Large Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-large-501-both")
+
+    response = client.get(f"/import/csv?import_id={import_id}&show_all=1&confirm_show_all=1")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Showing 501 of 501 rows" in html
+    assert html.count('class="preview-row"') == 501
+
+
+def test_import_preview_large_show_all_checkbox_state_persists_after_submit(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(501):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-02-01",
+                "amount": -10.0 - idx,
+                "description": f"Large Merchant {idx}",
+                "normalized_description": f"large merchant {idx}",
+                "vendor": f"Large Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-large-501-state")
+
+    only_show_all = client.get(f"/import/csv?import_id={import_id}&show_all=1")
+    only_show_all_html = only_show_all.get_data(as_text=True)
+    assert only_show_all.status_code == 200
+    assert 'name="show_all" value="1" checked' in only_show_all_html
+    assert 'name="confirm_show_all" value="1" checked' not in only_show_all_html
+
+    both_checked = client.get(f"/import/csv?import_id={import_id}&show_all=1&confirm_show_all=1")
+    both_checked_html = both_checked.get_data(as_text=True)
+    assert both_checked.status_code == 200
+    assert 'name="show_all" value="1" checked' in both_checked_html
+    assert 'name="confirm_show_all" value="1" checked' in both_checked_html
+
+
+
 def test_import_preview_selection_works_without_show_all_toggle(client):
     register(client)
     login(client)

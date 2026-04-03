@@ -108,17 +108,15 @@
   <form method="get" action="{{ url_for('import_csv') }}" class="inline-form" id="preview-toggle-form">
     <input type="hidden" name="import_id" value="{{ preview_id }}">
     <input type="hidden" name="show_all" value="0">
+    <input type="hidden" name="confirm_show_all" value="0">
     <input type="hidden" name="low_confidence" value="{{ 1 if low_confidence_filter else 0 }}">
-    {% if requires_show_all_confirmation and show_all_rows %}
-    <input type="hidden" name="confirm_show_all" value="1">
-    {% endif %}
     <label class="inline-form">
-      <input type="checkbox" name="show_all" value="1" {% if show_all_rows %}checked{% endif %} onchange="this.form.submit()">
+      <input type="checkbox" name="show_all" value="1" {% if show_all_requested_rows %}checked{% endif %} onchange="this.form.submit()">
       Show all rows
     </label>
     {% if requires_show_all_confirmation %}
     <label class="inline-form">
-      <input type="checkbox" name="confirm_show_all" value="1" {% if show_all_rows %}checked{% endif %} onchange="this.form.submit()">
+      <input type="checkbox" name="confirm_show_all" value="1" {% if confirm_show_all_rows %}checked{% endif %} onchange="this.form.submit()">
       Confirm show all rows ({{ total_rows_count }} rows)
     </label>
     <small>Large previews may be slow.</small>
@@ -259,8 +257,8 @@
     </table>
 
     <input type="hidden" name="import_id" value="{{ preview_id }}">
-    <input type="hidden" name="show_all" value="{{ 1 if show_all_rows else 0 }}">
-    <input type="hidden" name="confirm_show_all" value="{{ 1 if requires_show_all_confirmation and show_all_rows else 0 }}">
+    <input type="hidden" name="show_all" value="{{ 1 if show_all_requested_rows else 0 }}">
+    <input type="hidden" name="confirm_show_all" value="{{ 1 if requires_show_all_confirmation and confirm_show_all_rows else 0 }}">
     <input type="hidden" name="low_confidence" value="{{ 1 if low_confidence_filter else 0 }}">
     <input type="hidden" name="map_date" value="{{ mapping.date }}">
     <input type="hidden" name="map_description" value="{{ mapping.description }}">

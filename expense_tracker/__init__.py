@@ -5004,10 +5004,11 @@ def create_app(test_config=None):
                     row["subcategory"] = resolve_preview_subcategory(row, subcategory_suggestions)
 
             import_id = str(uuid.uuid4())
-            show_all = request.form.get("show_all_rows") == "1"
+            show_all_requested = request.form.get("show_all_rows") == "1"
             requires_show_all_confirmation = len(parsed_rows) > IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD
             show_all_confirmed = request.form.get("confirm_show_all") == "1"
-            if requires_show_all_confirmation and show_all and not show_all_confirmed:
+            show_all = show_all_requested
+            if requires_show_all_confirmation and show_all_requested and not show_all_confirmed:
                 show_all = False
                 flash("This preview has more than 500 rows. Check 'Confirm show all rows' to render all rows.")
             save_import_preview_show_all(g.user["id"], import_id, show_all)
@@ -5059,6 +5060,8 @@ def create_app(test_config=None):
                 file_signature=file_signature,
                 import_default_paid_by=import_default_paid_by,
                 show_all_rows=show_all,
+                show_all_requested_rows=show_all_requested,
+                confirm_show_all_rows=show_all_confirmed,
                 displayed_rows_count=displayed_rows_count,
                 total_rows_count=total_rows_count,
                 show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
@@ -5079,14 +5082,15 @@ def create_app(test_config=None):
 
             show_all_values = request.args.getlist("show_all")
             show_all_param = show_all_values[-1] if show_all_values else None
-            show_all = get_import_preview_show_all(g.user["id"], import_id)
+            show_all_requested = get_import_preview_show_all(g.user["id"], import_id)
             low_confidence_filter = request.args.get("low_confidence") == "1"
             if show_all_param is not None:
-                show_all = show_all_param == "1"
+                show_all_requested = show_all_param == "1"
 
             requires_show_all_confirmation = len(parsed_rows) > IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD
             confirm_show_all = request.args.get("confirm_show_all") == "1"
-            if requires_show_all_confirmation and show_all and not confirm_show_all:
+            show_all = show_all_requested
+            if requires_show_all_confirmation and show_all_requested and not confirm_show_all:
                 show_all = False
                 flash("This preview has more than 500 rows. Check 'Confirm show all rows' to render all rows.")
 
@@ -5125,6 +5129,8 @@ def create_app(test_config=None):
                 file_signature=saved_payload.get("file_signature", ""),
                 import_default_paid_by="",
                 show_all_rows=show_all,
+                show_all_requested_rows=show_all_requested,
+                confirm_show_all_rows=confirm_show_all,
                 displayed_rows_count=displayed_rows_count,
                 total_rows_count=total_rows_count,
                 show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
@@ -5155,6 +5161,8 @@ def create_app(test_config=None):
             file_signature=saved_payload.get("file_signature", ""),
             import_default_paid_by="",
             show_all_rows=False,
+            show_all_requested_rows=False,
+            confirm_show_all_rows=False,
             displayed_rows_count=0,
             total_rows_count=0,
             show_all_warning_threshold=IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD,
