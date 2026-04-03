@@ -120,16 +120,17 @@
     <input type="hidden" name="confirm_show_all" value="0">
     <input type="hidden" name="low_confidence" value="{{ 1 if low_confidence_filter else 0 }}">
     <label class="inline-form">
-      <input type="checkbox" name="show_all" value="1" {% if show_all_requested_rows %}checked{% endif %} onchange="this.form.submit()">
+      <input type="checkbox" name="show_all" value="1" {% if show_all_requested_rows %}checked{% endif %}>
       Show all rows
     </label>
     {% if requires_show_all_confirmation %}
     <label class="inline-form">
-      <input type="checkbox" name="confirm_show_all" value="1" {% if confirm_show_all_rows %}checked{% endif %} onchange="this.form.submit()">
+      <input type="checkbox" name="confirm_show_all" value="1" {% if confirm_show_all_rows %}checked{% endif %}>
       Confirm show all rows ({{ total_rows_count }} rows)
     </label>
     <small>Large previews may be slow.</small>
     {% endif %}
+    <button type="submit">Apply preview options</button>
     <div id="preview-toggle-selected-row-ids"></div>
   </form>
   <p class="inline-form">

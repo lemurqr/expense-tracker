@@ -875,6 +875,13 @@ def preview_rows_for_display(rows, show_all=False, limit=IMPORT_PREVIEW_DEFAULT_
     displayed_rows = rows[:limit]
     return displayed_rows, len(displayed_rows), total_rows
 
+
+def checkbox_flag_from_multidict(values, name):
+    entries = values.getlist(name)
+    if not entries:
+        return False
+    return entries[-1] == "1"
+
 def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=None):
     created_at = datetime.utcnow().isoformat()
     for row in rows:
@@ -4147,9 +4154,9 @@ def create_app(test_config=None):
             flash("Preview expired. Please re-upload the file.")
             return redirect(url_for("import_csv"))
 
-        show_all = request.form.get("show_all") == "1"
-        confirm_show_all = request.form.get("confirm_show_all") == "1"
-        low_confidence = request.form.get("low_confidence") == "1"
+        show_all = checkbox_flag_from_multidict(request.form, "show_all")
+        confirm_show_all = checkbox_flag_from_multidict(request.form, "confirm_show_all")
+        low_confidence = checkbox_flag_from_multidict(request.form, "low_confidence")
 
         db = get_db()
         records = get_staged_preview_row_records(db, import_id, household_id=g.household_id, user_id=g.user["id"])
@@ -4393,9 +4400,9 @@ def create_app(test_config=None):
     def import_preview_action():
         import_id = (request.form.get("import_id") or "").strip()
         action = (request.form.get("action") or "").strip()
-        show_all = request.form.get("show_all") == "1"
-        confirm_show_all = request.form.get("confirm_show_all") == "1"
-        low_confidence = request.form.get("low_confidence") == "1"
+        show_all = checkbox_flag_from_multidict(request.form, "show_all")
+        confirm_show_all = checkbox_flag_from_multidict(request.form, "confirm_show_all")
+        low_confidence = checkbox_flag_from_multidict(request.form, "low_confidence")
 
         redirect_args = {"import_id": import_id}
         if show_all:
@@ -5115,12 +5122,12 @@ def create_app(test_config=None):
             show_all_values = request.args.getlist("show_all")
             show_all_param = show_all_values[-1] if show_all_values else None
             show_all_requested = get_import_preview_show_all(g.user["id"], import_id)
-            low_confidence_filter = request.args.get("low_confidence") == "1"
+            low_confidence_filter = checkbox_flag_from_multidict(request.args, "low_confidence")
             if show_all_param is not None:
                 show_all_requested = show_all_param == "1"
 
             requires_show_all_confirmation = len(parsed_rows) > IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD
-            confirm_show_all = request.args.get("confirm_show_all") == "1"
+            confirm_show_all = checkbox_flag_from_multidict(request.args, "confirm_show_all")
             show_all = show_all_requested
             if requires_show_all_confirmation and show_all_requested and not confirm_show_all:
                 show_all = False
