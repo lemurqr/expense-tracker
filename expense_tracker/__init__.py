@@ -177,6 +177,7 @@ HEADER_ALIASES = {
     "category": ["category"],
     "subcategory": ["subcategory", "sub category", "sub-category"],
     "paid_by": ["paid by", "paid_by", "payer", "owner"],
+    "scope": ["scope", "expense scope", "transaction scope"],
 }
 VENDOR_NOISE_TOKENS = {
     "pos",
@@ -290,9 +291,27 @@ EXPENSE_SCOPE_OPTIONS = {"shared", "dk_personal", "yz_personal"}
 
 def normalize_expense_scope(value, default="shared"):
     cleaned = (value or "").strip().lower()
+    if cleaned in {"shared"}:
+        return "shared"
+    if cleaned in {"dk personal", "dk_personal", "dk-personal"}:
+        return "dk_personal"
+    if cleaned in {"yz personal", "yz_personal", "yz-personal"}:
+        return "yz_personal"
     if cleaned in EXPENSE_SCOPE_OPTIONS:
         return cleaned
     return default
+
+
+def resolve_import_scope(mapped_scope, assigned_category, paid_by):
+    normalized_scope = normalize_expense_scope(mapped_scope, default="")
+    if normalized_scope:
+        return normalized_scope
+    if assigned_category == "Personal":
+        if paid_by == "DK":
+            return "dk_personal"
+        if paid_by == "YZ":
+            return "yz_personal"
+    return "shared"
 
 
 def extract_embedded_amount(description):
@@ -578,7 +597,7 @@ def transaction_confidence_filter_options():
 
 
 def detect_header_and_mapping(rows):
-    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": ""}
+    mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": "", "scope": ""}
     if not rows:
         return False, mapping, 0
 
@@ -628,6 +647,7 @@ def detect_header_and_mapping(rows):
     mapping["category"] = find_alias_index("category")
     mapping["subcategory"] = find_alias_index("subcategory")
     mapping["paid_by"] = find_alias_index("paid_by")
+    mapping["scope"] = find_alias_index("scope")
 
     has_header = any(mapping[field] != "" for field in ["date", "amount", "debit", "credit", "description"])
     if has_header:
@@ -679,10 +699,11 @@ def detect_cibc_headerless_mapping(rows):
             "category": "",
             "subcategory": "",
             "paid_by": "",
+            "scope": "",
         }
 
     # fallback for classic CIBC-like ordering
-    return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": "", "paid_by": ""}
+    return {"date": "0", "description": "1", "debit": "2", "credit": "3", "amount": "", "vendor": "", "category": "", "subcategory": "", "paid_by": "", "scope": ""}
 
 
 def detect_amex_headered_mapping(rows, header_row_index):
@@ -720,6 +741,7 @@ def detect_amex_headered_mapping(rows, header_row_index):
         "category": find_alias_index("category"),
         "subcategory": find_alias_index("subcategory"),
         "paid_by": find_alias_index("paid_by"),
+        "scope": find_alias_index("scope"),
     }
 
     if mapping["date"] == "" or mapping["description"] == "":
@@ -739,6 +761,7 @@ def build_csv_mapping_payload(mapping, has_header, detected_format, file_signatu
         "category_col": mapping.get("category", ""),
         "subcategory_col": mapping.get("subcategory", ""),
         "paid_by_col": mapping.get("paid_by", ""),
+        "scope_col": mapping.get("scope", ""),
         "has_header": bool(has_header),
         "detected_format": detected_format,
         "file_signature": file_signature or "",
@@ -754,7 +777,7 @@ def build_file_signature(filename, header_row):
 
 def mapping_from_payload(payload):
     if not payload:
-        return {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": ""}
+        return {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": "", "scope": ""}
     return {
         "date": payload.get("date_col", ""),
         "description": payload.get("desc_col", ""),
@@ -765,6 +788,7 @@ def mapping_from_payload(payload):
         "category": payload.get("category_col", ""),
         "subcategory": payload.get("subcategory_col", ""),
         "paid_by": payload.get("paid_by_col", ""),
+        "scope": payload.get("scope_col", ""),
     }
 
 
@@ -1131,7 +1155,7 @@ def should_auto_map_cibc_headerless(rows, mapping, detected_format):
     if detected_format != "headerless":
         return None
 
-    if any((mapping.get(field) or "").strip() for field in ["date", "description", "amount", "debit", "credit", "vendor", "category", "paid_by"]):
+    if any((mapping.get(field) or "").strip() for field in ["date", "description", "amount", "debit", "credit", "vendor", "category", "paid_by", "scope"]):
         return None
 
     return detect_cibc_headerless_mapping(rows)
@@ -1233,6 +1257,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
         normalized_description = normalize_description(row_description)
         row_vendor = get_value("vendor") or derive_vendor(row_description)
         row_paid_by = normalize_paid_by(get_value("paid_by"))
+        row_scope = normalize_expense_scope(get_value("scope"), default="")
 
         amount = None
         debit_value = None
@@ -1331,6 +1356,7 @@ def parse_csv_transactions(rows, mapping, user_id, bank_type="default", skip_pay
                 "csv_subcategory_name": (row_subcategory or "").strip(),
                 "tags": derive_tags(row_description),
                 "paid_by": row_paid_by,
+                "scope": row_scope,
                 "source_type": resolved_source_type,
                 "is_refund_or_payment": refund_or_payment,
                 "amount_classification": amount_classification,
@@ -4456,7 +4482,7 @@ def create_app(test_config=None):
     @app.route("/import/csv", methods=("GET", "POST"))
     @login_required
     def import_csv():
-        default_mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": ""}
+        default_mapping = {"date": "", "description": "", "vendor": "", "amount": "", "debit": "", "credit": "", "category": "", "subcategory": "", "paid_by": "", "scope": ""}
         import_results = None
         skipped_result_rows = []
         saved_payload = get_saved_csv_mapping_for_user(g.user["id"])
@@ -4717,6 +4743,8 @@ def create_app(test_config=None):
                     is_personal = assigned_category == "Personal"
                     is_transfer = is_transfer_transaction(row.get("description", ""), assigned_category)
 
+                    row_scope = resolve_import_scope(row.get("scope", ""), assigned_category, row.get("paid_by", ""))
+
                     txn_hash = build_transaction_hash(
                         g.household_id,
                         row.get("date", ""),
@@ -4745,7 +4773,7 @@ def create_app(test_config=None):
                             row["description"],
                             row.get("vendor", "") or derive_vendor(row.get("description", "")),
                             row.get("paid_by", ""),
-                            "shared",
+                            row_scope,
                             1 if is_transfer else 0,
                             1 if is_personal else 0,
                             categorized["confidence"],
@@ -4784,6 +4812,7 @@ def create_app(test_config=None):
                     "category": request.form.get("map_category", ""),
                     "subcategory": request.form.get("map_subcategory", ""),
                     "paid_by": request.form.get("map_paid_by", ""),
+                    "scope": request.form.get("map_scope", ""),
                 }
                 detected_format = request.form.get("detected_format", "manual")
                 has_header = request.form.get("has_header", "0") == "1"
@@ -4853,6 +4882,7 @@ def create_app(test_config=None):
                 "category": request.form.get("map_category", ""),
                 "subcategory": request.form.get("map_subcategory", ""),
                 "paid_by": request.form.get("map_paid_by", ""),
+                "scope": request.form.get("map_scope", ""),
             }
             has_explicit_mapping = any(value != "" for value in explicit_mapping.values())
             has_saved_mapping = any((saved_mapping.get(field, "") != "") for field in default_mapping)
@@ -4886,6 +4916,7 @@ def create_app(test_config=None):
                         "category": request.form.get("map_category") if request.form.get("map_category") is not None else inferred_mapping["category"],
                         "subcategory": request.form.get("map_subcategory") if request.form.get("map_subcategory") is not None else inferred_mapping["subcategory"],
                         "paid_by": request.form.get("map_paid_by") if request.form.get("map_paid_by") is not None else inferred_mapping["paid_by"],
+                        "scope": request.form.get("map_scope") if request.form.get("map_scope") is not None else inferred_mapping["scope"],
                     }
 
                     for field in mapping:
@@ -5035,6 +5066,7 @@ def create_app(test_config=None):
                 "debit": mapped_column_name("debit"),
                 "credit": mapped_column_name("credit"),
                 "paid_by": mapped_column_name("paid_by"),
+                "scope": mapped_column_name("scope"),
             }
 
             save_csv_mapping_for_user(g.user["id"], mapping, has_header, detected_format, file_signature=file_signature)

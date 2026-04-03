@@ -90,6 +90,15 @@
           {% endfor %}
         </select>
       </label>
+
+      <label>Scope (optional)
+        <select name="map_scope">
+          <option value="">-- Select --</option>
+          {% for idx in range(columns|length) %}
+          <option value="{{ idx }}" {% if mapping.scope == idx|string %}selected{% endif %}>{{ columns[idx] }}</option>
+          {% endfor %}
+        </select>
+      </label>
     </div>
 
     <label class="inline-form">
@@ -135,7 +144,7 @@
   {% if parse_diagnostics %}
   <p><strong>Parsed {{ preview_rows|length }} rows ({{ parse_diagnostics.rows_with_debit }} debit, {{ parse_diagnostics.rows_with_credit }} credit). Skipped missing amount: {{ parse_diagnostics.skipped_missing_amount }}, invalid amount parse: {{ parse_diagnostics.skipped_invalid_amount_parse }}, both debit and credit: {{ parse_diagnostics.skipped_both_debit_and_credit }}{% if parse_diagnostics.skipped_payment_rows %}, payment-like rows: {{ parse_diagnostics.skipped_payment_rows }}{% endif %}.</strong></p>
   {% endif %}
-  <p><small>auto_mapped_fields: date=<strong>{{ auto_mapped_fields.date if auto_mapped_fields else 'None' }}</strong>, description=<strong>{{ auto_mapped_fields.description if auto_mapped_fields else 'None' }}</strong>, amount=<strong>{{ auto_mapped_fields.amount if auto_mapped_fields else 'None' }}</strong>, vendor=<strong>{{ auto_mapped_fields.vendor if auto_mapped_fields else 'None' }}</strong>, debit=<strong>{{ auto_mapped_fields.debit if auto_mapped_fields else 'None' }}</strong>, credit=<strong>{{ auto_mapped_fields.credit if auto_mapped_fields else 'None' }}</strong></small></p>
+  <p><small>auto_mapped_fields: date=<strong>{{ auto_mapped_fields.date if auto_mapped_fields else 'None' }}</strong>, description=<strong>{{ auto_mapped_fields.description if auto_mapped_fields else 'None' }}</strong>, amount=<strong>{{ auto_mapped_fields.amount if auto_mapped_fields else 'None' }}</strong>, vendor=<strong>{{ auto_mapped_fields.vendor if auto_mapped_fields else 'None' }}</strong>, debit=<strong>{{ auto_mapped_fields.debit if auto_mapped_fields else 'None' }}</strong>, credit=<strong>{{ auto_mapped_fields.credit if auto_mapped_fields else 'None' }}</strong>, scope=<strong>{{ auto_mapped_fields.scope if auto_mapped_fields else 'None' }}</strong></small></p>
   <p><small>Detected Debit column: <strong>{{ auto_mapped_fields.debit if auto_mapped_fields and auto_mapped_fields.debit else 'None' }}</strong> · Detected Credit column: <strong>{{ auto_mapped_fields.credit if auto_mapped_fields and auto_mapped_fields.credit else 'None' }}</strong></small></p>
   {% if auto_mapping_applied %}
   <p><small>Auto-mapped CIBC headerless format: Date=1, Desc=2, Debit=3, Credit=4 (ignored extra columns).</small></p>
@@ -195,7 +204,7 @@
     </p>
     <table>
       <thead>
-        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Suggested Category</th><th>Suggested Subcategory</th><th>Confidence</th></tr>
+        <tr><th>Import</th><th>Date</th><th>Amount</th><th>Description</th><th>Vendor</th><th>Paid by</th><th>Scope</th><th>Suggested Category</th><th>Suggested Subcategory</th><th>Confidence</th></tr>
       </thead>
       <tbody>
         {% for row in preview_rows %}
@@ -211,6 +220,15 @@
               <option value="DK" {% if row.paid_by == 'DK' %}selected{% endif %}>DK</option>
               <option value="YZ" {% if row.paid_by == 'YZ' %}selected{% endif %}>YZ</option>
             </select>
+          </td>
+          <td>
+            {% if row.scope == 'dk_personal' %}
+              <span class="confidence-badge confidence-medium">DK Personal</span>
+            {% elif row.scope == 'yz_personal' %}
+              <span class="confidence-badge confidence-medium">YZ Personal</span>
+            {% else %}
+              <span class="confidence-badge confidence-high">Shared</span>
+            {% endif %}
           </td>
           <td>
             <select name="override_category_{{ row.row_index }}" class="category-select" data-original-category="{{ row.category or "" }}">
@@ -271,6 +289,7 @@
     <input type="hidden" name="map_category" value="{{ mapping.category }}">
     <input type="hidden" name="map_subcategory" value="{{ mapping.subcategory }}">
     <input type="hidden" name="map_paid_by" value="{{ mapping.paid_by }}">
+    <input type="hidden" name="map_scope" value="{{ mapping.scope }}">
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
@@ -294,6 +313,7 @@
     <input type="hidden" name="map_category" value="{{ mapping.category }}">
     <input type="hidden" name="map_subcategory" value="{{ mapping.subcategory }}">
     <input type="hidden" name="map_paid_by" value="{{ mapping.paid_by }}">
+    <input type="hidden" name="map_scope" value="{{ mapping.scope }}">
     <input type="hidden" name="has_header" value="{{ 1 if has_header else 0 }}">
     <input type="hidden" name="detected_format" value="{{ detected_format or '' }}">
     <input type="hidden" name="file_signature" value="{{ file_signature or '' }}">
