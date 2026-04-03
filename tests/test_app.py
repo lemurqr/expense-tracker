@@ -1707,9 +1707,11 @@ def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     text = response.get_data(as_text=True)
 
     assert 'data-spend-detail-mode="mix"' in text
+    assert 'data-spend-detail-mode="trend"' in text
     assert 'data-spend-detail-mode="period-vs-ly"' in text
     assert 'data-spend-detail-mode="yoy"' in text
     assert '>Spend Mix<' in text
+    assert '>Trend<' in text
     assert '>Period vs LY<' in text
     assert 'id="spend-yoy-current-heading">Current period<' in text
     assert 'id="spend-yoy-comparison-heading">Prior-year same period<' in text
@@ -1722,6 +1724,7 @@ def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     assert 'legend: { display: false }' in text
     assert "const spendDetailsBreakdown = document.getElementById('spend-details-breakdown');" in text
     assert "spendDetailsBreakdown.hidden = spendDetailMode !== 'mix';" in text
+    assert "const spendCategorySelect = document.getElementById('spend-category-select');" in text
 
 
 def test_dashboard_spend_details_compare_query_state_is_preserved_in_markup(client):
@@ -1762,10 +1765,161 @@ def test_dashboard_spend_details_mode_switch_keeps_mix_markup(client):
     analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
 
     assert 'data-spend-detail-mode="mix"' in text
+    assert 'data-spend-detail-mode="trend"' in text
     assert 'data-spend-detail-mode="period-vs-ly"' in text
     assert 'data-spend-detail-mode="yoy"' in text
     assert 'id="spend-details-chart"' in text
     assert analytics["pie_period"] == [{"label": "Groceries", "value": 42.0, "subcategories": []}]
+
+
+def test_dashboard_spend_mix_summary_and_category_dropdown_render(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        gifts_id = db.execute("SELECT id FROM categories WHERE name = 'Gifts & Presents'").fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (None, 1, "2026-04-10", -80, groceries_id, "Groceries"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (None, 1, "2026-04-12", -20, gifts_id, "Gifts"),
+        )
+        db.commit()
+
+    response = client.get("/dashboard?month=2026-04")
+    text = response.get_data(as_text=True)
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", text, re.DOTALL).group(1))
+
+    assert 'id="spend-summary-total"' in text
+    assert 'id="spend-category-select"' in text
+    assert analytics["summary"]["period_total"] == 100.0
+    assert analytics["summary"]["months_count"] == 1
+    assert [row["label"] for row in analytics["category_options"]] == ["Groceries", "Gifts & Presents"]
+
+
+def test_dashboard_spend_mix_category_selection_builds_subcategory_breakdown(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Produce"))
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Dairy"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE name = 'Produce'").fetchone()["id"]
+        dairy_id = db.execute("SELECT id FROM subcategories WHERE name = 'Dairy'").fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (household_id, user_id, date, amount, category_id, subcategory_id, description, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (None, 1, "2026-04-05", -40, groceries_id, produce_id, "Produce"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (household_id, user_id, date, amount, category_id, subcategory_id, description, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (None, 1, "2026-04-08", -25, groceries_id, dairy_id, "Dairy"),
+        )
+        db.commit()
+
+    response = client.get("/dashboard?month=2026-04")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+    breakdown = analytics["mix_by_category"][str(groceries_id)]
+
+    assert breakdown["category_label"] == "Groceries"
+    assert breakdown["total"] == 65.0
+    assert breakdown["pie_rows"] == [
+        {"label": "Produce", "value": 40.0},
+        {"label": "Dairy", "value": 25.0},
+    ]
+
+
+def test_dashboard_spend_trend_all_categories_and_selected_category_subcategories(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        gifts_id = db.execute("SELECT id FROM categories WHERE name = 'Gifts & Presents'").fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Produce"))
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Dairy"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE name = 'Produce'").fetchone()["id"]
+        dairy_id = db.execute("SELECT id FROM subcategories WHERE name = 'Dairy'").fetchone()["id"]
+        rows = [
+            ("2026-01-05", -10, groceries_id, produce_id, "Jan produce"),
+            ("2026-01-08", -8, gifts_id, None, "Jan gifts"),
+            ("2026-02-02", -12, groceries_id, dairy_id, "Feb dairy"),
+            ("2026-02-12", -6, gifts_id, None, "Feb gifts"),
+            ("2026-03-01", -14, groceries_id, produce_id, "Mar produce"),
+        ]
+        for date_value, amount, category_id, subcategory_id, description in rows:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, subcategory_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, date_value, amount, category_id, subcategory_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2026-01-01&end=2026-03-31")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    assert analytics["trend"]["months"] == ["2026-01", "2026-02", "2026-03"]
+    assert analytics["trend"]["all_categories"]["series"] == [
+        {"id": str(groceries_id), "label": "Groceries", "values": [10.0, 12.0, 14.0], "total": 36.0},
+        {"id": str(gifts_id), "label": "Gifts & Presents", "values": [8.0, 6.0, 0.0], "total": 14.0},
+    ]
+    groceries_trend = analytics["trend"]["by_category"][str(groceries_id)]
+    assert groceries_trend["category_label"] == "Groceries"
+    assert groceries_trend["series"] == [
+        {"label": "Produce", "values": [10.0, 0.0, 14.0], "total": 24.0},
+        {"label": "Dairy", "values": [0.0, 12.0, 0.0], "total": 12.0},
+    ]
+
+
+def test_dashboard_spend_trend_uses_top_five_plus_other_grouping(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        category_ids = []
+        for index in range(7):
+            db.execute("INSERT INTO categories (user_id, name) VALUES (?, ?)", (1, f"Trend Category {index + 1}"))
+            category_ids.append(
+                db.execute("SELECT id FROM categories WHERE name = ?", (f"Trend Category {index + 1}",)).fetchone()["id"]
+            )
+        for index, category_id in enumerate(category_ids, start=1):
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, "2026-01-10", -float(100 - index), category_id, f"Category {index}"),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2026-01-01&end=2026-01-31")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+    rows = analytics["trend"]["all_categories"]["series"]
+
+    assert len(rows) == 6
+    assert rows[-1]["label"] == "Other"
+    assert rows[-1]["total"] == 187.0
 
 
 def test_dashboard_spend_details_groups_other_rows_for_compact_comparison_tables(client):

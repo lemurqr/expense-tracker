@@ -2175,6 +2175,72 @@ def create_app(test_config=None):
         return category_totals
 
     def _build_shared_category_analytics(db, filters):
+        def _month_sequence(start_date, end_date):
+            months = []
+            cursor = start_date.replace(day=1)
+            limit = end_date.replace(day=1)
+            while cursor <= limit:
+                months.append(cursor.strftime("%Y-%m"))
+                if cursor.month == 12:
+                    cursor = cursor.replace(year=cursor.year + 1, month=1)
+                else:
+                    cursor = cursor.replace(month=cursor.month + 1)
+            return months
+
+        def _fetch_shared_monthly_rows_for_period(start_date, end_date):
+            if db.backend == "postgres":
+                month_sql = "TO_CHAR(DATE_TRUNC('month', e.date::date), 'YYYY-MM')"
+                rounded_total_sql = "ROUND(SUM(-e.amount)::numeric, 2)"
+            else:
+                month_sql = "SUBSTR(e.date, 1, 7)"
+                rounded_total_sql = "ROUND(SUM(-e.amount), 2)"
+            return db.execute(
+                """
+                SELECT
+                    {month_sql} AS month,
+                    c.id AS category_id,
+                    COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized') AS category,
+                    COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory') AS subcategory,
+                    {rounded_total_sql} AS total
+                FROM expenses e
+                LEFT JOIN categories c ON e.category_id = c.id
+                LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
+                WHERE e.household_id = ?
+                  AND e.is_transfer = 0
+                  AND e.scope = 'shared'
+                  AND e.date >= ?
+                  AND e.date <= ?
+                GROUP BY {month_sql}, c.id, COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized'), COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory')
+                ORDER BY {month_sql} ASC
+                """.format(month_sql=month_sql, rounded_total_sql=rounded_total_sql),
+                (g.household_id, start_date.isoformat(), end_date.isoformat()),
+            ).fetchall()
+
+        def _compact_rows_with_other(rows, value_key, top_n=5):
+            top_rows = rows[:top_n]
+            other_value = round(sum(float(row.get(value_key) or 0) for row in rows[top_n:]), 2)
+            compact_rows = [dict(row) for row in top_rows]
+            if other_value > 0:
+                compact_rows.append({"label": "Other", value_key: other_value})
+            return compact_rows
+
+        def _compact_trend_series(series_rows, top_n=5):
+            top_rows = series_rows[:top_n]
+            compact_rows = [dict(row) for row in top_rows]
+            other_rows = series_rows[top_n:]
+            if other_rows:
+                if month_keys:
+                    other_values = [
+                        round(sum(float(row["values"][idx] or 0) for row in other_rows), 2)
+                        for idx in range(len(month_keys))
+                    ]
+                else:
+                    other_values = []
+                other_total = round(sum(other_values), 2)
+                if other_total > 0:
+                    compact_rows.append({"label": "Other", "values": other_values, "total": other_total})
+            return compact_rows
+
         analytics_month = _resolve_analytics_month(filters)
         current_start, current_end = _month_bounds(analytics_month)
         last_end = current_start - timedelta(days=1)
@@ -2190,6 +2256,7 @@ def create_app(test_config=None):
             pie_period_start = parsed_start_date
             pie_period_end = parsed_end_date
             pie_period_label = filters["period_label"]
+        month_keys = _month_sequence(pie_period_start, pie_period_end)
 
         current_rows = _fetch_shared_category_totals_for_period(db, g.household_id, current_start, current_end)
         last_rows = _fetch_shared_category_totals_for_period(db, g.household_id, last_start, last_end)
@@ -2258,6 +2325,17 @@ def create_app(test_config=None):
             row for row in sorted(table_rows, key=lambda row: (-row["year_to_date"], row["label"]))
             if row["year_to_date"] > 0
         ]
+        visible_category_options = [
+            {
+                "id": str(row["id"]) if row["id"] is not None else "0",
+                "label": row["label"],
+                "value": round(float(row["value"] or 0), 2),
+            }
+            for row in positive_pie_period_rows
+        ]
+        period_total = round(sum(float(row["value"] or 0) for row in positive_pie_period_rows), 2)
+        months_count = max(len(month_keys), 1)
+        period_average_month = round(period_total / months_count, 2)
 
         def build_pie_rows(rows, value_key):
             def build_subcategory_breakdown(subcategories, max_rows=5):
@@ -2306,6 +2384,85 @@ def create_app(test_config=None):
                 pie_rows.append({"label": "Other", "value": other_total})
                 pie_rows[-1]["included_categories"] = other_breakdown
             return pie_rows
+
+        mix_category_breakdown = {}
+        for row in positive_pie_period_rows:
+            category_id = str(row.get("id") if row.get("id") is not None else "0")
+            subcategory_rows = row.get("subcategories") or []
+            compact_subcategories = _compact_rows_with_other(
+                [{"label": item["label"], "value": round(float(item.get("value") or 0), 2)} for item in subcategory_rows if float(item.get("value") or 0) > 0],
+                "value",
+                top_n=6,
+            )
+            table_source = next((item for item in table_rows if str(item.get("id")) == category_id), {})
+            mix_category_breakdown[category_id] = {
+                "category_label": row["label"],
+                "total": round(float(row.get("value") or 0), 2),
+                "pie_rows": compact_subcategories,
+                "table_rows": table_source.get("subcategories", []),
+            }
+
+        monthly_rows = _fetch_shared_monthly_rows_for_period(pie_period_start, pie_period_end)
+        monthly_category_matrix = {}
+        monthly_subcategory_matrix = {}
+        category_labels = {}
+        for item in monthly_rows:
+            month_key = item["month"]
+            category_key = str(item["category_id"] if item["category_id"] is not None else "0")
+            category_label = _label_or_fallback(item["category"], "Uncategorized")
+            subcategory_label = _label_or_fallback(item["subcategory"], "No subcategory")
+            value = round(float(item["total"] or 0), 2)
+            if value <= 0:
+                continue
+            category_labels[category_key] = category_label
+            monthly_category_matrix.setdefault(category_key, {})
+            monthly_category_matrix[category_key][month_key] = round(
+                float(monthly_category_matrix[category_key].get(month_key, 0.0)) + value, 2
+            )
+            monthly_subcategory_matrix.setdefault(category_key, {})
+            monthly_subcategory_matrix[category_key].setdefault(subcategory_label, {})
+            monthly_subcategory_matrix[category_key][subcategory_label][month_key] = round(
+                float(monthly_subcategory_matrix[category_key][subcategory_label].get(month_key, 0.0)) + value, 2
+            )
+
+        trend_category_rows = []
+        for category_key, month_values in monthly_category_matrix.items():
+            values = [round(float(month_values.get(month, 0.0)), 2) for month in month_keys]
+            total = round(sum(values), 2)
+            if total <= 0:
+                continue
+            trend_category_rows.append({
+                "id": category_key,
+                "label": category_labels.get(category_key, "Uncategorized"),
+                "values": values,
+                "total": total,
+            })
+        trend_category_rows.sort(key=lambda row: (-row["total"], row["label"]))
+        trend_all_series = _compact_trend_series(trend_category_rows, top_n=5)
+        trend_total_series = [
+            round(sum(float(row["values"][idx] or 0) for row in trend_all_series), 2)
+            for idx in range(len(month_keys))
+        ]
+
+        trend_category_breakdown = {}
+        for category_key, subcategory_map in monthly_subcategory_matrix.items():
+            series_rows = []
+            for subcategory_label, month_values in subcategory_map.items():
+                values = [round(float(month_values.get(month, 0.0)), 2) for month in month_keys]
+                total = round(sum(values), 2)
+                if total <= 0:
+                    continue
+                series_rows.append({"label": subcategory_label, "values": values, "total": total})
+            series_rows.sort(key=lambda row: (-row["total"], row["label"]))
+            compact_rows = _compact_trend_series(series_rows, top_n=6)
+            trend_category_breakdown[category_key] = {
+                "category_label": category_labels.get(category_key, "Uncategorized"),
+                "series": compact_rows,
+                "total_series": [
+                    round(sum(float(row["values"][idx] or 0) for row in compact_rows), 2)
+                    for idx in range(len(month_keys))
+                ],
+            }
 
         yoy_period_current_start = pie_period_start
         yoy_period_current_end = pie_period_end
@@ -2363,8 +2520,23 @@ def create_app(test_config=None):
             "month": analytics_month,
             "period_label": pie_period_label,
             "ytd_label": f"year-to-date through {analytics_month}",
+            "summary": {
+                "period_total": period_total,
+                "avg_month": period_average_month,
+                "months_count": months_count,
+            },
+            "category_options": visible_category_options,
             "pie_period": build_pie_rows(positive_pie_period_rows, "value"),
             "pie_ytd": build_pie_rows(positive_ytd_rows, "year_to_date"),
+            "mix_by_category": mix_category_breakdown,
+            "trend": {
+                "months": month_keys,
+                "all_categories": {
+                    "series": trend_all_series,
+                    "total_series": trend_total_series,
+                },
+                "by_category": trend_category_breakdown,
+            },
             "table": table_rows,
             "yoy": {
                 "period": {
