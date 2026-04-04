@@ -51,7 +51,7 @@
       <table class="spend-yoy-table">
         <thead>
           <tr>
-            <th>Category</th>
+            <th id="spend-yoy-label-heading">Category</th>
             <th id="spend-yoy-current-heading">Current period</th>
             <th id="spend-yoy-comparison-heading">Prior-year same period</th>
             <th id="spend-yoy-delta-heading">Delta</th>
@@ -622,6 +622,7 @@
       const legendContainer = document.getElementById('spend-chart-legend');
       const yoyTableWrap = document.getElementById('spend-yoy-table-wrap');
       const yoyTableBody = document.getElementById('spend-yoy-table-body');
+      const yoyLabelHeading = document.getElementById('spend-yoy-label-heading');
       const yoyCurrentHeading = document.getElementById('spend-yoy-current-heading');
       const yoyComparisonHeading = document.getElementById('spend-yoy-comparison-heading');
       const yoyDeltaHeading = document.getElementById('spend-yoy-delta-heading');
@@ -674,6 +675,19 @@
 
       function getCurrentComparisonState() {
         const bucket = getCurrentComparisonBucket();
+        const selectedCategory = getSelectedCategoryOption();
+        if (selectedCategory) {
+          const selectedDetail = bucket.subcategories?.[String(selectedCategory.id)] || null;
+          if (selectedDetail) {
+            return {
+              level: 'subcategories',
+              categoryLabel: selectedDetail.category_label,
+              currentLabel: bucket.current_label || '',
+              priorLabel: bucket.prior_label || '',
+              rows: selectedDetail.rows || []
+            };
+          }
+        }
         if (yoyDrilldownKey) {
           const detail = bucket.subcategories?.[String(yoyDrilldownKey)] || null;
           if (detail) {
@@ -713,7 +727,7 @@
         const comparisonState = getCurrentComparisonState();
         const comparisonText = `${comparisonState.currentLabel} vs ${comparisonState.priorLabel}`.trim();
         spendDetailsSubtitle.textContent = comparisonState.level === 'subcategories'
-          ? `${comparisonState.categoryLabel} — ${comparisonText}`
+          ? `${comparisonState.categoryLabel} subcategories — ${comparisonText}`
           : comparisonText;
       }
 
@@ -810,15 +824,16 @@
       }
 
       function renderYoyComparisonTable(state) {
-        if (!yoyTableWrap || !yoyTableBody || !yoyCurrentHeading || !yoyComparisonHeading || !yoyDeltaHeading) return;
+        if (!yoyTableWrap || !yoyTableBody || !yoyLabelHeading || !yoyCurrentHeading || !yoyComparisonHeading || !yoyDeltaHeading) return;
         const rows = state.rows || [];
-        if (spendDetailMode === 'mix' || state.level !== 'categories' || !rows.length) {
+        if (spendDetailMode === 'mix' || !rows.length) {
           yoyTableWrap.hidden = true;
           yoyTableBody.innerHTML = '';
           expandedComparisonRows = {};
           return;
         }
         const isYoyMode = spendDetailMode === 'yoy';
+        yoyLabelHeading.textContent = state.level === 'subcategories' ? 'Subcategory' : 'Category';
         yoyCurrentHeading.textContent = isYoyMode ? 'Current YTD' : 'Current period';
         yoyComparisonHeading.textContent = isYoyMode ? 'Prior-year YTD' : 'Prior-year same period';
         yoyDeltaHeading.textContent = 'Delta';
@@ -1136,7 +1151,7 @@
         });
         if (backRow) backRow.hidden = !(spendDetailMode !== 'mix' && yoyDrilldownKey);
         if (spendDetailsBreakdown) spendDetailsBreakdown.hidden = spendDetailMode !== 'mix';
-        if (spendCategorySelect) spendCategorySelect.disabled = spendDetailMode === 'period-vs-ly' || spendDetailMode === 'yoy';
+        if (spendCategorySelect) spendCategorySelect.disabled = false;
         if (spendDetailMode === 'mix') {
           expandedComparisonRows = {};
           if (chartWrap) chartWrap.style.height = '';
@@ -1183,6 +1198,7 @@
       if (spendCategorySelect) {
         spendCategorySelect.addEventListener('change', function () {
           spendSelectedCategory = spendCategorySelect.value || '';
+          if (spendSelectedCategory) yoyDrilldownKey = null;
           setDashboardStateInUrl('spend_category', spendSelectedCategory);
           renderSpendDetails();
         });
