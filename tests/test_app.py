@@ -1699,6 +1699,43 @@ def test_dashboard_spend_details_yoy_subcategory_drilldown_data(client):
     ]
 
 
+def test_dashboard_spend_details_yoy_ytd_subcategory_drilldown_data(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Produce"))
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Dairy"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE name = 'Produce'").fetchone()["id"]
+        dairy_id = db.execute("SELECT id FROM subcategories WHERE name = 'Dairy'").fetchone()["id"]
+        for expense_date, amount, subcategory_id, description in [
+            ("2025-01-07", -18, produce_id, "Current ytd produce"),
+            ("2025-03-02", -12, dairy_id, "Current ytd dairy"),
+            ("2024-01-05", -6, produce_id, "Prior ytd produce"),
+            ("2024-04-11", -22, dairy_id, "Prior ytd dairy"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, subcategory_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, groceries_id, subcategory_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+    drilldown = analytics["yoy"]["ytd"]["subcategories"][str(groceries_id)]
+
+    assert drilldown["category_label"] == "Groceries"
+    assert drilldown["rows"] == [
+        {"label": "Produce", "current_value": 18.0, "prior_value": 6.0},
+        {"label": "Dairy", "current_value": 12.0, "prior_value": 22.0},
+    ]
+
+
 def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     register(client)
     login(client)
@@ -1713,9 +1750,14 @@ def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     assert '>Spend Mix<' in text
     assert '>Trend<' in text
     assert '>Period vs LY<' in text
+    assert 'id="spend-yoy-label-heading">Category<' in text
     assert 'id="spend-yoy-current-heading">Current period<' in text
     assert 'id="spend-yoy-comparison-heading">Prior-year same period<' in text
     assert 'id="spend-yoy-delta-heading">Delta<' in text
+    assert "yoyLabelHeading.textContent = state.level === 'subcategories' ? 'Subcategory' : 'Category';" in text
+    assert "const selectedDetail = bucket.subcategories?.[String(selectedCategory.id)] || null;" in text
+    assert "spendDetailsSubtitle.textContent = comparisonState.level === 'subcategories'" in text
+    assert "? `${comparisonState.categoryLabel} subcategories — ${comparisonText}`" in text
     assert 'Current YTD' in text
     assert 'Prior-year YTD' in text
     assert "const initialSpendView = new URL(window.location.href).searchParams.get('spend_view') || ''" in text
@@ -1725,6 +1767,7 @@ def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     assert "const spendDetailsBreakdown = document.getElementById('spend-details-breakdown');" in text
     assert "spendDetailsBreakdown.hidden = spendDetailMode !== 'mix';" in text
     assert "const spendCategorySelect = document.getElementById('spend-category-select');" in text
+    assert "if (spendCategorySelect) spendCategorySelect.disabled = false;" in text
 
 
 def test_dashboard_spend_details_compare_query_state_is_preserved_in_markup(client):
