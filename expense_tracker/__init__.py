@@ -5291,11 +5291,15 @@ def create_app(test_config=None):
                 flash("Preview expired. Please re-upload the file.")
                 return redirect(url_for("import_csv"))
 
+            show_all_requested = get_import_preview_show_all(g.user["id"], import_id)
+            show_all_rows_values = request.args.getlist("show_all_rows")
+            show_all_rows_param = show_all_rows_values[-1] if show_all_rows_values else None
             show_all_values = request.args.getlist("show_all")
             show_all_param = show_all_values[-1] if show_all_values else None
-            show_all_requested = get_import_preview_show_all(g.user["id"], import_id)
             low_confidence_filter = checkbox_flag_from_multidict(request.args, "low_confidence")
-            if show_all_param is not None:
+            if show_all_rows_param is not None:
+                show_all_requested = show_all_rows_param == "1"
+            elif show_all_param is not None:
                 show_all_requested = show_all_param == "1"
 
             requires_show_all_confirmation = len(parsed_rows) > IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD

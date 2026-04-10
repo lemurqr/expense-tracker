@@ -140,6 +140,47 @@ def test_import_preview_get_show_all_query_param_controls_row_limit(client):
     assert all_rows_html.count('class="preview-row"') == 51
 
 
+def test_import_preview_apply_options_show_all_rows_works_for_normal_size_preview(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(29):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-03-02",
+                "amount": -5.0 - idx,
+                "description": f"Normal Merchant {idx}",
+                "normalized_description": f"normal merchant {idx}",
+                "vendor": f"Normal Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+                "vendor_key": f"normal merchant {idx}",
+                "vendor_rule_key": f"normal merchant {idx}",
+                "description_rule_key": f"normal merchant {idx}",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-normal-29-show-all")
+
+    default_preview = client.get(f"/import/csv?import_id={import_id}")
+    default_text = default_preview.get_data(as_text=True)
+    assert default_preview.status_code == 200
+    assert "Showing 25 of 29 rows" in default_text
+    assert default_text.count('class="preview-row"') == 25
+
+    apply_options_preview = client.get(f"/import/csv?import_id={import_id}&show_all_rows=0&show_all_rows=1")
+    apply_options_text = apply_options_preview.get_data(as_text=True)
+    assert apply_options_preview.status_code == 200
+    assert "Showing 29 of 29 rows" in apply_options_text
+    assert apply_options_text.count('class="preview-row"') == 29
+    assert 'name="show_all_rows" value="1" checked' in apply_options_text
+
+
 def test_import_preview_show_all_toggle_and_confirm_imports_all_rows(client):
     register(client)
     login(client)
