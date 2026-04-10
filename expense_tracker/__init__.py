@@ -4485,6 +4485,12 @@ def create_app(test_config=None):
                 row["paid_by"] = paid_by
             else:
                 row.pop("paid_by", None)
+        if "scope" in payload:
+            scope_value = normalize_expense_scope(payload.get("scope") or "", default="")
+            if scope_value:
+                row["scope"] = scope_value
+            else:
+                row.pop("scope", None)
         if "override_category" in payload:
             apply_staged_category_override(row, payload.get("override_category") or "")
         if "override_subcategory" in payload:
@@ -4769,9 +4775,14 @@ def create_app(test_config=None):
                 for index, record in enumerate(records):
                     row = record["row"]
                     row_index = row.get("row_index", index)
-
                     category_key = f"override_category_{row_index}"
-                    if category_key not in request.form:
+                    subcategory_key = f"override_subcategory_{row_index}"
+                    scope_key = f"override_scope_{row_index}"
+                    if (
+                        category_key not in request.form
+                        and subcategory_key not in request.form
+                        and scope_key not in request.form
+                    ):
                         continue
 
                     category_override = (request.form.get(category_key, "") or "").strip()
@@ -4795,12 +4806,18 @@ def create_app(test_config=None):
                         row["subcategory"] = ""
                         row.pop("override_subcategory", None)
 
-                    subcategory_override = (request.form.get(f"override_subcategory_{row_index}", "") or "").strip()
+                    subcategory_override = (request.form.get(subcategory_key, "") or "").strip()
                     if subcategory_override:
                         row["subcategory"] = subcategory_override
                         row["override_subcategory"] = subcategory_override
                     else:
                         row.pop("override_subcategory", None)
+
+                    scope_override = normalize_expense_scope(request.form.get(scope_key, "") or "", default="")
+                    if scope_override:
+                        row["scope"] = scope_override
+                    else:
+                        row.pop("scope", None)
 
                     update_staged_preview_row(db, record["id"], row)
                     rows_updated_from_form = True

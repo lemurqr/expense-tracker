@@ -190,6 +190,17 @@
       <button type="button" id="applyPaidBySelected">Apply to selected</button>
     </p>
     <p class="inline-form">
+      <label>Scope (default for this import)
+        <select id="importDefaultScope">
+          <option value="">-- Select --</option>
+          <option value="shared">Shared</option>
+          <option value="dk_personal">DK Personal</option>
+          <option value="yz_personal">YZ Personal</option>
+        </select>
+      </label>
+      <button type="button" id="applyScopeSelected">Apply to selected</button>
+    </p>
+    <p class="inline-form">
       <label>Category
         <select name="category_id" id="bulkCategoryId">
           <option value="">-- Uncategorized --</option>
@@ -221,13 +232,12 @@
             </select>
           </td>
           <td>
-            {% if row.scope == 'dk_personal' %}
-              <span class="confidence-badge confidence-medium">DK Personal</span>
-            {% elif row.scope == 'yz_personal' %}
-              <span class="confidence-badge confidence-medium">YZ Personal</span>
-            {% else %}
-              <span class="confidence-badge confidence-high">Shared</span>
-            {% endif %}
+            <select name="override_scope_{{ row.row_index }}" class="scope-select">
+              <option value="" {% if not row.scope %}selected{% endif %}>Use fallback</option>
+              <option value="shared" {% if row.scope == 'shared' %}selected{% endif %}>Shared</option>
+              <option value="dk_personal" {% if row.scope == 'dk_personal' %}selected{% endif %}>DK Personal</option>
+              <option value="yz_personal" {% if row.scope == 'yz_personal' %}selected{% endif %}>YZ Personal</option>
+            </select>
           </td>
           <td>
             <select name="override_category_{{ row.row_index }}" class="category-select" data-original-category="{{ row.category or "" }}">
@@ -392,6 +402,8 @@
   const previewToggleSelectedContainer = document.getElementById('preview-toggle-selected-row-ids');
   const confirmSelectedContainer = document.getElementById('confirm-selected-row-ids');
   const applyPaidBySelectedButton = document.getElementById('applyPaidBySelected');
+  const applyScopeSelectedButton = document.getElementById('applyScopeSelected');
+  const importDefaultScope = document.getElementById('importDefaultScope');
   const applyCategorySelectedButton = document.getElementById('applyCategorySelected');
   const bulkCategoryId = document.getElementById('bulkCategoryId');
   const confirmImportForm = document.getElementById('confirmImportForm');
@@ -509,6 +521,13 @@
       subcategoryInput.name = `override_subcategory_${rowIndex}`;
       subcategoryInput.value = subcategorySelect ? (subcategorySelect.value || '') : '';
       confirmRowOverridesContainer.appendChild(subcategoryInput);
+
+      const scopeSelect = row.querySelector('.scope-select');
+      const scopeInput = document.createElement('input');
+      scopeInput.type = 'hidden';
+      scopeInput.name = `override_scope_${rowIndex}`;
+      scopeInput.value = scopeSelect ? (scopeSelect.value || '') : '';
+      confirmRowOverridesContainer.appendChild(scopeInput);
     });
   };
 
@@ -703,6 +722,13 @@
     });
   });
 
+  document.querySelectorAll('.scope-select').forEach((select) => {
+    select.addEventListener('change', async (event) => {
+      const row = event.target.closest('.preview-row');
+      await postRowUpdate(row, { scope: event.target.value });
+    });
+  });
+
   document.querySelectorAll('.category-select').forEach((select) => {
     select.addEventListener('change', async (event) => {
       const row = event.target.closest('.preview-row');
@@ -762,6 +788,22 @@
         markRowOverridden(row, true);
       });
       showAppliedMessage(result.updated || 0);
+    });
+  }
+
+  if (applyScopeSelectedButton) {
+    applyScopeSelectedButton.addEventListener('click', async () => {
+      const value = importDefaultScope ? importDefaultScope.value : '';
+      if (!value) return;
+      let updated = 0;
+      for (const row of document.querySelectorAll('.preview-row')) {
+        const checkbox = row.querySelector('.row-select');
+        const select = row.querySelector('.scope-select');
+        if (!checkbox || !checkbox.checked || !select) continue;
+        select.value = value;
+        if (await postRowUpdate(row, { scope: value })) updated += 1;
+      }
+      showAppliedMessage(updated);
     });
   }
 
