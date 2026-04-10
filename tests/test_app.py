@@ -3725,6 +3725,168 @@ def test_import_preview_displays_mapped_scope(client):
     assert "YZ Personal" in html
 
 
+def test_import_preview_renders_editable_scope_control(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-11-06",
+            "amount": -21.0,
+            "description": "Editable scope row",
+            "normalized_description": "editable scope row",
+            "vendor": "Store",
+            "category": "Groceries",
+            "paid_by": "DK",
+            "scope": "shared",
+        }
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="preview-editable-scope")
+
+    preview = client.get(f"/import/csv?import_id={import_id}")
+    html = preview.get_data(as_text=True)
+    assert preview.status_code == 200
+    assert 'name="override_scope_0"' in html
+    assert ">Shared</option>" in html
+    assert ">DK Personal</option>" in html
+    assert ">YZ Personal</option>" in html
+
+
+def test_import_preview_scope_edit_persists_after_rerender(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-11-06",
+            "amount": -21.0,
+            "description": "Persistent scope row",
+            "normalized_description": "persistent scope row",
+            "vendor": "Store",
+            "category": "Groceries",
+            "paid_by": "DK",
+            "scope": "shared",
+        }
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="preview-scope-persist")
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute(
+            "SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1",
+            (import_id,),
+        ).fetchone()["id"]
+
+    update_response = client.post(
+        "/import/preview/row_update",
+        json={"import_id": import_id, "row_id": row_id, "scope": "dk_personal"},
+    )
+    assert update_response.status_code == 200
+
+    rerender = client.get(f"/import/csv?import_id={import_id}")
+    html = rerender.get_data(as_text=True)
+    assert rerender.status_code == 200
+    assert 'name="override_scope_0"' in html
+    assert 'value="dk_personal" selected' in html
+
+
+def test_import_confirm_saves_edited_scope_from_preview(client):
+    register(client)
+    login(client)
+
+    rows = [
+        {
+            "row_index": 0,
+            "user_id": 1,
+            "date": "2026-11-09",
+            "amount": -18.0,
+            "description": "Edited scope on import",
+            "normalized_description": "edited scope on import",
+            "vendor": "Store",
+            "category": "Groceries",
+            "paid_by": "DK",
+            "scope": "shared",
+        }
+    ]
+    import_id = stage_import_preview(client, rows, preview_id="preview-scope-confirm")
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute(
+            "SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1",
+            (import_id,),
+        ).fetchone()["id"]
+
+    client.post(
+        "/import/preview/row_update",
+        json={"import_id": import_id, "row_id": row_id, "scope": "yz_personal"},
+    )
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT scope FROM expenses WHERE description = 'Edited scope on import'").fetchone()
+    assert row["scope"] == "yz_personal"
+
+
+def test_import_confirm_mapped_scope_can_be_overridden_in_preview(client):
+    register(client)
+    login(client)
+
+    csv_content = (
+        "date,description,amount,paid_by,category,scope\n"
+        "2026-11-10,Mapped scope override,-15.00,YZ,Groceries,YZ Personal\n"
+    )
+    preview = client.post(
+        "/import/csv",
+        data={
+            "action": "preview",
+            "map_date": "0",
+            "map_description": "1",
+            "map_amount": "2",
+            "map_paid_by": "3",
+            "map_category": "4",
+            "map_scope": "5",
+            "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "scope-override.csv"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert preview.status_code == 200
+    import_id = extract_import_id_from_html(preview.get_data(as_text=True))
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_id = db.execute(
+            "SELECT id FROM import_staging WHERE import_id = ? ORDER BY id LIMIT 1",
+            (import_id,),
+        ).fetchone()["id"]
+
+    update_response = client.post(
+        "/import/preview/row_update",
+        json={"import_id": import_id, "row_id": row_id, "scope": "dk_personal"},
+    )
+    assert update_response.status_code == 200
+
+    response = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "YZ"},
+        follow_redirects=True,
+    )
+    assert b"Imported 1 transaction(s)." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT scope FROM expenses WHERE description = 'Mapped scope override'").fetchone()
+    assert row["scope"] == "dk_personal"
+
+
 def test_import_confirm_scope_fallback_without_mapped_scope_column(client):
     register(client)
     login(client)
