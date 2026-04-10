@@ -396,6 +396,15 @@
           </select>
         </label>
         <button type="submit" name="action" value="set_category">Apply</button>
+        <label>Set subcategory
+          <select name="subcategory_id">
+            <option value="">Choose subcategory</option>
+            {% for subcategory in all_subcategories %}
+            <option value="{{ subcategory.id }}">{{ subcategory.category_name }} → {{ subcategory.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" name="action" value="set_subcategory">Apply</button>
         <label>Set paid by
           <select name="paid_by">
             <option value="">Blank</option>
@@ -404,6 +413,15 @@
           </select>
         </label>
         <button type="submit" name="action" value="set_paid_by">Apply</button>
+        <label>Set scope
+          <select name="scope">
+            <option value="">Choose scope</option>
+            <option value="shared">Shared</option>
+            <option value="dk_personal">DK Personal</option>
+            <option value="yz_personal">YZ Personal</option>
+          </select>
+        </label>
+        <button type="submit" name="action" value="set_scope">Apply</button>
         <label>
           <input type="checkbox" name="is_transfer" value="1">
           Mark as transfer

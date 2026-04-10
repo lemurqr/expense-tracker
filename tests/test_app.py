@@ -178,7 +178,45 @@ def test_import_preview_apply_options_show_all_rows_works_for_normal_size_previe
     assert apply_options_preview.status_code == 200
     assert "Showing 29 of 29 rows" in apply_options_text
     assert apply_options_text.count('class="preview-row"') == 29
+    assert apply_options_text.count('class="row-check row-select"') == 29
+    assert apply_options_text.count('name="selected_row_ids"') == 29
     assert 'name="show_all_rows" value="1" checked' in apply_options_text
+
+
+def test_import_preview_apply_options_show_all_rows_remains_enabled_when_extra_zero_is_present(client):
+    register(client)
+    login(client)
+
+    rows = []
+    for idx in range(29):
+        rows.append(
+            {
+                "user_id": 1,
+                "row_index": idx,
+                "date": "2026-03-02",
+                "amount": -5.0 - idx,
+                "description": f"Normal Merchant {idx}",
+                "normalized_description": f"normal merchant {idx}",
+                "vendor": f"Normal Merchant {idx}",
+                "category": "Groceries",
+                "confidence": 90,
+                "confidence_label": "High",
+                "suggested_source": "rule",
+                "vendor_key": f"normal merchant {idx}",
+                "vendor_rule_key": f"normal merchant {idx}",
+                "description_rule_key": f"normal merchant {idx}",
+            }
+        )
+
+    import_id = stage_import_preview(client, rows, preview_id="preview-normal-29-show-all-extra-zero")
+    response = client.get(f"/import/csv?import_id={import_id}&show_all_rows=0&show_all_rows=1&show_all_rows=0")
+    html = response.get_data(as_text=True)
+
+    assert response.status_code == 200
+    assert "Showing 29 of 29 rows" in html
+    assert html.count('class="preview-row"') == 29
+    assert html.count('name="selected_row_ids"') == 29
+    assert 'name="show_all_rows" value="1" checked' in html
 
 
 def test_import_preview_show_all_toggle_and_confirm_imports_all_rows(client):
@@ -4784,6 +4822,121 @@ def test_bulk_update_paid_by_sets_multiple_rows(client):
         db = client.application.get_db()
         rows = db.execute("SELECT paid_by FROM expenses WHERE id IN (?, ?) ORDER BY id", (ids[0], ids[1])).fetchall()
     assert all(row["paid_by"] == "YZ" for row in rows)
+
+
+def test_bulk_update_subcategory_sets_selected_rows(client):
+    register(client)
+    login(client)
+
+    client.post("/categories", data={"name": "Groceries"}, follow_redirects=True)
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Groceries'").fetchone()["id"]
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (1, groceries_id, "Dairy", "2026-02-01T00:00:00"),
+        )
+        dairy_id = db.last_insert_id()
+        db.commit()
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-03", "amount": "30", "category_id": str(groceries_id), "description": "Subcat A"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-04", "amount": "40", "category_id": str(groceries_id), "description": "Subcat B"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        ids = [row["id"] for row in db.execute("SELECT id FROM expenses WHERE description IN ('Subcat A', 'Subcat B')").fetchall()]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "set_subcategory", "subcategory_id": str(dairy_id), "selected_ids": [str(v) for v in ids]},
+        follow_redirects=True,
+    )
+
+    assert b"Updated 2 transactions" in response.data
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute("SELECT subcategory_id FROM expenses WHERE id IN (?, ?) ORDER BY id", (ids[0], ids[1])).fetchall()
+    assert all(row["subcategory_id"] == dairy_id for row in rows)
+
+
+def test_bulk_update_subcategory_rejects_invalid_category_combination(client):
+    register(client)
+    login(client)
+
+    client.post("/categories", data={"name": "Groceries"}, follow_redirects=True)
+    client.post("/categories", data={"name": "Utilities"}, follow_redirects=True)
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Groceries'").fetchone()["id"]
+        utilities_id = db.execute("SELECT id FROM categories WHERE user_id = 1 AND name = 'Utilities'").fetchone()["id"]
+        db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name, created_at) VALUES (?, ?, ?, ?)",
+            (1, groceries_id, "Dairy", "2026-02-01T00:00:00"),
+        )
+        dairy_id = db.last_insert_id()
+        db.commit()
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-03", "amount": "30", "category_id": str(utilities_id), "description": "Mismatch Row"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        expense_id = db.execute("SELECT id FROM expenses WHERE description = 'Mismatch Row'").fetchone()["id"]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "set_subcategory", "subcategory_id": str(dairy_id), "selected_ids": [str(expense_id)]},
+        follow_redirects=True,
+    )
+
+    assert b"Set category first" in response.data
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute("SELECT subcategory_id FROM expenses WHERE id = ?", (expense_id,)).fetchone()
+    assert row["subcategory_id"] is None
+
+
+def test_bulk_update_scope_sets_selected_rows(client):
+    register(client)
+    login(client)
+
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-03", "amount": "30", "category_id": "", "description": "Scope A", "scope": "shared"},
+        follow_redirects=True,
+    )
+    client.post(
+        "/expenses/new",
+        data={"date": "2026-02-04", "amount": "40", "category_id": "", "description": "Scope B", "scope": "shared"},
+        follow_redirects=True,
+    )
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        ids = [row["id"] for row in db.execute("SELECT id FROM expenses WHERE description IN ('Scope A', 'Scope B')").fetchall()]
+
+    response = client.post(
+        "/expenses/bulk",
+        data={"action": "set_scope", "scope": "yz_personal", "selected_ids": [str(v) for v in ids]},
+        follow_redirects=True,
+    )
+
+    assert b"Updated 2 transactions" in response.data
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute("SELECT scope FROM expenses WHERE id IN (?, ?) ORDER BY id", (ids[0], ids[1])).fetchall()
+    assert all(row["scope"] == "yz_personal" for row in rows)
 
 def test_bulk_actions_prevent_cross_user_modification(client):
     register(client, username="user1", password="password")

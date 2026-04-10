@@ -880,7 +880,7 @@ def checkbox_flag_from_multidict(values, name):
     entries = values.getlist(name)
     if not entries:
         return False
-    return entries[-1] == "1"
+    return any(entry == "1" for entry in entries)
 
 def stage_import_preview_rows(db, import_id, rows, household_id=None, user_id=None):
     created_at = datetime.utcnow().isoformat()
@@ -3158,6 +3158,16 @@ def create_app(test_config=None):
             "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name",
             (g.user["id"],),
         ).fetchall()
+        all_subcategories = db.execute(
+            """
+            SELECT sc.id, sc.category_id, sc.name, c.name AS category_name
+            FROM subcategories sc
+            JOIN categories c ON c.id = sc.category_id
+            WHERE sc.user_id = ? AND c.user_id = ?
+            ORDER BY c.name ASC, sc.name ASC
+            """,
+            (g.user["id"], g.user["id"]),
+        ).fetchall()
         tx_source_rows = db.execute(
             """
             SELECT DISTINCT COALESCE(category_source, '') AS source
@@ -3180,6 +3190,7 @@ def create_app(test_config=None):
             end_date=filters["end_date"],
             period_label=filters["period_label"],
             all_categories=all_categories,
+            all_subcategories=all_subcategories,
             tx_filter_values=filters["tx_filter_values"],
             active_tx_filter_count=filters["active_tx_filter_count"],
             tx_confidence_options=transaction_confidence_filter_options(),
@@ -3924,6 +3935,59 @@ def create_app(test_config=None):
             result = db.execute(
                 f"UPDATE expenses SET paid_by = ? WHERE household_id = ? AND id IN ({placeholders})",
                 [paid_by, g.household_id, *ids],
+            )
+            db.commit()
+            flash(f"Updated {result.rowcount} transactions")
+            return redirect_dashboard()
+
+        if action == "set_subcategory":
+            raw_subcategory_id = (request.form.get("subcategory_id") or "").strip()
+            if not raw_subcategory_id:
+                flash("Please choose a subcategory.")
+                return redirect_dashboard()
+            try:
+                subcategory_id = int(raw_subcategory_id)
+            except (TypeError, ValueError):
+                flash("Invalid subcategory.")
+                return redirect_dashboard()
+
+            subcategory = db.execute(
+                """
+                SELECT sc.id, sc.category_id
+                FROM subcategories sc
+                JOIN categories c ON c.id = sc.category_id
+                WHERE sc.id = ? AND sc.user_id = ? AND c.user_id = ?
+                """,
+                (subcategory_id, g.user["id"], g.user["id"]),
+            ).fetchone()
+            if subcategory is None:
+                flash("Invalid subcategory.")
+                return redirect_dashboard()
+
+            invalid_count = db.execute(
+                f"SELECT COUNT(*) AS count FROM expenses WHERE household_id = ? AND id IN ({placeholders}) AND (category_id IS NULL OR category_id != ?)",
+                [g.household_id, *ids, subcategory["category_id"]],
+            ).fetchone()["count"]
+            if invalid_count > 0:
+                flash("Selected subcategory does not match one or more selected transaction categories. Set category first.")
+                return redirect_dashboard()
+
+            result = db.execute(
+                f"UPDATE expenses SET subcategory_id = ? WHERE household_id = ? AND id IN ({placeholders})",
+                [subcategory_id, g.household_id, *ids],
+            )
+            db.commit()
+            flash(f"Updated {result.rowcount} transactions")
+            return redirect_dashboard()
+
+        if action == "set_scope":
+            scope = normalize_expense_scope(request.form.get("scope", ""), default="")
+            if scope not in {"shared", "dk_personal", "yz_personal"}:
+                flash("Invalid scope.")
+                return redirect_dashboard()
+            result = db.execute(
+                f"UPDATE expenses SET scope = ? WHERE household_id = ? AND id IN ({placeholders})",
+                [scope, g.household_id, *ids],
             )
             db.commit()
             flash(f"Updated {result.rowcount} transactions")
@@ -5231,9 +5295,9 @@ def create_app(test_config=None):
                     row["subcategory"] = resolve_preview_subcategory(row, subcategory_suggestions)
 
             import_id = str(uuid.uuid4())
-            show_all_requested = request.form.get("show_all_rows") == "1"
+            show_all_requested = checkbox_flag_from_multidict(request.form, "show_all_rows")
             requires_show_all_confirmation = len(parsed_rows) > IMPORT_PREVIEW_SHOW_ALL_WARNING_THRESHOLD
-            show_all_confirmed = request.form.get("confirm_show_all") == "1"
+            show_all_confirmed = checkbox_flag_from_multidict(request.form, "confirm_show_all")
             show_all = show_all_requested
             if requires_show_all_confirmation and show_all_requested and not show_all_confirmed:
                 show_all = False
@@ -5309,13 +5373,16 @@ def create_app(test_config=None):
                 return redirect(url_for("import_csv"))
 
             show_all_requested = get_import_preview_show_all(g.user["id"], import_id)
-            show_all_rows_values = request.args.getlist("show_all_rows")
-            show_all_rows_param = show_all_rows_values[-1] if show_all_rows_values else None
+            show_all_rows_param = (
+                checkbox_flag_from_multidict(request.args, "show_all_rows")
+                if "show_all_rows" in request.args
+                else None
+            )
             show_all_values = request.args.getlist("show_all")
             show_all_param = show_all_values[-1] if show_all_values else None
             low_confidence_filter = checkbox_flag_from_multidict(request.args, "low_confidence")
             if show_all_rows_param is not None:
-                show_all_requested = show_all_rows_param == "1"
+                show_all_requested = show_all_rows_param
             elif show_all_param is not None:
                 show_all_requested = show_all_param == "1"
 
