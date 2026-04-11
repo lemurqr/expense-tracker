@@ -514,8 +514,8 @@
         <td>${{ '%.2f'|format(expense.amount) }}</td>
         <td>{{ expense.paid_by or '—' }}</td>
         <td>{% if expense.scope == 'dk_personal' %}DK Personal{% elif expense.scope == 'yz_personal' %}YZ Personal{% else %}Shared{% endif %}</td>
-        <td>{{ expense.category or 'Uncategorized' }}</td>
-        <td>{{ expense.subcategory or '—' }}</td>
+        <td>{% if expense.split_count and expense.split_count > 0 %}Split{% else %}{{ expense.category or 'Uncategorized' }}{% endif %}</td>
+        <td>{% if expense.split_count and expense.split_count > 0 %}Multiple{% else %}{{ expense.subcategory or '—' }}{% endif %}</td>
         <td>{{ expense.vendor or expense.description or '—' }}</td>
         <td>{{ expense.description or '—' }}</td>
         <td>{% if expense.category_source == 'transfer' %}<span class="confidence-badge confidence-transfer" title="Source: {{ expense.category_source or 'unknown' }}">Transfer</span>{% elif expense.category_confidence is not none %}{% if expense.category_confidence >= 80 %}<span class="confidence-badge confidence-high" title="Source: {{ expense.category_source or 'unknown' }}">{{ expense.category_confidence }}</span>{% elif expense.category_confidence >= 50 %}<span class="confidence-badge confidence-medium" title="Source: {{ expense.category_source or 'unknown' }}">{{ expense.category_confidence }}</span>{% else %}<span class="confidence-badge confidence-low" title="Source: {{ expense.category_source or 'unknown' }}">{{ expense.category_confidence }}</span>{% endif %}{% else %}<span class="confidence-badge confidence-low" title="Source: {{ expense.category_source or 'unknown' }}">N/A</span>{% endif %}</td>

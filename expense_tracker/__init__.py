@@ -1769,18 +1769,30 @@ def create_app(test_config=None):
         ).fetchall()
         return {(row["category_id"], row["subcategory_id"]): row for row in rows}
 
+    def _expense_allocation_rows_sql(where_sql):
+        return """
+            SELECT e.id AS expense_id, e.date AS expense_date, e.category_id, e.subcategory_id, e.amount
+            FROM expenses e
+            WHERE {where_sql}
+              AND NOT EXISTS (SELECT 1 FROM expense_splits es WHERE es.expense_id = e.id)
+            UNION ALL
+            SELECT e.id AS expense_id, e.date AS expense_date, es.category_id, es.subcategory_id, es.amount
+            FROM expenses e
+            JOIN expense_splits es ON es.expense_id = e.id
+            WHERE {where_sql}
+        """.format(where_sql=where_sql)
+
     def _fetch_actual_map(db, month_value, view_mode, scope_mode):
         where_parts, params = _budget_expense_filters(view_mode, scope_mode)
         where_parts.append("e.date LIKE ?")
         params.append(f"{month_value}%")
         rows = db.execute(
             """
-            SELECT e.category_id, COALESCE(e.subcategory_id, 0) AS subcategory_id, COALESCE(SUM(-e.amount), 0) AS actual
-            FROM expenses e
-            WHERE {where_sql}
-            GROUP BY e.category_id, COALESCE(e.subcategory_id, 0)
-            """.format(where_sql=" AND ".join(where_parts)),
-            tuple(params),
+            SELECT alloc.category_id, COALESCE(alloc.subcategory_id, 0) AS subcategory_id, COALESCE(SUM(-alloc.amount), 0) AS actual
+            FROM ({allocation_sql}) alloc
+            GROUP BY alloc.category_id, COALESCE(alloc.subcategory_id, 0)
+            """.format(allocation_sql=_expense_allocation_rows_sql(" AND ".join(where_parts))),
+            tuple(params + params),
         ).fetchall()
         return {(row["category_id"], row["subcategory_id"]): float(row["actual"] or 0) for row in rows}
 
@@ -2013,21 +2025,23 @@ def create_app(test_config=None):
 
     def _fetch_shared_spending_by_category(db, filters, top_n=10):
         if db.backend == "postgres":
-            rounded_total_sql = "ROUND(SUM(-e.amount)::numeric, 2)"
+            rounded_total_sql = "ROUND(SUM(-alloc.amount)::numeric, 2)"
         else:
-            rounded_total_sql = "ROUND(SUM(-e.amount), 2)"
+            rounded_total_sql = "ROUND(SUM(-alloc.amount), 2)"
 
+        allocation_sql = _expense_allocation_rows_sql(
+            f"{filters['filter_sql']} AND e.is_transfer = 0 AND e.scope = 'shared'"
+        )
         rows = db.execute(
             """
             SELECT COALESCE(c.name, 'Uncategorized') AS category, {rounded_total_sql} AS total
-            FROM expenses e
-            LEFT JOIN categories c ON e.category_id = c.id
-            WHERE {filter_sql} AND e.is_transfer = 0 AND e.scope = 'shared'
+            FROM ({allocation_sql}) alloc
+            LEFT JOIN categories c ON alloc.category_id = c.id
             GROUP BY COALESCE(c.name, 'Uncategorized')
-            HAVING SUM(-e.amount) > 0
+            HAVING SUM(-alloc.amount) > 0
             ORDER BY total DESC, category ASC
-            """.format(filter_sql=filters["filter_sql"], rounded_total_sql=rounded_total_sql),
-            tuple(filters["params"]),
+            """.format(allocation_sql=allocation_sql, rounded_total_sql=rounded_total_sql),
+            tuple(filters["params"] + filters["params"]),
         ).fetchall()
 
         top_rows = rows[:top_n]
@@ -2105,9 +2119,13 @@ def create_app(test_config=None):
 
     def _fetch_shared_category_totals_for_period(db, household_id, start_date, end_date):
         if db.backend == "postgres":
-            rounded_total_sql = "ROUND(SUM(-e.amount)::numeric, 2)"
+            rounded_total_sql = "ROUND(SUM(-alloc.amount)::numeric, 2)"
         else:
-            rounded_total_sql = "ROUND(SUM(-e.amount), 2)"
+            rounded_total_sql = "ROUND(SUM(-alloc.amount), 2)"
+
+        allocation_sql = _expense_allocation_rows_sql(
+            "e.household_id = ? AND e.is_transfer = 0 AND e.scope = 'shared' AND e.date >= ? AND e.date <= ?"
+        )
 
         rows = db.execute(
             """
@@ -2115,16 +2133,11 @@ def create_app(test_config=None):
                 c.id AS category_id,
                 COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized') AS category,
                 {rounded_total_sql} AS total
-            FROM expenses e
-            LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.household_id = ?
-              AND e.is_transfer = 0
-              AND e.scope = 'shared'
-              AND e.date >= ?
-              AND e.date <= ?
+            FROM ({allocation_sql}) alloc
+            LEFT JOIN categories c ON alloc.category_id = c.id
             GROUP BY c.id, COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized')
-            """.format(rounded_total_sql=rounded_total_sql),
-            (household_id, start_date.isoformat(), end_date.isoformat()),
+            """.format(rounded_total_sql=rounded_total_sql, allocation_sql=allocation_sql),
+            (household_id, start_date.isoformat(), end_date.isoformat(), household_id, start_date.isoformat(), end_date.isoformat()),
         ).fetchall()
         category_totals = {
             (row["category_id"] if row["category_id"] is not None else 0): {
@@ -2142,17 +2155,12 @@ def create_app(test_config=None):
                 c.id AS category_id,
                 COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory') AS subcategory,
                 {rounded_total_sql} AS total
-            FROM expenses e
-            LEFT JOIN categories c ON e.category_id = c.id
-            JOIN subcategories sc ON e.subcategory_id = sc.id
-            WHERE e.household_id = ?
-              AND e.is_transfer = 0
-              AND e.scope = 'shared'
-              AND e.date >= ?
-              AND e.date <= ?
+            FROM ({allocation_sql}) alloc
+            LEFT JOIN categories c ON alloc.category_id = c.id
+            JOIN subcategories sc ON alloc.subcategory_id = sc.id
             GROUP BY c.id, sc.id, COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory')
-            """.format(rounded_total_sql=rounded_total_sql),
-            (household_id, start_date.isoformat(), end_date.isoformat()),
+            """.format(rounded_total_sql=rounded_total_sql, allocation_sql=allocation_sql),
+            (household_id, start_date.isoformat(), end_date.isoformat(), household_id, start_date.isoformat(), end_date.isoformat()),
         ).fetchall()
 
         for row in subcategory_rows:
@@ -2189,11 +2197,14 @@ def create_app(test_config=None):
 
         def _fetch_shared_monthly_rows_for_period(start_date, end_date):
             if db.backend == "postgres":
-                month_sql = "TO_CHAR(DATE_TRUNC('month', e.date::date), 'YYYY-MM')"
-                rounded_total_sql = "ROUND(SUM(-e.amount)::numeric, 2)"
+                month_sql = "TO_CHAR(DATE_TRUNC('month', alloc.expense_date::date), 'YYYY-MM')"
+                rounded_total_sql = "ROUND(SUM(-alloc.amount)::numeric, 2)"
             else:
-                month_sql = "SUBSTR(e.date, 1, 7)"
-                rounded_total_sql = "ROUND(SUM(-e.amount), 2)"
+                month_sql = "SUBSTR(alloc.expense_date, 1, 7)"
+                rounded_total_sql = "ROUND(SUM(-alloc.amount), 2)"
+            allocation_sql = _expense_allocation_rows_sql(
+                "e.household_id = ? AND e.is_transfer = 0 AND e.scope = 'shared' AND e.date >= ? AND e.date <= ?"
+            )
             return db.execute(
                 """
                 SELECT
@@ -2202,18 +2213,20 @@ def create_app(test_config=None):
                     COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized') AS category,
                     COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory') AS subcategory,
                     {rounded_total_sql} AS total
-                FROM expenses e
-                LEFT JOIN categories c ON e.category_id = c.id
-                LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
-                WHERE e.household_id = ?
-                  AND e.is_transfer = 0
-                  AND e.scope = 'shared'
-                  AND e.date >= ?
-                  AND e.date <= ?
+                FROM ({allocation_sql}) alloc
+                LEFT JOIN categories c ON alloc.category_id = c.id
+                LEFT JOIN subcategories sc ON alloc.subcategory_id = sc.id
                 GROUP BY {month_sql}, c.id, COALESCE(NULLIF(TRIM(c.name), ''), 'Uncategorized'), COALESCE(NULLIF(TRIM(sc.name), ''), 'No subcategory')
                 ORDER BY {month_sql} ASC
-                """.format(month_sql=month_sql, rounded_total_sql=rounded_total_sql),
-                (g.household_id, start_date.isoformat(), end_date.isoformat()),
+                """.format(month_sql=month_sql, rounded_total_sql=rounded_total_sql, allocation_sql=allocation_sql),
+                (
+                    g.household_id,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                    g.household_id,
+                    start_date.isoformat(),
+                    end_date.isoformat(),
+                ),
             ).fetchall()
 
         def _compact_rows_with_other(rows, value_key, top_n=5):
@@ -3115,10 +3128,16 @@ def create_app(test_config=None):
             """
             SELECT e.id, e.date, e.amount, e.vendor, e.description, c.name as category,
                    sc.name AS subcategory, e.updated_at,
-                   e.category_confidence, e.category_source, e.paid_by, e.scope
+                   e.category_confidence, e.category_source, e.paid_by, e.scope,
+                   COALESCE(split_meta.split_count, 0) AS split_count
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
             LEFT JOIN subcategories sc ON e.subcategory_id = sc.id
+            LEFT JOIN (
+                SELECT expense_id, COUNT(*) AS split_count
+                FROM expense_splits
+                GROUP BY expense_id
+            ) split_meta ON split_meta.expense_id = e.id
             WHERE {filter_sql} AND {tx_filter_sql}
             ORDER BY e.date DESC, e.id DESC
             """.format(filter_sql=filters["filter_sql"], tx_filter_sql=filters["tx_filter_sql"]),
@@ -3440,7 +3459,6 @@ def create_app(test_config=None):
             subcategories_by_category.setdefault(row["category_id"], []).append(
                 {"id": row["id"], "category_id": row["category_id"], "name": row["name"]}
             )
-
         if request.method == "POST":
             expense_date = request.form["date"]
             amount = request.form["amount"]
@@ -3572,9 +3590,10 @@ def create_app(test_config=None):
         db = get_db()
         expense = db.execute(
             """
-            SELECT e.*, COALESCE(c.name, 'Uncategorized') AS category
+            SELECT e.*, COALESCE(c.name, 'Uncategorized') AS category, COALESCE(sc.name, '') AS subcategory
             FROM expenses e
             LEFT JOIN categories c ON c.id = e.category_id
+            LEFT JOIN subcategories sc ON sc.id = e.subcategory_id
             WHERE e.id = ? AND e.household_id = ?
             """,
             (expense_id, g.household_id),
@@ -3582,6 +3601,17 @@ def create_app(test_config=None):
         if expense is None:
             flash("Expense not found.")
             return redirect(url_for("dashboard"))
+        split_rows = db.execute(
+            """
+            SELECT es.id, es.amount, es.note, es.position, c.name AS category_name, sc.name AS subcategory_name
+            FROM expense_splits es
+            JOIN categories c ON c.id = es.category_id
+            LEFT JOIN subcategories sc ON sc.id = es.subcategory_id
+            WHERE es.expense_id = ?
+            ORDER BY es.position ASC, es.id ASC
+            """,
+            (expense_id,),
+        ).fetchall()
 
         has_expense_id_column = db.has_column("audit_logs", "expense_id")
         if has_expense_id_column:
@@ -3616,7 +3646,7 @@ def create_app(test_config=None):
                 details = {"raw": raw_payload}
             parsed_logs.append({"action": row["action"], "username": row["username"], "created_at": row["created_at"], "details": details})
 
-        return render_template("expense_detail.html", expense=expense, audit_logs=parsed_logs)
+        return render_template("expense_detail.html", expense=expense, split_rows=split_rows, audit_logs=parsed_logs)
 
     @app.route("/expenses/<int:expense_id>/edit", methods=("GET", "POST"))
     @login_required
@@ -3645,6 +3675,16 @@ def create_app(test_config=None):
             subcategories_by_category.setdefault(row["category_id"], []).append(
                 {"id": row["id"], "category_id": row["category_id"], "name": row["name"]}
             )
+        existing_split_rows = db.execute(
+            """
+            SELECT id, category_id, subcategory_id, amount, note, position
+            FROM expense_splits
+            WHERE expense_id = ?
+            ORDER BY position ASC, id ASC
+            """,
+            (expense_id,),
+        ).fetchall()
+        default_classification_mode = "split" if existing_split_rows else "single"
 
         if request.method == "POST":
             expense_date = request.form["date"]
@@ -3653,6 +3693,9 @@ def create_app(test_config=None):
             scope = normalize_expense_scope(request.form.get("scope", ""), default="shared")
             category_id = request.form.get("category_id") or None
             submitted_subcategory_id = request.form.get("subcategory_id") or None
+            classification_mode = (request.form.get("classification_mode") or default_classification_mode).strip().lower()
+            if classification_mode not in {"single", "split"}:
+                classification_mode = "single"
             vendor = request.form.get("vendor", "").strip()
             description = request.form.get("description", "").strip()
             if not vendor:
@@ -3662,6 +3705,8 @@ def create_app(test_config=None):
                     categories=categories,
                     subcategories_by_category=subcategories_by_category,
                     expense=expense,
+                    split_rows=existing_split_rows,
+                    classification_mode=classification_mode,
                     filter_params=current_filter_redirect_params(request.form),
                 )
             submitted_updated_at = (request.form.get("updated_at") or "").strip()
@@ -3714,6 +3759,8 @@ def create_app(test_config=None):
                     categories=categories,
                     subcategories_by_category=subcategories_by_category,
                     expense=expense,
+                    split_rows=existing_split_rows,
+                    classification_mode=classification_mode,
                     filter_params=redirect_params,
                 )
 
@@ -3724,6 +3771,8 @@ def create_app(test_config=None):
                     categories=categories,
                     subcategories_by_category=subcategories_by_category,
                     expense=expense,
+                    split_rows=existing_split_rows,
+                    classification_mode=classification_mode,
                     filter_params=redirect_params,
                 )
             if scope not in EXPENSE_SCOPE_OPTIONS:
@@ -3733,8 +3782,120 @@ def create_app(test_config=None):
                     categories=categories,
                     subcategories_by_category=subcategories_by_category,
                     expense=expense,
+                    split_rows=existing_split_rows,
+                    classification_mode=classification_mode,
                     filter_params=redirect_params,
                 )
+
+            split_rows_to_save = []
+            if classification_mode == "split":
+                split_category_ids = request.form.getlist("split_category_id[]")
+                split_subcategory_ids = request.form.getlist("split_subcategory_id[]")
+                split_amounts = request.form.getlist("split_amount[]")
+                split_notes = request.form.getlist("split_note[]")
+                max_len = max(len(split_category_ids), len(split_subcategory_ids), len(split_amounts), len(split_notes), 0)
+                for idx in range(max_len):
+                    raw_category_id = (split_category_ids[idx] if idx < len(split_category_ids) else "").strip()
+                    raw_subcategory_id = (split_subcategory_ids[idx] if idx < len(split_subcategory_ids) else "").strip()
+                    raw_amount = (split_amounts[idx] if idx < len(split_amounts) else "").strip()
+                    raw_note = (split_notes[idx] if idx < len(split_notes) else "").strip()
+                    if not raw_category_id and not raw_subcategory_id and not raw_amount and not raw_note:
+                        continue
+                    if not raw_category_id:
+                        flash("Each split row must have a category.")
+                        return render_template(
+                            "expense_form.html",
+                            categories=categories,
+                            subcategories_by_category=subcategories_by_category,
+                            expense=expense,
+                            split_rows=split_rows_to_save,
+                            classification_mode=classification_mode,
+                            filter_params=redirect_params,
+                        )
+                    split_category = db.execute(
+                        "SELECT id FROM categories WHERE id = ? AND user_id = ?",
+                        (raw_category_id, g.user["id"]),
+                    ).fetchone()
+                    if split_category is None:
+                        flash("One or more split categories are invalid.")
+                        return render_template(
+                            "expense_form.html",
+                            categories=categories,
+                            subcategories_by_category=subcategories_by_category,
+                            expense=expense,
+                            split_rows=split_rows_to_save,
+                            classification_mode=classification_mode,
+                            filter_params=redirect_params,
+                        )
+                    try:
+                        split_amount_value = round(float(raw_amount), 2)
+                    except (TypeError, ValueError):
+                        flash("Each split row must have a valid amount.")
+                        return render_template(
+                            "expense_form.html",
+                            categories=categories,
+                            subcategories_by_category=subcategories_by_category,
+                            expense=expense,
+                            split_rows=split_rows_to_save,
+                            classification_mode=classification_mode,
+                            filter_params=redirect_params,
+                        )
+                    split_subcategory_id = None
+                    if raw_subcategory_id:
+                        split_subcategory = db.execute(
+                            """
+                            SELECT sc.id
+                            FROM subcategories sc
+                            JOIN categories c ON c.id = sc.category_id
+                            WHERE sc.id = ? AND sc.category_id = ? AND sc.user_id = ? AND c.user_id = ?
+                            """,
+                            (raw_subcategory_id, raw_category_id, g.user["id"], g.user["id"]),
+                        ).fetchone()
+                        if split_subcategory is None:
+                            flash("One or more split subcategories do not match the selected category.")
+                            return render_template(
+                                "expense_form.html",
+                                categories=categories,
+                                subcategories_by_category=subcategories_by_category,
+                                expense=expense,
+                                split_rows=split_rows_to_save,
+                                classification_mode=classification_mode,
+                                filter_params=redirect_params,
+                            )
+                        split_subcategory_id = split_subcategory["id"]
+                    split_rows_to_save.append(
+                        {
+                            "category_id": int(raw_category_id),
+                            "subcategory_id": split_subcategory_id,
+                            "amount": split_amount_value,
+                            "note": raw_note,
+                        }
+                    )
+
+                if not split_rows_to_save:
+                    flash("Please add at least one split row.")
+                    return render_template(
+                        "expense_form.html",
+                        categories=categories,
+                        subcategories_by_category=subcategories_by_category,
+                        expense=expense,
+                        split_rows=[],
+                        classification_mode=classification_mode,
+                        filter_params=redirect_params,
+                    )
+
+                allocated_total = round(sum(float(row["amount"]) for row in split_rows_to_save), 2)
+                if abs(allocated_total - round(amount_value, 2)) > 0.005:
+                    flash("Split rows must add up exactly to the transaction amount.")
+                    return render_template(
+                        "expense_form.html",
+                        categories=categories,
+                        subcategories_by_category=subcategories_by_category,
+                        expense=expense,
+                        split_rows=split_rows_to_save,
+                        classification_mode=classification_mode,
+                        filter_params=redirect_params,
+                    )
 
             result = db.execute(
                 """
@@ -3766,6 +3927,23 @@ def create_app(test_config=None):
                 flash("This transaction was edited in another session. Please reload.")
                 db.rollback()
                 return redirect(url_for("edit_expense", expense_id=expense_id, **redirect_params))
+            db.execute("DELETE FROM expense_splits WHERE expense_id = ?", (expense_id,))
+            if classification_mode == "split":
+                for idx, split_row in enumerate(split_rows_to_save):
+                    db.execute(
+                        """
+                        INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            expense_id,
+                            split_row["category_id"],
+                            split_row["subcategory_id"],
+                            split_row["amount"],
+                            split_row["note"] or None,
+                            idx,
+                        ),
+                    )
             log_audit("edit", expense_id=expense_id, details={"description": description, "amount": amount_value}, db=db)
             db.commit()
             if category_id and str(previous_category_id or "") != str(category_id):
@@ -3778,6 +3956,8 @@ def create_app(test_config=None):
             categories=categories,
             subcategories_by_category=subcategories_by_category,
             expense=expense,
+            split_rows=existing_split_rows,
+            classification_mode=default_classification_mode,
             filter_params=current_filter_redirect_params(request.args),
         )
 
