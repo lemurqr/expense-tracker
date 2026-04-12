@@ -2420,6 +2420,93 @@ def test_expense_forms_render_when_subcategories_exist(client):
     assert b"Subcategory" in edit_form.data
 
 
+def test_new_expense_form_serializes_subcategories_by_category_for_dependent_dropdown(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries_id, "Produce"))
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries_id, "Dairy"))
+        db.commit()
+
+    response = client.get("/expenses/new")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "var subcategoriesByCategory =" in html
+    assert f'"{groceries_id}"' in html
+    assert '"name": "Produce"' in html
+    assert '"name": "Dairy"' in html
+
+
+def test_edit_expense_form_serializes_selected_subcategory_for_preselection(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        household_id = db.execute("SELECT household_id FROM household_members WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()["household_id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries_id, "Produce"))
+        subcategory_id = db.execute(
+            "SELECT id FROM subcategories WHERE user_id = ? AND category_id = ? AND name = ?",
+            (user_id, groceries_id, "Produce"),
+        ).fetchone()["id"]
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, description, vendor, paid_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, household_id, "2026-06-01", -10, groceries_id, subcategory_id, "Seed expense", "Vendor", ""),
+        )
+        expense_id = db.last_insert_id()
+        db.commit()
+
+    response = client.get(f"/expenses/{expense_id}/edit")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert f"var selectedSubcategoryId = {subcategory_id};" in html
+
+
+def test_edit_expense_split_mode_keeps_normal_subcategory_dropdown_data_available(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        utilities_id = db.execute("SELECT id FROM categories WHERE name = 'Utilities'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        household_id = db.execute("SELECT household_id FROM household_members WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()["household_id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries_id, "Produce"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE category_id = ? AND name = ?", (groceries_id, "Produce")).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, description, vendor, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, household_id, "2026-06-10", -100.0, groceries_id, produce_id, "Split-ready", "Store", "DK", "shared"),
+        )
+        expense_id = db.last_insert_id()
+        db.execute(
+            "INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position) VALUES (?, ?, ?, ?, ?, ?)",
+            (expense_id, groceries_id, produce_id, -60.0, "Produce", 0),
+        )
+        db.execute(
+            "INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position) VALUES (?, ?, ?, ?, ?, ?)",
+            (expense_id, utilities_id, None, -40.0, "Bills", 1),
+        )
+        db.commit()
+
+    response = client.get(f"/expenses/{expense_id}/edit")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'value="split" checked' in html
+    assert "var subcategoriesByCategory =" in html
+    assert "function renderParentSubcategories()" in html
+    assert "var initialSplitRows =" in html
+
+
 def test_expense_form_subcategory_selection_and_dashboard_display(client):
     register(client)
     login(client)

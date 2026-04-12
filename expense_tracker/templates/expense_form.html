@@ -107,12 +107,23 @@
     var splitRemainingAmount = document.getElementById('split-remaining-amount');
 
     var subcategoriesByCategory = {{ subcategories_by_category|default({}, true)|tojson }};
-    var selectedSubcategoryId = '{{ expense.subcategory_id if expense and expense.subcategory_id else "" }}';
+    var selectedSubcategoryId = {{ (expense.subcategory_id if expense and expense.subcategory_id else "")|tojson }};
     var categories = {{ categories|tojson }};
     var initialSplitRows = {{ split_rows|default([], true)|tojson }};
 
+    function getSubcategoryOptions(categoryId) {
+      var key = String(categoryId || '');
+      if (Object.prototype.hasOwnProperty.call(subcategoriesByCategory, key)) {
+        return subcategoriesByCategory[key] || [];
+      }
+      if (key && Object.prototype.hasOwnProperty.call(subcategoriesByCategory, Number(key))) {
+        return subcategoriesByCategory[Number(key)] || [];
+      }
+      return [];
+    }
+
     function renderSubcategories(targetSelect, categoryId, selectedId) {
-      var options = subcategoriesByCategory[categoryId] || [];
+      var options = getSubcategoryOptions(categoryId);
       targetSelect.innerHTML = '';
       var blankOption = document.createElement('option');
       blankOption.value = '';
