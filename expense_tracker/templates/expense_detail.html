@@ -4,10 +4,27 @@
   <h2>Expense Detail</h2>
   <p><strong>Date:</strong> {{ expense.date }}</p>
   <p><strong>Amount:</strong> ${{ '%.2f'|format(expense.amount) }}</p>
-  <p><strong>Category:</strong> {{ expense.category }}</p>
+  <p><strong>Category:</strong> {% if split_rows %}Split{% else %}{{ expense.category }}{% endif %}</p>
+  <p><strong>Subcategory:</strong> {% if split_rows %}Multiple{% else %}{{ expense.subcategory or "—" }}{% endif %}</p>
   <p><strong>Paid by:</strong> {{ expense.paid_by or '—' }}</p>
   <p><strong>Vendor:</strong> {{ expense.vendor or expense.description or "—" }}</p>
   <p><strong>Description:</strong> {{ expense.description or "—" }}</p>
+  {% if split_rows %}
+  <h3>Split allocations</h3>
+  <table>
+    <thead><tr><th>Category</th><th>Subcategory</th><th>Amount</th><th>Note</th></tr></thead>
+    <tbody>
+      {% for split in split_rows %}
+      <tr>
+        <td>{{ split.category_name }}</td>
+        <td>{{ split.subcategory_name or '—' }}</td>
+        <td>${{ '%.2f'|format(split.amount) }}</td>
+        <td>{{ split.note or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
   <p><a href="{{ url_for('edit_expense', expense_id=expense.id) }}">Edit</a></p>
 </section>
 

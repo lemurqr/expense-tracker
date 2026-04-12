@@ -111,6 +111,20 @@ REQUIRED_TABLES = {
         },
         "indexes": {"idx_monthly_budgets_household_month", "uq_monthly_budgets_scope_row"},
     },
+    "expense_splits": {
+        "columns": {
+            "id",
+            "expense_id",
+            "category_id",
+            "subcategory_id",
+            "amount",
+            "note",
+            "position",
+            "created_at",
+            "updated_at",
+        },
+        "indexes": {"idx_expense_splits_expense_id", "idx_expense_splits_category_id"},
+    },
 }
 
 
@@ -806,6 +820,38 @@ def migration_015(conn):
     )
 
 
+def migration_016(conn):
+    ensure_table(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS expense_splits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            expense_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            subcategory_id INTEGER,
+            amount REAL NOT NULL,
+            note TEXT,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (expense_id) REFERENCES expenses (id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES categories (id),
+            FOREIGN KEY (subcategory_id) REFERENCES subcategories (id)
+        )
+        """,
+    )
+    create_index_if_missing(
+        conn,
+        "idx_expense_splits_expense_id",
+        "CREATE INDEX IF NOT EXISTS idx_expense_splits_expense_id ON expense_splits(expense_id, position)",
+    )
+    create_index_if_missing(
+        conn,
+        "idx_expense_splits_category_id",
+        "CREATE INDEX IF NOT EXISTS idx_expense_splits_category_id ON expense_splits(category_id, subcategory_id)",
+    )
+
+
 MIGRATIONS = [
     (1, migration_001),
     (2, migration_002),
@@ -822,6 +868,7 @@ MIGRATIONS = [
     (13, migration_013),
     (14, migration_014),
     (15, migration_015),
+    (16, migration_016),
 ]
 
 

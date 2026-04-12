@@ -2013,6 +2013,43 @@ def test_dashboard_spend_trend_all_categories_and_selected_category_subcategorie
     ]
 
 
+def test_dashboard_spend_trend_category_breakdown_uses_split_subcategories(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries_id, "Produce"))
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries_id, "Dairy"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE category_id = ? AND name = 'Produce'", (groceries_id,)).fetchone()["id"]
+        dairy_id = db.execute("SELECT id FROM subcategories WHERE category_id = ? AND name = 'Dairy'", (groceries_id,)).fetchone()["id"]
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, vendor, paid_by, scope, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+            (user_id, 1, "2026-02-09", -50.0, groceries_id, "Split trend", "Store", "DK", "shared"),
+        )
+        expense_id = db.last_insert_id()
+        db.execute(
+            "INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position) VALUES (?, ?, ?, ?, ?, ?)",
+            (expense_id, groceries_id, produce_id, -30.0, "Produce part", 0),
+        )
+        db.execute(
+            "INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position) VALUES (?, ?, ?, ?, ?, ?)",
+            (expense_id, groceries_id, dairy_id, -20.0, "Dairy part", 1),
+        )
+        db.commit()
+
+    response = client.get("/dashboard?start=2026-02-01&end=2026-02-28")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+    groceries_trend = analytics["trend"]["by_category"][str(groceries_id)]
+
+    assert groceries_trend["series"] == [
+        {"label": "Produce", "values": [30.0], "total": 30.0},
+        {"label": "Dairy", "values": [20.0], "total": 20.0},
+    ]
+
+
 def test_dashboard_spend_trend_uses_top_five_plus_other_grouping(client):
     register(client)
     login(client)
@@ -2453,6 +2490,183 @@ def test_expense_form_subcategory_selection_and_dashboard_display(client):
             (saved["id"],),
         ).fetchone()
     assert edited["subcategory_id"] is None
+
+
+def test_edit_expense_split_rows_can_be_saved_and_rendered_in_detail(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        utilities_id = db.execute("SELECT id FROM categories WHERE name = 'Utilities'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries_id, "Produce"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE category_id = ? AND name = ?", (groceries_id, "Produce")).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, vendor, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, 1, "2026-06-10", -100.0, groceries_id, "Big box trip", "Store", "DK", "shared"),
+        )
+        expense_id = db.last_insert_id()
+        updated_at = db.execute("SELECT updated_at FROM expenses WHERE id = ?", (expense_id,)).fetchone()["updated_at"]
+        db.commit()
+
+    response = client.post(
+        f"/expenses/{expense_id}/edit",
+        data={
+            "date": "2026-06-10",
+            "amount": "-100.00",
+            "vendor": "Store",
+            "description": "Big box trip",
+            "paid_by": "DK",
+            "scope": "shared",
+            "classification_mode": "split",
+            "category_id": str(groceries_id),
+            "subcategory_id": "",
+            "split_category_id[]": [str(groceries_id), str(utilities_id)],
+            "split_subcategory_id[]": [str(produce_id), ""],
+            "split_amount[]": ["-65.00", "-35.00"],
+            "split_note[]": ["Produce", "Hydro"],
+            "updated_at": updated_at,
+        },
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Expense updated." in response.data
+    assert b">Split<" in response.data
+
+    detail = client.get(f"/expenses/{expense_id}")
+    assert detail.status_code == 200
+    assert b"Split allocations" in detail.data
+    assert b"Produce" in detail.data
+    assert b"Hydro" in detail.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute(
+            "SELECT COUNT(*) AS c FROM expense_splits WHERE expense_id = ?",
+            (expense_id,),
+        ).fetchone()
+    assert rows["c"] == 2
+
+
+def test_edit_expense_split_totals_must_match_parent_amount(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        utilities_id = db.execute("SELECT id FROM categories WHERE name = 'Utilities'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, vendor, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, 1, "2026-06-11", -100.0, groceries_id, "Mismatch split", "Store", "DK", "shared"),
+        )
+        expense_id = db.last_insert_id()
+        updated_at = db.execute("SELECT updated_at FROM expenses WHERE id = ?", (expense_id,)).fetchone()["updated_at"]
+        db.commit()
+
+    response = client.post(
+        f"/expenses/{expense_id}/edit",
+        data={
+            "date": "2026-06-11",
+            "amount": "-100.00",
+            "vendor": "Store",
+            "description": "Mismatch split",
+            "paid_by": "DK",
+            "scope": "shared",
+            "classification_mode": "split",
+            "category_id": str(groceries_id),
+            "subcategory_id": "",
+            "split_category_id[]": [str(groceries_id), str(utilities_id)],
+            "split_subcategory_id[]": ["", ""],
+            "split_amount[]": ["-70.00", "-20.00"],
+            "split_note[]": ["A", "B"],
+            "updated_at": updated_at,
+        },
+        follow_redirects=True,
+    )
+    assert b"Split rows must add up exactly to the transaction amount." in response.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        rows = db.execute("SELECT COUNT(*) AS c FROM expense_splits WHERE expense_id = ?", (expense_id,)).fetchone()
+    assert rows["c"] == 0
+
+
+def test_dashboard_and_budget_use_split_rows_for_aggregation(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        utilities_id = db.execute("SELECT id FROM categories WHERE name = 'Utilities'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, vendor, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, 1, "2026-03-03", -100.0, groceries_id, "Split analytics", "Store", "DK", "shared"),
+        )
+        split_expense_id = db.last_insert_id()
+        db.execute(
+            "INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position) VALUES (?, ?, ?, ?, ?, ?)",
+            (split_expense_id, groceries_id, None, -70.0, "Food part", 0),
+        )
+        db.execute(
+            "INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position) VALUES (?, ?, ?, ?, ?, ?)",
+            (split_expense_id, utilities_id, None, -30.0, "Bills part", 1),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, vendor, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, 1, "2026-03-04", -25.0, groceries_id, "Regular groceries", "Market", "DK", "shared"),
+        )
+        db.commit()
+
+    dashboard = client.get("/dashboard?month=2026-03")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", dashboard.get_data(as_text=True), re.DOTALL).group(1))
+    category_totals = {row["label"]: row["current_month"] for row in analytics["table"]}
+    assert category_totals["Groceries"] == 95.0
+    assert category_totals["Utilities"] == 30.0
+
+    budget_html = client.get("/budget?month=2026-03&view=household&scope=shared").get_data(as_text=True)
+    assert "$95.00" in budget_html
+    assert "$30.00" in budget_html
+
+
+def test_non_split_expense_still_uses_parent_category_in_analytics(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        db.execute(
+            """
+            INSERT INTO expenses (user_id, household_id, date, amount, category_id, description, vendor, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, 1, "2026-04-08", -42.0, groceries_id, "Normal expense", "Market", "DK", "shared"),
+        )
+        db.commit()
+
+    dashboard = client.get("/dashboard?month=2026-04")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", dashboard.get_data(as_text=True), re.DOTALL).group(1))
+    category_totals = {row["label"]: row["current_month"] for row in analytics["table"]}
+    assert category_totals["Groceries"] == 42.0
 
 
 def test_refund_keeps_original_category_not_transfer(client):

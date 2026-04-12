@@ -113,6 +113,27 @@ CREATE TABLE IF NOT EXISTS monthly_budgets (
 CREATE INDEX IF NOT EXISTS idx_monthly_budgets_household_month
 ON monthly_budgets(household_id, month);
 
+CREATE TABLE IF NOT EXISTS expense_splits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    expense_id INTEGER NOT NULL,
+    category_id INTEGER NOT NULL,
+    subcategory_id INTEGER,
+    amount REAL NOT NULL,
+    note TEXT,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (expense_id) REFERENCES expenses (id) ON DELETE CASCADE,
+    FOREIGN KEY (category_id) REFERENCES categories (id),
+    FOREIGN KEY (subcategory_id) REFERENCES subcategories (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_splits_expense_id
+ON expense_splits(expense_id, position);
+
+CREATE INDEX IF NOT EXISTS idx_expense_splits_category_id
+ON expense_splits(category_id, subcategory_id);
+
 CREATE TABLE IF NOT EXISTS category_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,

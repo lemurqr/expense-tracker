@@ -2,44 +2,32 @@
 {% block content %}
 <section class="card">
   <h2>{{ 'Edit Expense' if expense else 'Add Expense' }}</h2>
-  <form method="post" class="form-grid">
-    <input type="hidden" name="month" value="{{ filter_params.month if filter_params else "" }}">
-    <input type="hidden" name="start" value="{{ filter_params.start if filter_params else "" }}">
-    <input type="hidden" name="end" value="{{ filter_params.end if filter_params else "" }}">
-    <input type="hidden" name="settlement_tab" value="{{ filter_params.settlement_tab if filter_params else "" }}">
-    <input type="hidden" name="spend_mode" value="{{ filter_params.spend_mode if filter_params else "" }}">
-    <input type="hidden" name="tx_date_from" value="{{ filter_params.tx_date_from if filter_params else "" }}">
-    <input type="hidden" name="tx_date_to" value="{{ filter_params.tx_date_to if filter_params else "" }}">
-    <input type="hidden" name="tx_amount_min" value="{{ filter_params.tx_amount_min if filter_params else "" }}">
-    <input type="hidden" name="tx_amount_max" value="{{ filter_params.tx_amount_max if filter_params else "" }}">
-    <input type="hidden" name="tx_paid_by" value="{{ filter_params.tx_paid_by if filter_params else "" }}">
-    <input type="hidden" name="tx_scope" value="{{ filter_params.tx_scope if filter_params else "" }}">
-    <input type="hidden" name="tx_category_id" value="{{ filter_params.tx_category_id if filter_params else "" }}">
-    <input type="hidden" name="tx_vendor_q" value="{{ filter_params.tx_vendor_q if filter_params else "" }}">
-    <input type="hidden" name="tx_description_q" value="{{ filter_params.tx_description_q if filter_params else "" }}">
-    <input type="hidden" name="tx_confidence_bucket" value="{{ filter_params.tx_confidence_bucket if filter_params else "" }}">
-    <input type="hidden" name="tx_source" value="{{ filter_params.tx_source if filter_params else "" }}">
-    <input type="hidden" name="tx_transfer_mode" value="{{ filter_params.tx_transfer_mode if filter_params else "" }}">
+  <form method="post" class="form-grid" id="expense-form">
+    <input type="hidden" name="month" value="{{ filter_params.month if filter_params else '' }}">
+    <input type="hidden" name="start" value="{{ filter_params.start if filter_params else '' }}">
+    <input type="hidden" name="end" value="{{ filter_params.end if filter_params else '' }}">
+    <input type="hidden" name="settlement_tab" value="{{ filter_params.settlement_tab if filter_params else '' }}">
+    <input type="hidden" name="spend_mode" value="{{ filter_params.spend_mode if filter_params else '' }}">
+    <input type="hidden" name="tx_date_from" value="{{ filter_params.tx_date_from if filter_params else '' }}">
+    <input type="hidden" name="tx_date_to" value="{{ filter_params.tx_date_to if filter_params else '' }}">
+    <input type="hidden" name="tx_amount_min" value="{{ filter_params.tx_amount_min if filter_params else '' }}">
+    <input type="hidden" name="tx_amount_max" value="{{ filter_params.tx_amount_max if filter_params else '' }}">
+    <input type="hidden" name="tx_paid_by" value="{{ filter_params.tx_paid_by if filter_params else '' }}">
+    <input type="hidden" name="tx_scope" value="{{ filter_params.tx_scope if filter_params else '' }}">
+    <input type="hidden" name="tx_category_id" value="{{ filter_params.tx_category_id if filter_params else '' }}">
+    <input type="hidden" name="tx_vendor_q" value="{{ filter_params.tx_vendor_q if filter_params else '' }}">
+    <input type="hidden" name="tx_description_q" value="{{ filter_params.tx_description_q if filter_params else '' }}">
+    <input type="hidden" name="tx_confidence_bucket" value="{{ filter_params.tx_confidence_bucket if filter_params else '' }}">
+    <input type="hidden" name="tx_source" value="{{ filter_params.tx_source if filter_params else '' }}">
+    <input type="hidden" name="tx_transfer_mode" value="{{ filter_params.tx_transfer_mode if filter_params else '' }}">
     {% if expense and expense.updated_at %}<input type="hidden" name="updated_at" value="{{ expense.updated_at }}">{% endif %}
+
     <label>Date
       <input type="date" name="date" value="{{ expense.date if expense else '' }}" required>
     </label>
     <label>Amount
-      <input type="number" step="0.01" name="amount" value="{{ expense.amount if expense else '' }}" required>
+      <input type="number" step="0.01" name="amount" id="expense-amount" value="{{ expense.amount if expense else '' }}" required>
       <small>Use negative for expenses, positive for refunds/credits.</small>
-    </label>
-    <label>Category
-      <select name="category_id" id="category-id-select">
-        <option value="">Uncategorized</option>
-        {% for category in categories %}
-          <option value="{{ category.id }}" {% if expense and expense.category_id == category.id %}selected{% endif %}>{{ category.name }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Subcategory
-      <select name="subcategory_id" id="subcategory-id-select">
-        <option value="">No subcategory</option>
-      </select>
     </label>
     <label>Vendor
       <input name="vendor" value="{{ expense.vendor if expense else '' }}" required>
@@ -61,6 +49,44 @@
         <option value="yz_personal" {% if expense and expense.scope == 'yz_personal' %}selected{% endif %}>YZ Personal</option>
       </select>
     </label>
+
+    {% set mode = classification_mode if classification_mode else 'single' %}
+    {% if expense %}
+      <fieldset>
+        <legend>Classification mode</legend>
+        <label><input type="radio" name="classification_mode" value="single" {% if mode != 'split' %}checked{% endif %}> Single category</label>
+        <label><input type="radio" name="classification_mode" value="split" {% if mode == 'split' %}checked{% endif %}> Split transaction</label>
+      </fieldset>
+    {% endif %}
+
+    <div id="single-mode-fields">
+      <label>Category
+        <select name="category_id" id="category-id-select">
+          <option value="">Uncategorized</option>
+          {% for category in categories %}
+            <option value="{{ category.id }}" {% if expense and expense.category_id == category.id %}selected{% endif %}>{{ category.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Subcategory
+        <select name="subcategory_id" id="subcategory-id-select">
+          <option value="">No subcategory</option>
+        </select>
+      </label>
+    </div>
+
+    <div id="split-mode-fields" {% if not expense %}hidden{% endif %}>
+      <p><strong>Original amount:</strong> <span id="split-original-amount">0.00</span></p>
+      <p><strong>Allocated:</strong> <span id="split-allocated-amount">0.00</span></p>
+      <p><strong>Remaining:</strong> <span id="split-remaining-amount">0.00</span></p>
+      <p id="split-validation-message" style="color:#b42318;" hidden>Split amounts must add up exactly to the transaction amount.</p>
+      <table>
+        <thead><tr><th>Category</th><th>Subcategory</th><th>Amount</th><th>Note</th><th></th></tr></thead>
+        <tbody id="split-rows-body"></tbody>
+      </table>
+      <button type="button" id="add-split-row">Add row</button>
+    </div>
+
     <button type="submit">Save</button>
   </form>
 </section>
@@ -69,47 +95,176 @@
   (function () {
     var categorySelect = document.getElementById('category-id-select');
     var subcategorySelect = document.getElementById('subcategory-id-select');
-    if (!categorySelect || !subcategorySelect) {
-      return;
-    }
+    var amountInput = document.getElementById('expense-amount');
+    var splitRowsBody = document.getElementById('split-rows-body');
+    var addSplitRowButton = document.getElementById('add-split-row');
+    var singleModeFields = document.getElementById('single-mode-fields');
+    var splitModeFields = document.getElementById('split-mode-fields');
+    var modeInputs = Array.from(document.querySelectorAll('input[name="classification_mode"]'));
+    var splitValidationMessage = document.getElementById('split-validation-message');
+    var splitOriginalAmount = document.getElementById('split-original-amount');
+    var splitAllocatedAmount = document.getElementById('split-allocated-amount');
+    var splitRemainingAmount = document.getElementById('split-remaining-amount');
 
     var subcategoriesByCategory = {{ subcategories_by_category|default({}, true)|tojson }};
     var selectedSubcategoryId = '{{ expense.subcategory_id if expense and expense.subcategory_id else "" }}';
+    var categories = {{ categories|tojson }};
+    var initialSplitRows = {{ split_rows|default([], true)|tojson }};
 
-    function renderSubcategories() {
-      var categoryId = categorySelect.value;
+    function renderSubcategories(targetSelect, categoryId, selectedId) {
       var options = subcategoriesByCategory[categoryId] || [];
-      var previous = subcategorySelect.value || selectedSubcategoryId;
-      subcategorySelect.innerHTML = '';
-
+      targetSelect.innerHTML = '';
       var blankOption = document.createElement('option');
       blankOption.value = '';
       blankOption.textContent = 'No subcategory';
-      subcategorySelect.appendChild(blankOption);
-
+      targetSelect.appendChild(blankOption);
       options.forEach(function (subcategory) {
         var option = document.createElement('option');
         option.value = String(subcategory.id);
         option.textContent = subcategory.name;
-        if (String(previous) === String(subcategory.id)) {
+        if (String(selectedId || '') === String(subcategory.id)) {
           option.selected = true;
         }
-        subcategorySelect.appendChild(option);
+        targetSelect.appendChild(option);
       });
-
-      if (!options.some(function (subcategory) { return String(subcategory.id) === String(previous); })) {
-        subcategorySelect.value = '';
+      if (!options.some(function (subcategory) { return String(subcategory.id) === String(selectedId || ''); })) {
+        targetSelect.value = '';
       }
+    }
 
+    function renderParentSubcategories() {
+      if (!categorySelect || !subcategorySelect) return;
+      var previous = subcategorySelect.value || selectedSubcategoryId;
+      renderSubcategories(subcategorySelect, categorySelect.value, previous);
       selectedSubcategoryId = '';
     }
 
-    categorySelect.addEventListener('change', function () {
-      selectedSubcategoryId = '';
-      renderSubcategories();
+    function createCategorySelect(selectedId) {
+      var select = document.createElement('select');
+      select.name = 'split_category_id[]';
+      var blankOption = document.createElement('option');
+      blankOption.value = '';
+      blankOption.textContent = 'Choose category';
+      select.appendChild(blankOption);
+      categories.forEach(function (category) {
+        var option = document.createElement('option');
+        option.value = String(category.id);
+        option.textContent = category.name;
+        if (String(selectedId || '') === String(category.id)) {
+          option.selected = true;
+        }
+        select.appendChild(option);
+      });
+      return select;
+    }
+
+    function updateSplitTotals() {
+      var original = parseFloat(amountInput.value || '0');
+      var amountInputs = Array.from(splitRowsBody.querySelectorAll('input[name="split_amount[]"]'));
+      var allocated = amountInputs.reduce(function (sum, input) {
+        var value = parseFloat(input.value || '0');
+        return sum + (isNaN(value) ? 0 : value);
+      }, 0);
+      var remaining = original - allocated;
+      splitOriginalAmount.textContent = original.toFixed(2);
+      splitAllocatedAmount.textContent = allocated.toFixed(2);
+      splitRemainingAmount.textContent = remaining.toFixed(2);
+      var balanced = Math.abs(remaining) < 0.005;
+      splitValidationMessage.hidden = balanced;
+      return balanced;
+    }
+
+    function addSplitRow(data) {
+      var tr = document.createElement('tr');
+      var categoryTd = document.createElement('td');
+      var subcategoryTd = document.createElement('td');
+      var amountTd = document.createElement('td');
+      var noteTd = document.createElement('td');
+      var removeTd = document.createElement('td');
+
+      var categorySelectEl = createCategorySelect(data && data.category_id);
+      var subcategorySelectEl = document.createElement('select');
+      subcategorySelectEl.name = 'split_subcategory_id[]';
+      renderSubcategories(subcategorySelectEl, categorySelectEl.value, data && data.subcategory_id);
+
+      categorySelectEl.addEventListener('change', function () {
+        renderSubcategories(subcategorySelectEl, categorySelectEl.value, '');
+      });
+
+      var amountInputEl = document.createElement('input');
+      amountInputEl.type = 'number';
+      amountInputEl.step = '0.01';
+      amountInputEl.name = 'split_amount[]';
+      amountInputEl.value = data && data.amount != null ? data.amount : '';
+      amountInputEl.addEventListener('input', updateSplitTotals);
+
+      var noteInputEl = document.createElement('input');
+      noteInputEl.type = 'text';
+      noteInputEl.name = 'split_note[]';
+      noteInputEl.value = (data && data.note) || '';
+
+      var removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.textContent = 'Remove';
+      removeButton.addEventListener('click', function () {
+        tr.remove();
+        updateSplitTotals();
+      });
+
+      categoryTd.appendChild(categorySelectEl);
+      subcategoryTd.appendChild(subcategorySelectEl);
+      amountTd.appendChild(amountInputEl);
+      noteTd.appendChild(noteInputEl);
+      removeTd.appendChild(removeButton);
+
+      tr.appendChild(categoryTd);
+      tr.appendChild(subcategoryTd);
+      tr.appendChild(amountTd);
+      tr.appendChild(noteTd);
+      tr.appendChild(removeTd);
+      splitRowsBody.appendChild(tr);
+      updateSplitTotals();
+    }
+
+    function activeMode() {
+      if (!modeInputs.length) return 'single';
+      var chosen = modeInputs.find(function (input) { return input.checked; });
+      return chosen ? chosen.value : 'single';
+    }
+
+    function refreshModeVisibility() {
+      var mode = activeMode();
+      singleModeFields.hidden = mode !== 'single';
+      splitModeFields.hidden = mode !== 'split';
+      updateSplitTotals();
+    }
+
+    if (categorySelect) {
+      categorySelect.addEventListener('change', function () {
+        selectedSubcategoryId = '';
+        renderParentSubcategories();
+      });
+      renderParentSubcategories();
+    }
+
+    modeInputs.forEach(function (input) { input.addEventListener('change', refreshModeVisibility); });
+    amountInput.addEventListener('input', updateSplitTotals);
+    addSplitRowButton.addEventListener('click', function () { addSplitRow({}); });
+
+    if (initialSplitRows.length > 0 && modeInputs.length) {
+      initialSplitRows.forEach(function (row) { addSplitRow(row); });
+    } else if (modeInputs.length) {
+      addSplitRow({});
+    }
+
+    document.getElementById('expense-form').addEventListener('submit', function (event) {
+      if (activeMode() === 'split' && !updateSplitTotals()) {
+        event.preventDefault();
+        splitValidationMessage.hidden = false;
+      }
     });
 
-    renderSubcategories();
+    refreshModeVisibility();
   })();
 </script>
 {% endblock %}
