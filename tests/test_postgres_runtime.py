@@ -333,6 +333,80 @@ def test_postgres_manual_expense_creation(client):
         assert row is not None
         assert row["amount"] == pytest.approx(19.99)
 
+
+def test_postgres_expense_forms_render_for_new_and_edit(client):
+    register(client, username="pgforms", password="password")
+    login(client, username="pgforms", password="password")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", ("pgforms",)).fetchone()
+        household_id = _ensure_household_for_user(db, user["id"])
+        category = db.execute(
+            "SELECT id FROM categories WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+            (user["id"],),
+        ).fetchone()
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, vendor, user_id, household_id, paid_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-04-04", -12.34, category["id"], "Render edit form", "Store", user["id"], household_id, "DK"),
+        )
+        expense_id = db.last_insert_id()
+        db.commit()
+
+    add_form = client.get("/expenses/new")
+    assert add_form.status_code == 200
+
+    edit_form = client.get(f"/expenses/{expense_id}/edit")
+    assert edit_form.status_code == 200
+
+
+def test_postgres_edit_expense_form_renders_when_split_rows_exist(client):
+    register(client, username="pgsplitforms", password="password")
+    login(client, username="pgsplitforms", password="password")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", ("pgsplitforms",)).fetchone()
+        household_id = _ensure_household_for_user(db, user["id"])
+        categories = db.execute("SELECT id FROM categories WHERE user_id = ? ORDER BY id ASC", (user["id"],)).fetchall()
+        primary = categories[0]
+        secondary = categories[1] if len(categories) > 1 else categories[0]
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, vendor, user_id, household_id, paid_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-04-05", -50.0, primary["id"], "Split render form", "Market", user["id"], household_id, "DK"),
+        )
+        expense_id = db.last_insert_id()
+        db.execute(
+            """
+            INSERT INTO expense_splits (expense_id, category_id, subcategory_id, amount, note, position)
+            VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                expense_id,
+                primary["id"],
+                None,
+                -20.0,
+                "Part one",
+                0,
+                expense_id,
+                secondary["id"],
+                None,
+                -30.0,
+                "Part two",
+                1,
+            ),
+        )
+        db.commit()
+
+    edit_form = client.get(f"/expenses/{expense_id}/edit")
+    assert edit_form.status_code == 200
+
 def test_postgres_dashboard_transaction_filters(client):
     register(client, username="pgfilters", password="password")
     login(client, username="pgfilters", password="password")

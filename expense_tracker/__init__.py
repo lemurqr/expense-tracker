@@ -3441,9 +3441,12 @@ def create_app(test_config=None):
     @login_required
     def create_expense():
         db = get_db()
-        categories = db.execute(
-            "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
-        ).fetchall()
+        categories = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
+            ).fetchall()
+        ]
         subcategory_rows = db.execute(
             """
             SELECT sc.id, sc.category_id, sc.name
@@ -3657,9 +3660,12 @@ def create_app(test_config=None):
             flash("Expense not found.")
             return redirect(url_for("dashboard"))
 
-        categories = db.execute(
-            "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
-        ).fetchall()
+        categories = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
+            ).fetchall()
+        ]
         subcategory_rows = db.execute(
             """
             SELECT sc.id, sc.category_id, sc.name
@@ -3675,15 +3681,18 @@ def create_app(test_config=None):
             subcategories_by_category.setdefault(row["category_id"], []).append(
                 {"id": row["id"], "category_id": row["category_id"], "name": row["name"]}
             )
-        existing_split_rows = db.execute(
-            """
-            SELECT id, category_id, subcategory_id, amount, note, position
-            FROM expense_splits
-            WHERE expense_id = ?
-            ORDER BY position ASC, id ASC
-            """,
-            (expense_id,),
-        ).fetchall()
+        existing_split_rows = [
+            dict(row)
+            for row in db.execute(
+                """
+                SELECT id, category_id, subcategory_id, amount, note, position
+                FROM expense_splits
+                WHERE expense_id = ?
+                ORDER BY position ASC, id ASC
+                """,
+                (expense_id,),
+            ).fetchall()
+        ]
         default_classification_mode = "split" if existing_split_rows else "single"
 
         if request.method == "POST":
