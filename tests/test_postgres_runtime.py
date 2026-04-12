@@ -363,6 +363,57 @@ def test_postgres_expense_forms_render_for_new_and_edit(client):
     assert edit_form.status_code == 200
 
 
+def test_postgres_expense_forms_validation_rerender_is_safe(client):
+    register(client, username="pgvalidationforms", password="password")
+    login(client, username="pgvalidationforms", password="password")
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user = db.execute("SELECT id FROM users WHERE username = ?", ("pgvalidationforms",)).fetchone()
+        household_id = _ensure_household_for_user(db, user["id"])
+        category = db.execute(
+            "SELECT id FROM categories WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+            (user["id"],),
+        ).fetchone()
+        db.execute(
+            """
+            INSERT INTO expenses (date, amount, category_id, description, vendor, user_id, household_id, paid_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-04-06", -21.0, category["id"], "Validation edit form", "Store", user["id"], household_id, "DK"),
+        )
+        expense_id = db.last_insert_id()
+        updated_at = db.execute("SELECT updated_at FROM expenses WHERE id = ?", (expense_id,)).fetchone()["updated_at"]
+        db.commit()
+
+    add_invalid = client.post(
+        "/expenses/new",
+        data={
+            "date": "2026-04-06",
+            "amount": "10",
+            "category_id": str(category["id"]),
+            "description": "Missing vendor add",
+            "vendor": "",
+        },
+        follow_redirects=True,
+    )
+    assert add_invalid.status_code == 200
+
+    edit_invalid = client.post(
+        f"/expenses/{expense_id}/edit",
+        data={
+            "date": "2026-04-06",
+            "amount": "-21.00",
+            "category_id": str(category["id"]),
+            "description": "Validation edit form",
+            "vendor": "",
+            "updated_at": updated_at,
+        },
+        follow_redirects=True,
+    )
+    assert edit_invalid.status_code == 200
+
+
 def test_postgres_edit_expense_form_renders_when_split_rows_exist(client):
     register(client, username="pgsplitforms", password="password")
     login(client, username="pgsplitforms", password="password")
