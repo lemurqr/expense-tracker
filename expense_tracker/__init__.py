@@ -3442,9 +3442,9 @@ def create_app(test_config=None):
     def create_expense():
         db = get_db()
         categories = [
-            dict(row)
+            {"id": row["id"], "name": row["name"]}
             for row in db.execute(
-                "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
+                "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
             ).fetchall()
         ]
         subcategory_rows = db.execute(
@@ -3661,9 +3661,9 @@ def create_app(test_config=None):
             return redirect(url_for("dashboard"))
 
         categories = [
-            dict(row)
+            {"id": row["id"], "name": row["name"]}
             for row in db.execute(
-                "SELECT * FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
+                "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name", (g.user["id"],)
             ).fetchall()
         ]
         subcategory_rows = db.execute(
@@ -3682,7 +3682,14 @@ def create_app(test_config=None):
                 {"id": row["id"], "category_id": row["category_id"], "name": row["name"]}
             )
         existing_split_rows = [
-            dict(row)
+            {
+                "id": row["id"],
+                "category_id": row["category_id"],
+                "subcategory_id": row["subcategory_id"],
+                "amount": row["amount"],
+                "note": row["note"],
+                "position": row["position"],
+            }
             for row in db.execute(
                 """
                 SELECT id, category_id, subcategory_id, amount, note, position
