@@ -694,9 +694,21 @@
       function getCurrentComparisonState() {
         const bucket = getCurrentComparisonBucket();
         const selectedCategory = getSelectedCategoryOption();
+        const categoryRows = bucket.categories || [];
+        const findCategoryTotalRow = (categoryId) => {
+          const row = categoryRows.find((item) => String(item.id) === String(categoryId));
+          if (!row) return null;
+          return {
+            level: 'category-total',
+            categoryLabel: row.label || selectedCategory?.label || 'Category',
+            currentLabel: bucket.current_label || '',
+            priorLabel: bucket.prior_label || '',
+            rows: [row]
+          };
+        };
         if (selectedCategory) {
           const selectedDetail = bucket.subcategories?.[String(selectedCategory.id)] || null;
-          if (selectedDetail) {
+          if (selectedDetail && (selectedDetail.rows || []).length) {
             return {
               level: 'subcategories',
               categoryLabel: selectedDetail.category_label,
@@ -705,6 +717,8 @@
               rows: selectedDetail.rows || []
             };
           }
+          const categoryTotalState = findCategoryTotalRow(selectedCategory.id);
+          if (categoryTotalState) return categoryTotalState;
         }
         if (yoyDrilldownKey) {
           const detail = bucket.subcategories?.[String(yoyDrilldownKey)] || null;
@@ -722,7 +736,7 @@
           level: 'categories',
           currentLabel: bucket.current_label || '',
           priorLabel: bucket.prior_label || '',
-          rows: bucket.categories || []
+          rows: categoryRows
         };
       }
 
@@ -746,7 +760,9 @@
         const comparisonText = `${comparisonState.currentLabel} vs ${comparisonState.priorLabel}`.trim();
         spendDetailsSubtitle.textContent = comparisonState.level === 'subcategories'
           ? `${comparisonState.categoryLabel} subcategories — ${comparisonText}`
-          : comparisonText;
+          : (comparisonState.level === 'category-total'
+            ? `${comparisonState.categoryLabel} — ${comparisonText}`
+            : comparisonText);
       }
 
       function syncDashboardStateInputs(name, value) {
