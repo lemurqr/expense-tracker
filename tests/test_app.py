@@ -1815,6 +1815,141 @@ def test_dashboard_spend_details_yoy_ytd_subcategory_drilldown_data(client):
     ]
 
 
+def test_dashboard_spend_details_period_vs_ly_selected_category_with_subcategories_has_drilldown_rows(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Produce"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE name = 'Produce'").fetchone()["id"]
+        for expense_date, amount, description in [
+            ("2025-07-05", -30, "Current produce"),
+            ("2024-07-05", -18, "Prior produce"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, subcategory_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, groceries_id, produce_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    assert analytics["yoy"]["period"]["subcategories"][str(groceries_id)]["rows"] == [
+        {"label": "Produce", "current_value": 30.0, "prior_value": 18.0},
+    ]
+
+
+def test_dashboard_spend_details_period_vs_ly_selected_category_without_subcategories_has_category_totals(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        for expense_date, amount, description in [
+            ("2025-07-05", -45, "Current groceries"),
+            ("2024-07-05", -30, "Prior groceries"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, groceries_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    assert analytics["yoy"]["period"]["subcategories"][str(groceries_id)]["rows"] == []
+    assert analytics["yoy"]["period"]["categories"] == [
+        {"id": groceries_id, "label": "Groceries", "current_value": 45.0, "prior_value": 30.0},
+    ]
+
+
+def test_dashboard_spend_details_yoy_selected_category_with_subcategories_has_drilldown_rows(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (1, groceries_id, "Produce"))
+        produce_id = db.execute("SELECT id FROM subcategories WHERE name = 'Produce'").fetchone()["id"]
+        for expense_date, amount, description in [
+            ("2025-01-07", -34, "Current ytd produce"),
+            ("2024-01-05", -20, "Prior ytd produce"),
+        ]:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, subcategory_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, groceries_id, produce_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    assert analytics["yoy"]["ytd"]["subcategories"][str(groceries_id)]["rows"] == [
+        {"label": "Produce", "current_value": 34.0, "prior_value": 20.0},
+    ]
+
+
+def test_dashboard_spend_details_yoy_selected_category_without_subcategories_has_category_totals(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries'").fetchone()["id"]
+        gifts_id = db.execute("SELECT id FROM categories WHERE name = 'Gifts & Presents'").fetchone()["id"]
+        rows = [
+            ("2025-01-10", -52, groceries_id, "Current groceries"),
+            ("2024-01-10", -26, groceries_id, "Prior groceries"),
+            ("2025-03-05", -18, gifts_id, "Current gifts"),
+            ("2024-03-05", -15, gifts_id, "Prior gifts"),
+        ]
+        for expense_date, amount, category_id, description in rows:
+            db.execute(
+                """
+                INSERT INTO expenses (household_id, user_id, date, amount, category_id, description, is_transfer, is_personal)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (None, 1, expense_date, amount, category_id, description),
+            )
+        db.commit()
+
+    response = client.get("/dashboard?start=2025-07-01&end=2025-09-30")
+    analytics = json.loads(re.search(r"const sharedCategoryAnalytics = ({.*?});", response.get_data(as_text=True), re.DOTALL).group(1))
+
+    assert analytics["yoy"]["ytd"]["subcategories"][str(groceries_id)]["rows"] == []
+    assert analytics["yoy"]["ytd"]["categories"] == [
+        {"id": groceries_id, "label": "Groceries", "current_value": 52.0, "prior_value": 26.0},
+        {"id": gifts_id, "label": "Gifts & Presents", "current_value": 18.0, "prior_value": 15.0},
+    ]
+
+
+def test_dashboard_spend_details_compare_selected_category_falls_back_to_category_total_in_template_logic(client):
+    register(client)
+    login(client)
+
+    response = client.get("/dashboard?start=2026-02-01&end=2026-02-28&spend_view=compare&spend_mode=period")
+    text = response.get_data(as_text=True)
+
+    assert "if (selectedDetail && (selectedDetail.rows || []).length) {" in text
+    assert "level: 'category-total'" in text
+    assert "? `${comparisonState.categoryLabel} — ${comparisonText}`" in text
+
+
 def test_dashboard_spend_details_mode_labels_and_compact_table_headers(client):
     register(client)
     login(client)
