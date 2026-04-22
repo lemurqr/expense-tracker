@@ -75,6 +75,34 @@ def confirm_import(client, rows, **form_data):
     return client.post("/import/csv", data=payload, follow_redirects=True)
 
 
+def build_skipped_duplicate_review_response(client, description="Skipped review row"):
+    rows = [
+        {
+            "row_index": 0,
+            "date": "2026-11-20",
+            "amount": -42.5,
+            "description": description,
+            "normalized_description": normalize_text(description),
+            "vendor": "Freshco",
+            "category": "Groceries",
+            "confidence": 90,
+            "confidence_label": "High",
+            "suggested_source": "rule",
+            "source_type": "bank",
+            "paid_by": "DK",
+        }
+    ]
+
+    first = confirm_import(client, rows, import_default_paid_by="DK")
+    assert first.status_code == 200
+    assert b"Imported 1 transaction(s)." in first.data
+
+    second = confirm_import(client, rows, import_default_paid_by="DK")
+    assert second.status_code == 200
+    assert b"Skipped duplicates: 1" in second.data
+    return second
+
+
 def extract_import_id_from_html(html):
     hidden_match = re.search(r'name="import_id" value="([^"]+)"', html)
     if hidden_match:
@@ -3156,6 +3184,27 @@ def test_signed_amount_from_debit_credit_mapping():
     assert diagnostics["skipped_rows"] == 0
     assert parsed[0]["amount"] == -5.2
     assert parsed[1]["amount"] == 11.25
+    assert parsed[1]["amount_classification"] == "credit"
+
+
+def test_signed_amount_column_normalizes_regular_expense_negative():
+    rows = [["2026-09-01", "Costco groceries", "42.17", "Groceries"]]
+    mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": "3"}
+    parsed, diagnostics = parse_csv_transactions(rows, mapping, user_id=1)
+
+    assert diagnostics["skipped_rows"] == 0
+    assert parsed[0]["amount"] == -42.17
+    assert parsed[0]["amount_classification"] == "expense"
+
+
+def test_signed_amount_column_normalizes_costco_discount_positive():
+    rows = [["2026-09-01", "TPD/1240154", "-6.38", "Groceries"]]
+    mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": "3"}
+    parsed, diagnostics = parse_csv_transactions(rows, mapping, user_id=1)
+
+    assert diagnostics["skipped_rows"] == 0
+    assert parsed[0]["amount"] == 6.38
+    assert parsed[0]["amount_classification"] == "discount_credit"
 
 
 def test_amex_amount_is_normalized_to_canonical_sign_for_charges():
@@ -6382,6 +6431,97 @@ def test_import_confirm_skips_duplicate_when_paid_by_and_category_differ(client)
         db = client.application.get_db()
         count = db.execute("SELECT COUNT(*) AS c FROM expenses WHERE description = ?", ("Freshco #101",)).fetchone()["c"]
         assert count == 1
+
+
+def test_signed_amount_preview_and_confirm_share_normalized_amount_logic(client):
+    register(client)
+    login(client)
+
+    source_rows = [
+        ["2026-11-20", "Costco grocery row", "42.50", "Groceries"],
+        ["2026-11-20", "TPD/1240154", "-6.50", "Groceries"],
+    ]
+    mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": "3"}
+    parsed_rows, diagnostics = parse_csv_transactions(source_rows, mapping, user_id=1)
+
+    assert diagnostics["skipped_rows"] == 0
+    assert [row["amount"] for row in parsed_rows] == [-42.5, 6.5]
+
+    import_id = stage_import_preview(client, parsed_rows, preview_id="signed-preview-consistency")
+    preview = client.get(f"/import/csv?import_id={import_id}")
+    html = preview.get_data(as_text=True)
+
+    assert preview.status_code == 200
+    assert 'value="-42.50"' in html
+    assert 'value="6.50"' in html
+
+    confirm = client.post(
+        "/import/csv",
+        data={"action": "confirm", "import_id": import_id, "import_default_paid_by": "DK"},
+        follow_redirects=True,
+    )
+    assert confirm.status_code == 200
+    assert b"Imported 2 transaction(s)." in confirm.data
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        saved_rows = db.execute(
+            "SELECT description, amount FROM expenses WHERE description IN (?, ?) ORDER BY description ASC",
+            ("Costco grocery row", "TPD/1240154"),
+        ).fetchall()
+
+    assert [(row["description"], row["amount"]) for row in saved_rows] == [
+        ("Costco grocery row", -42.5),
+        ("TPD/1240154", 6.5),
+    ]
+
+
+def test_import_skipped_rows_review_renders_bulk_selection_controls(client):
+    register(client)
+    login(client)
+
+    response = build_skipped_duplicate_review_response(client, description="Skipped review controls")
+    html = response.get_data(as_text=True)
+
+    assert 'id="select-all-skipped-rows"' in html
+    assert 'id="deselect-all-skipped-rows"' in html
+    assert 'id="selected-skipped-count"' in html
+
+
+def test_import_skipped_rows_review_select_all_script_targets_displayed_rows(client):
+    register(client)
+    login(client)
+
+    response = build_skipped_duplicate_review_response(client, description="Skipped review select all")
+    html = response.get_data(as_text=True)
+
+    assert "const skippedRowCheckboxes = () => Array.from(document.querySelectorAll('.skipped-row-select'))" in html
+    assert "row && row.style.display !== 'none' && !checkbox.disabled" in html
+    assert "selectAllSkippedRowsButton.addEventListener('click'" in html
+    assert "checkbox.checked = true" in html
+
+
+def test_import_skipped_rows_review_deselect_all_script_clears_displayed_rows(client):
+    register(client)
+    login(client)
+
+    response = build_skipped_duplicate_review_response(client, description="Skipped review deselect all")
+    html = response.get_data(as_text=True)
+
+    assert "deselectAllSkippedRowsButton.addEventListener('click'" in html
+    assert "checkbox.checked = false" in html
+
+
+def test_import_skipped_rows_review_count_script_updates_selected_total(client):
+    register(client)
+    login(client)
+
+    response = build_skipped_duplicate_review_response(client, description="Skipped review count")
+    html = response.get_data(as_text=True)
+
+    assert "checkbox.addEventListener('change', updateSkippedSelectedCount);" in html
+    assert "selectedSkippedCount.textContent = String(count);" in html
+    assert "updateSkippedSelectedCount();" in html
 
 
 def test_import_skipped_duplicate_can_be_overridden(client):

@@ -351,6 +351,11 @@
     <form method="post" class="stack-form">
       <input type="hidden" name="action" value="import_skipped_selected">
       <input type="hidden" name="import_id" value="{{ preview_id }}">
+      <p class="inline-form">
+        <button type="button" id="select-all-skipped-rows">Select All</button>
+        <button type="button" id="deselect-all-skipped-rows">Deselect All</button>
+        <small>Selected rows: <span id="selected-skipped-count">0</span></small>
+      </p>
       <table>
         <thead>
           <tr>
@@ -367,7 +372,7 @@
         <tbody>
           {% for row in skipped_result_rows %}
           <tr>
-            <td><input type="checkbox" name="selected_skipped_row_ids" value="{{ row.staging_id }}"></td>
+            <td><input type="checkbox" class="skipped-row-select" name="selected_skipped_row_ids" value="{{ row.staging_id }}"></td>
             <td>{{ row.staging_id }}</td>
             <td>{{ row.date }}</td>
             <td>{{ row.description }}</td>
@@ -410,6 +415,9 @@
   const confirmImportButton = document.getElementById('confirmImportButton');
   const confirmSaveState = document.getElementById('confirmSaveState');
   const confirmRowOverridesContainer = document.getElementById('confirm-row-overrides');
+  const selectAllSkippedRowsButton = document.getElementById('select-all-skipped-rows');
+  const deselectAllSkippedRowsButton = document.getElementById('deselect-all-skipped-rows');
+  const selectedSkippedCount = document.getElementById('selected-skipped-count');
   const subcategoryOptionsByCategory = {{ subcategory_options_by_category|default({}, true)|tojson }};
 
   let pendingSaveCount = 0;
@@ -546,6 +554,18 @@
     updateSelectedCount();
     syncSelectedRowHiddenInputs(previewToggleSelectedContainer);
     syncSelectedRowHiddenInputs(confirmSelectedContainer);
+  };
+
+  const skippedRowCheckboxes = () => Array.from(document.querySelectorAll('.skipped-row-select'))
+    .filter((checkbox) => {
+      const row = checkbox.closest('tr');
+      return row && row.style.display !== 'none' && !checkbox.disabled;
+    });
+
+  const updateSkippedSelectedCount = () => {
+    if (!selectedSkippedCount) return;
+    const count = skippedRowCheckboxes().filter((checkbox) => checkbox.checked).length;
+    selectedSkippedCount.textContent = String(count);
   };
 
   const persistRowSelection = async (rowId, selected) => {
@@ -708,6 +728,24 @@
     });
   });
 
+  document.querySelectorAll('.skipped-row-select').forEach((checkbox) => {
+    checkbox.addEventListener('change', updateSkippedSelectedCount);
+  });
+
+  if (selectAllSkippedRowsButton) {
+    selectAllSkippedRowsButton.addEventListener('click', () => {
+      skippedRowCheckboxes().forEach((checkbox) => { checkbox.checked = true; });
+      updateSkippedSelectedCount();
+    });
+  }
+
+  if (deselectAllSkippedRowsButton) {
+    deselectAllSkippedRowsButton.addEventListener('click', () => {
+      skippedRowCheckboxes().forEach((checkbox) => { checkbox.checked = false; });
+      updateSkippedSelectedCount();
+    });
+  }
+
   document.querySelectorAll('.vendor-input').forEach((input) => {
     input.addEventListener('change', async (event) => {
       const row = event.target.closest('.preview-row');
@@ -856,6 +894,7 @@
     }
   });
 
+  updateSkippedSelectedCount();
   setPendingSaveState();
 </script>
 {% endblock %}

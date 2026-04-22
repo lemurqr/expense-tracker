@@ -141,6 +141,11 @@ IMPORT_REFUND_KEYWORDS = (
     "returned",
     "reversal",
 )
+IMPORT_DISCOUNT_KEYWORDS = (
+    "discount",
+    "instant savings",
+    "coupon",
+)
 LEARNING_STOPLIST = {
     "shop",
     "store",
@@ -366,6 +371,26 @@ def is_refund_or_payment_row(description="", category_name=""):
     return False
 
 
+def is_discount_credit_row(description="", category_name=""):
+    normalized_description = normalize_text(description)
+    normalized_category = normalize_text(category_name)
+    if normalized_description.startswith("tpd/"):
+        return True
+    if any(term in normalized_category for term in IMPORT_DISCOUNT_KEYWORDS):
+        return True
+    if any(term in normalized_description for term in IMPORT_DISCOUNT_KEYWORDS):
+        return True
+    return False
+
+
+def classify_keyword_credit_row(description="", category_name=""):
+    if is_refund_or_payment_row(description, category_name):
+        return "inflow_keyword"
+    if is_discount_credit_row(description, category_name):
+        return "discount_credit"
+    return ""
+
+
 def normalize_amount(parsed_amount, source_type="bank", is_refund_or_payment=False):
     if parsed_amount is None:
         return None, "unknown"
@@ -397,13 +422,30 @@ def normalize_amount_for_confirm(row, amount_override=None):
     parsed_amount = parse_money(str(row.get("amount", "")))
     if parsed_amount is None:
         return None, "unknown"
-    if is_refund_or_payment_row(row.get("description", ""), row.get("category", "")):
-        return round(abs(parsed_amount), 2), "inflow_keyword"
+    keyword_credit_classification = classify_keyword_credit_row(row.get("description", ""), row.get("category", ""))
+    if keyword_credit_classification:
+        return round(abs(parsed_amount), 2), keyword_credit_classification
     if parsed_amount < 0:
         return round(-abs(parsed_amount), 2), "expense"
     if (row.get("source_type") or "") == "manual_tracker":
         return round(-abs(parsed_amount), 2), "expense"
     return round(-abs(parsed_amount), 2), "expense_default"
+
+
+def sync_preview_row_amount_fields(row):
+    amount_override = row.get("amount_override")
+    if amount_override in (None, ""):
+        amount_override = None
+    else:
+        amount_override = parse_money(str(amount_override))
+    row["amount_override"] = amount_override
+    row["has_override"] = amount_override is not None
+
+    normalized_amount, amount_classification = normalize_amount_for_confirm(row, amount_override=amount_override)
+    if normalized_amount is not None:
+        row["amount"] = normalized_amount
+    row["amount_classification"] = amount_classification
+    return normalized_amount, amount_classification
 
 
 def normalize_description(value):
@@ -949,6 +991,7 @@ def get_staged_preview_row_records(db, import_id, household_id=None, user_id=Non
             row_payload = json.loads(row["row_json"])
             row_payload["amount_override"] = row["amount_override"]
             row_payload["has_override"] = bool(row["has_override"])
+            sync_preview_row_amount_fields(row_payload)
             parsed_rows.append({"id": row["id"], "selected": bool(row["selected"]), "row": row_payload, "import_status": row["import_status"], "skipped_reason": row["skipped_reason"], "skipped_details": row["skipped_details"], "effective_amount": row["effective_amount"]})
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
@@ -967,6 +1010,7 @@ def update_staged_preview_row(db, staging_id, row):
             return [make_json_safe(item) for item in value]
         return value
 
+    sync_preview_row_amount_fields(row)
     is_selected = bool(row.get("selected", True))
     amount_override = row.get("amount_override")
     has_override = 1 if amount_override is not None else 0
