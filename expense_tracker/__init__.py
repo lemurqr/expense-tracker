@@ -371,22 +371,27 @@ def is_refund_or_payment_row(description="", category_name=""):
     return False
 
 
-def is_discount_credit_row(description="", category_name=""):
+def is_discount_credit_row(description="", category_name="", vendor=""):
     normalized_description = normalize_text(description)
     normalized_category = normalize_text(category_name)
+    normalized_vendor = normalize_text(vendor)
     if normalized_description.startswith("tpd/"):
+        return True
+    if normalized_vendor.startswith("tpd/"):
         return True
     if any(term in normalized_category for term in IMPORT_DISCOUNT_KEYWORDS):
         return True
     if any(term in normalized_description for term in IMPORT_DISCOUNT_KEYWORDS):
         return True
+    if any(term in normalized_vendor for term in IMPORT_DISCOUNT_KEYWORDS):
+        return True
     return False
 
 
-def classify_keyword_credit_row(description="", category_name=""):
+def classify_keyword_credit_row(description="", category_name="", vendor=""):
     if is_refund_or_payment_row(description, category_name):
         return "inflow_keyword"
-    if is_discount_credit_row(description, category_name):
+    if is_discount_credit_row(description, category_name, vendor):
         return "discount_credit"
     return ""
 
@@ -422,7 +427,11 @@ def normalize_amount_for_confirm(row, amount_override=None):
     parsed_amount = parse_money(str(row.get("amount", "")))
     if parsed_amount is None:
         return None, "unknown"
-    keyword_credit_classification = classify_keyword_credit_row(row.get("description", ""), row.get("category", ""))
+    keyword_credit_classification = classify_keyword_credit_row(
+        row.get("description", ""),
+        row.get("category", ""),
+        row.get("vendor", ""),
+    )
     if keyword_credit_classification:
         return round(abs(parsed_amount), 2), keyword_credit_classification
     if parsed_amount < 0:
