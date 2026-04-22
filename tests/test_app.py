@@ -6476,6 +6476,41 @@ def test_signed_amount_preview_and_confirm_share_normalized_amount_logic(client)
     ]
 
 
+def test_amount_column_normal_expense_row_imports_as_negative(client):
+    rows = [["2026-11-20", "Costco grocery row", "42.50", "Groceries"]]
+    mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "", "category": "3"}
+
+    parsed_rows, diagnostics = parse_csv_transactions(rows, mapping, user_id=1)
+
+    assert diagnostics["skipped_rows"] == 0
+    assert len(parsed_rows) == 1
+    assert parsed_rows[0]["amount"] == -42.5
+
+
+def test_amount_column_discount_row_imports_as_positive_credit_when_tpd_in_vendor(client):
+    rows = [["2026-11-20", "Costco instant savings", "-6.50", "TPD/1240154", "Groceries"]]
+    mapping = {"date": "0", "description": "1", "amount": "2", "debit": "", "credit": "", "vendor": "3", "category": "4"}
+
+    parsed_rows, diagnostics = parse_csv_transactions(rows, mapping, user_id=1)
+
+    assert diagnostics["skipped_rows"] == 0
+    assert len(parsed_rows) == 1
+    assert parsed_rows[0]["amount"] == 6.5
+    assert parsed_rows[0]["amount_classification"] == "discount_credit"
+
+
+def test_debit_credit_mapping_keeps_credit_column_positive(client):
+    rows = [["2026-11-20", "Costco return credit", "", "12.25", "Groceries"]]
+    mapping = {"date": "0", "description": "1", "amount": "", "debit": "2", "credit": "3", "vendor": "", "category": "4"}
+
+    parsed_rows, diagnostics = parse_csv_transactions(rows, mapping, user_id=1)
+
+    assert diagnostics["skipped_rows"] == 0
+    assert diagnostics["rows_with_credit"] == 1
+    assert len(parsed_rows) == 1
+    assert parsed_rows[0]["amount"] == 12.25
+
+
 def test_import_skipped_rows_review_renders_bulk_selection_controls(client):
     register(client)
     login(client)
