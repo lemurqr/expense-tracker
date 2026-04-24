@@ -4650,6 +4650,12 @@ def create_app(test_config=None):
                 e.date,
                 e.amount,
                 e.paid_by,
+                CASE
+                    WHEN e.scope = 'shared' THEN 'Shared'
+                    WHEN e.scope = 'dk_personal' THEN 'DK Personal'
+                    WHEN e.scope = 'yz_personal' THEN 'YZ Personal'
+                    ELSE 'Unknown'
+                END AS scope_label,
                 COALESCE(c.name, 'Uncategorized') AS category,
                 sc.name AS subcategory,
                 e.vendor,
@@ -4669,13 +4675,14 @@ def create_app(test_config=None):
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["date", "amount", "paid_by", "category", "subcategory", "vendor", "description", "confidence", "source"])
+        writer.writerow(["date", "amount", "paid_by", "Scope", "category", "subcategory", "vendor", "description", "confidence", "source"])
         for row in rows:
             writer.writerow(
                 [
                     row["date"],
                     row["amount"],
                     row["paid_by"],
+                    row["scope_label"],
                     row["category"],
                     row["subcategory"],
                     row["vendor"],

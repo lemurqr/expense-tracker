@@ -845,7 +845,7 @@ def test_category_expense_crud_and_export(client):
 
     csv_response = client.get("/export/csv")
     assert csv_response.status_code == 200
-    assert b"date,amount,paid_by,category,subcategory,vendor,description,confidence,source" in csv_response.data
+    assert b"date,amount,paid_by,Scope,category,subcategory,vendor,description,confidence,source" in csv_response.data
     assert b"Updated" in csv_response.data
 
     delete_response = client.post(f"/expenses/{expense_id}/delete", follow_redirects=True)
@@ -982,9 +982,67 @@ def test_export_csv_includes_extended_columns_and_respects_dashboard_tx_filters(
     text = csv_response.get_data(as_text=True)
     rows = list(csv.reader(io.StringIO(text)))
 
-    assert rows[0] == ["date", "amount", "paid_by", "category", "subcategory", "vendor", "description", "confidence", "source"]
+    assert rows[0] == ["date", "amount", "paid_by", "Scope", "category", "subcategory", "vendor", "description", "confidence", "source"]
     assert len(rows) == 2
-    assert rows[1] == ["2026-02-15", "-42.75", "DK", "Groceries", "Produce", "Fresh Farm", "Honeycrisp apples", "88", "manual"]
+    assert rows[1] == ["2026-02-15", "-42.75", "DK", "Shared", "Groceries", "Produce", "Fresh Farm", "Honeycrisp apples", "88", "manual"]
+
+
+def test_export_csv_includes_scope_labels_for_shared_and_personal(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = ?", ("user1",)).fetchone()["id"]
+        household_id = db.execute("SELECT household_id FROM household_members WHERE user_id = ? LIMIT 1", (user_id,)).fetchone()[
+            "household_id"
+        ]
+        groceries_id = db.execute("SELECT id FROM categories WHERE name = 'Groceries' AND user_id = ?", (user_id,)).fetchone()["id"]
+
+        db.execute(
+            """
+            INSERT INTO expenses
+                (user_id, household_id, date, amount, category_id, description, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, household_id, "2026-03-01", -20.00, groceries_id, "Shared row", "DK", "shared"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses
+                (user_id, household_id, date, amount, category_id, description, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
+            """,
+            (user_id, household_id, "2026-03-02", -21.00, groceries_id, "DK personal row", "DK", "dk_personal"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses
+                (user_id, household_id, date, amount, category_id, description, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
+            """,
+            (user_id, household_id, "2026-03-03", -22.00, groceries_id, "YZ personal row", "YZ", "yz_personal"),
+        )
+        db.execute(
+            """
+            INSERT INTO expenses
+                (user_id, household_id, date, amount, category_id, description, paid_by, scope, is_transfer, is_personal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (user_id, household_id, "2026-03-04", -23.00, groceries_id, "Unknown scope row", "DK", "unexpected_scope"),
+        )
+        db.commit()
+
+    csv_response = client.get("/export/csv?start=2026-03-01&end=2026-03-31")
+    assert csv_response.status_code == 200
+    rows = list(csv.reader(io.StringIO(csv_response.get_data(as_text=True))))
+
+    assert rows[0] == ["date", "amount", "paid_by", "Scope", "category", "subcategory", "vendor", "description", "confidence", "source"]
+    row_by_description = {row[7]: row for row in rows[1:]}
+    assert row_by_description["Shared row"][3] == "Shared"
+    assert row_by_description["DK personal row"][3] == "DK Personal"
+    assert row_by_description["YZ personal row"][3] == "YZ Personal"
+    assert row_by_description["Unknown scope row"][3] == "Unknown"
 
 
 def test_settlement_respects_date_range(client):
