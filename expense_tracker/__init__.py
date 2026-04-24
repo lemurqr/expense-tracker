@@ -2977,33 +2977,14 @@ def create_app(test_config=None):
 
     def ensure_default_categories(user_id):
         db = get_db()
-        existing = db.execute(
-            "SELECT id, name FROM categories WHERE user_id = ?",
+        category_count = db.execute(
+            "SELECT COUNT(*) AS c FROM categories WHERE user_id = ?",
             (user_id,),
-        ).fetchall()
-        existing_lookup = {normalize_description(row["name"]): row["id"] for row in existing}
+        ).fetchone()["c"]
 
-        for category in DEFAULT_CATEGORIES:
-            db.insert_ignore("categories", ["user_id", "name"], [user_id, category], ["user_id", "name"])
-
-        categories = db.execute(
-            "SELECT id, name FROM categories WHERE user_id = ?",
-            (user_id,),
-        ).fetchall()
-        lookup = {row["name"]: row["id"] for row in categories}
-
-        for old_name, new_name in LEGACY_CATEGORY_MAPPING.items():
-            old_id = existing_lookup.get(normalize_description(old_name))
-            new_id = lookup.get(new_name)
-            if old_id and new_id and old_id != new_id:
-                db.execute(
-                    "UPDATE expenses SET category_id = ? WHERE user_id = ? AND category_id = ?",
-                    (new_id, user_id, old_id),
-                )
-                db.execute(
-                    "DELETE FROM categories WHERE user_id = ? AND id = ?",
-                    (user_id, old_id),
-                )
+        if category_count == 0:
+            for category in DEFAULT_CATEGORIES:
+                db.insert_ignore("categories", ["user_id", "name"], [user_id, category], ["user_id", "name"])
 
         db.execute(
             """

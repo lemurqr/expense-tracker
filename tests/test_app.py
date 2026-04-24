@@ -6033,6 +6033,61 @@ def test_postgres_login_default_categories_idempotent(monkeypatch):
     assert distinct_count == len(DEFAULT_CATEGORIES)
 
 
+def test_empty_user_categories_bootstrap_defaults_once(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        total_count = db.execute(
+            "SELECT COUNT(*) AS c FROM categories WHERE user_id = ?",
+            (1,),
+        ).fetchone()["c"]
+        distinct_count = db.execute(
+            "SELECT COUNT(DISTINCT name) AS c FROM categories WHERE user_id = ?",
+            (1,),
+        ).fetchone()["c"]
+
+    assert total_count == len(DEFAULT_CATEGORIES)
+    assert distinct_count == len(DEFAULT_CATEGORIES)
+
+
+def test_deleted_default_category_not_recreated_on_login(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        deleted_category = DEFAULT_CATEGORIES[0]
+        db.execute(
+            "DELETE FROM categories WHERE user_id = ? AND name = ?",
+            (1, deleted_category),
+        )
+        remaining_count = db.execute(
+            "SELECT COUNT(*) AS c FROM categories WHERE user_id = ?",
+            (1,),
+        ).fetchone()["c"]
+        db.commit()
+
+    assert remaining_count == len(DEFAULT_CATEGORIES) - 1
+
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        deleted_category_count = db.execute(
+            "SELECT COUNT(*) AS c FROM categories WHERE user_id = ? AND name = ?",
+            (1, deleted_category),
+        ).fetchone()["c"]
+        total_count = db.execute(
+            "SELECT COUNT(*) AS c FROM categories WHERE user_id = ?",
+            (1,),
+        ).fetchone()["c"]
+
+    assert deleted_category_count == 0
+    assert total_count == len(DEFAULT_CATEGORIES) - 1
+
+
 def test_import_confirm_manual_tracker_positive_amount_is_inserted_negative(client):
     register(client)
     login(client)
