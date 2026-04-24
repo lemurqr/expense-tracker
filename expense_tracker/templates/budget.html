@@ -52,6 +52,10 @@
 
 <section class="card">
   <div class="budget-actions">
+    <div class="inline-form">
+      <button type="button" id="expand-all-budget-rows">Expand all</button>
+      <button type="button" id="collapse-all-budget-rows">Collapse all</button>
+    </div>
     <form method="post" action="{{ url_for('save_budget_settings') }}">
       <input type="hidden" name="month" value="{{ month_value }}">
       <input type="hidden" name="view" value="{{ view_mode }}">
@@ -91,22 +95,16 @@
                   <span class="budget-label">{{ row.category_name }}</span>
                 </td>
                 <td>
-                  <input type="hidden" name="row_key" value="{{ row_key }}">
-                  <select name="type_{{ row_key }}">
-                    <option value="Fixed" {{ 'selected' if row.budget_type == 'Fixed' else '' }}>Fixed</option>
-                    <option value="Flexible" {{ 'selected' if row.budget_type == 'Flexible' else '' }}>Flexible</option>
-                    <option value="Non-monthly" {{ 'selected' if row.budget_type == 'Non-monthly' else '' }}>Non-monthly</option>
-                    <option value="Personal" {{ 'selected' if row.budget_type == 'Personal' else '' }}>Personal</option>
-                  </select>
+                  <span class="budget-readonly-value">{{ row.budget_type }}</span>
                 </td>
-                <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ row_key }}" value="{{ '%.2f'|format(row.budget_amount) }}"></td>
+                <td class="amount-col"><span class="budget-readonly-value">${{ '%.2f'|format(row.budget_amount) }}</span></td>
                 <td class="amount-col">${{ '%.2f'|format(row.actual) }}</td>
                 <td class="amount-col {{ 'budget-over' if row.remaining < 0 else '' }}">${{ '%.2f'|format(row.remaining) }}</td>
                 <td class="progress-col">
                   <span>{{ '%.1f'|format(row.progress) }}%</span>
                   <div class="budget-progress"><span style="width: {{ row.progress }}%"></span></div>
                 </td>
-                <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="rollover_{{ row_key }}" value="{{ '%.2f'|format(row.rollover_amount) }}"></td>
+                <td class="amount-col"><span class="budget-readonly-value">${{ '%.2f'|format(row.rollover_amount) }}</span></td>
                 <td class="amount-col">${{ '%.2f'|format(row.last_month_actual) }}</td>
               </tr>
               {% for child in row_group.children %}
@@ -150,19 +148,70 @@
       <input type="hidden" name="scope" value="{{ scope_mode }}">
       <button type="submit">Copy from last month ({{ last_month }})</button>
     </form>
+    <form method="post" action="{{ url_for('copy_budget_to_next_month') }}" class="inline-form">
+      <input type="hidden" name="month" value="{{ month_value }}">
+      <input type="hidden" name="view" value="{{ view_mode }}">
+      <input type="hidden" name="scope" value="{{ scope_mode }}">
+      <button type="submit">Copy this month to next month</button>
+    </form>
+    <form method="post" action="{{ url_for('copy_budget_to_remaining_year') }}" class="inline-form">
+      <input type="hidden" name="month" value="{{ month_value }}">
+      <input type="hidden" name="view" value="{{ view_mode }}">
+      <input type="hidden" name="scope" value="{{ scope_mode }}">
+      <button type="submit">Copy this month to remaining months</button>
+    </form>
   </div>
 </section>
 <script>
-  document.querySelectorAll(".budget-collapse-toggle").forEach((button) => {
-    button.addEventListener("click", () => {
-      const target = button.dataset.target;
-      const expanded = button.getAttribute("aria-expanded") === "true";
-      document.querySelectorAll(`.budget-sub-row[data-parent="${target}"]`).forEach((row) => {
-        row.hidden = expanded;
-      });
-      button.setAttribute("aria-expanded", expanded ? "false" : "true");
-      button.textContent = expanded ? "▸" : "▾";
+  const storageKey = "budgetExpandedGroups";
+  const toggles = Array.from(document.querySelectorAll(".budget-collapse-toggle"));
+
+  function getExpandedState() {
+    try {
+      return JSON.parse(localStorage.getItem(storageKey) || "{}");
+    } catch (_err) {
+      return {};
+    }
+  }
+
+  function saveExpandedState(state) {
+    localStorage.setItem(storageKey, JSON.stringify(state));
+  }
+
+  function setExpanded(target, isExpanded, state) {
+    document.querySelectorAll(`.budget-sub-row[data-parent="${target}"]`).forEach((row) => {
+      row.hidden = !isExpanded;
     });
+    const button = document.querySelector(`.budget-collapse-toggle[data-target="${target}"]`);
+    if (!button) {
+      return;
+    }
+    button.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    button.textContent = isExpanded ? "▾" : "▸";
+    state[target] = isExpanded;
+  }
+
+  const expandedState = getExpandedState();
+  toggles.forEach((button) => {
+    const target = button.dataset.target;
+    const shouldExpand = expandedState[target] !== false;
+    setExpanded(target, shouldExpand, expandedState);
+    button.addEventListener("click", () => {
+      const nextExpanded = button.getAttribute("aria-expanded") !== "true";
+      setExpanded(target, nextExpanded, expandedState);
+      saveExpandedState(expandedState);
+    });
+  });
+  saveExpandedState(expandedState);
+
+  document.getElementById("expand-all-budget-rows")?.addEventListener("click", () => {
+    toggles.forEach((button) => setExpanded(button.dataset.target, true, expandedState));
+    saveExpandedState(expandedState);
+  });
+
+  document.getElementById("collapse-all-budget-rows")?.addEventListener("click", () => {
+    toggles.forEach((button) => setExpanded(button.dataset.target, false, expandedState));
+    saveExpandedState(expandedState);
   });
 </script>
 {% endblock %}

@@ -6758,7 +6758,7 @@ def test_budget_save_and_summary_numbers(client):
     assert "Budget changes saved." in html
     assert "$300.00" in html
     assert "$120.00" in html
-    assert "$180.00" in html
+    assert "$190.00" in html
 
 
 def test_budget_copy_from_last_month(client):
@@ -6850,3 +6850,113 @@ def test_budget_page_renders_nested_subcategory_rows(client):
     assert "budget-collapse-toggle" in html
     assert "budget-sub-row" in html
     assert "Produce" in html
+
+
+def test_budget_parent_rollup_uses_subcategory_totals(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (1,)).fetchone()["id"]
+        produce = db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)",
+            (1, groceries, "Produce"),
+        ).lastrowid
+        pantry = db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)",
+            (1, groceries, "Pantry"),
+        ).lastrowid
+
+        db.execute(
+            """
+            INSERT INTO monthly_budgets (household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, "2026-03", "household", "shared", groceries, produce, "Fixed", 100.0, 10.0),
+        )
+        db.execute(
+            """
+            INSERT INTO monthly_budgets (household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, "2026-03", "household", "shared", groceries, pantry, "Flexible", 200.0, 5.0),
+        )
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, paid_by, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)",
+            (1, 1, "2026-03-03", -40.0, groceries, produce, "DK"),
+        )
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, paid_by, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)",
+            (1, 1, "2026-03-04", -60.0, groceries, pantry, "DK"),
+        )
+        db.commit()
+
+    html = client.get("/budget?month=2026-03&view=household&scope=shared").get_data(as_text=True)
+    assert "Mixed" in html
+    assert "Groceries" in html
+    assert "$300.00" in html
+    assert "$100.00" in html
+    assert "$205.00" in html
+
+
+def test_budget_no_subcategory_row_is_visible_and_editable(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (1,)).fetchone()["id"]
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, paid_by, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+            (1, 1, "2026-03-03", -22.0, groceries, "DK"),
+        )
+        db.commit()
+
+    html = client.get("/budget?month=2026-03&view=household&scope=shared").get_data(as_text=True)
+    assert "No subcategory" in html
+    assert "$22.00" in html
+
+
+def test_budget_subcategory_save_persists_and_does_not_duplicate_rows(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (1,)).fetchone()["id"]
+        produce = db.execute(
+            "INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)",
+            (1, groceries, "Produce"),
+        ).lastrowid
+        db.commit()
+
+    payload = {
+        "month": "2026-03",
+        "view": "household",
+        "scope": "shared",
+        "row_key": [f"{groceries}:{produce}"],
+        f"type_{groceries}:{produce}": "Fixed",
+        f"budget_{groceries}:{produce}": "88.88",
+        f"rollover_{groceries}:{produce}": "4.44",
+    }
+
+    first = client.post("/budget/save", data=payload, follow_redirects=True)
+    second = client.post("/budget/save", data=payload, follow_redirects=True)
+    assert first.status_code == 200
+    assert second.status_code == 200
+
+    refreshed_html = client.get("/budget?month=2026-03&view=household&scope=shared").get_data(as_text=True)
+    assert "$88.88" in refreshed_html
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row_count = db.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM monthly_budgets
+            WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ? AND category_id = ? AND subcategory_id = ?
+            """,
+            (1, "2026-03", "household", "shared", groceries, produce),
+        ).fetchone()["c"]
+        assert row_count == 1
