@@ -52,16 +52,21 @@
 
 <section class="card">
   <div class="budget-actions">
-    <div class="inline-form">
-      <button type="button" id="expand-all-budget-rows">Expand all</button>
-      <button type="button" id="collapse-all-budget-rows">Collapse all</button>
+    <div class="budget-toolbar">
+      <div class="budget-row-toggle-group" role="group" aria-label="Budget row controls">
+        <button type="button" class="button button-secondary" id="expand-all-budget-rows">Expand all</button>
+        <button type="button" class="button button-secondary" id="collapse-all-budget-rows">Collapse all</button>
+      </div>
+      <div class="budget-save-cluster">
+        <button type="submit" form="budget-settings-form" class="budget-save-button">Save budget changes</button>
+      </div>
     </div>
-    <form method="post" action="{{ url_for('save_budget_settings') }}">
+    <form method="post" action="{{ url_for('save_budget_settings') }}" id="budget-settings-form">
       <input type="hidden" name="month" value="{{ month_value }}">
       <input type="hidden" name="view" value="{{ view_mode }}">
       <input type="hidden" name="scope" value="{{ scope_mode }}">
-      <button type="submit">Save budget changes</button>
 
+      <div class="budget-table-wrap">
       <table class="budget-table">
         <thead>
           <tr>
@@ -77,15 +82,16 @@
         </thead>
         <tbody>
           {% for section_name, display_rows in budget_display_groups.items() %}
+            {% if display_rows %}
             <tr class="budget-section-row">
               <td colspan="8"><strong>{{ section_name }}</strong></td>
             </tr>
             {% for row_group in display_rows %}
               {% set row = row_group.parent %}
-              {% set row_key = row.category_id ~ ':' ~ row.subcategory_id %}
+              {% set row_key = row.category_id ~ ':' ~ row.subcategory_id if row.editable else '' %}
               {% set has_children = row_group.children|length > 0 %}
               {% set group_key = section_name ~ '-' ~ row.category_id %}
-              <tr class="budget-parent-row">
+              <tr class="budget-parent-row {{ 'budget-rollup-row' if row.is_rollup else 'budget-editable-row' }}" data-row-kind="{{ row.row_kind }}" data-category-id="{{ row.category_id }}"{% if row.editable %} data-row-key="{{ row_key }}"{% endif %}>
                 <td class="category-col">
                   {% if has_children %}
                     <button type="button" class="budget-collapse-toggle" data-target="{{ group_key }}" aria-expanded="true" title="Collapse or expand subcategories">▾</button>
@@ -95,51 +101,69 @@
                   <span class="budget-label">{{ row.category_name }}</span>
                 </td>
                 <td>
+                  {% if row.editable %}
+                    <input type="hidden" name="row_key" value="{{ row_key }}">
+                    <select name="type_{{ row_key }}" aria-label="{{ row.category_name }} budget type">
+                      <option value="Fixed" {{ 'selected' if row.budget_type == 'Fixed' else '' }}>Fixed</option>
+                      <option value="Flexible" {{ 'selected' if row.budget_type == 'Flexible' else '' }}>Flexible</option>
+                    </select>
+                  {% else %}
                   <span class="budget-readonly-value">{{ row.budget_type }}</span>
+                  {% endif %}
                 </td>
-                <td class="amount-col"><span class="budget-readonly-value">${{ '%.2f'|format(row.budget_amount) }}</span></td>
+                <td class="amount-col">
+                  {% if row.editable %}
+                    <input class="amount-input" type="number" step="0.01" name="budget_{{ row_key }}" value="{{ '%.2f'|format(row.budget_amount) }}" aria-label="{{ row.category_name }} budget amount">
+                  {% else %}
+                    <span class="budget-readonly-value">${{ '%.2f'|format(row.budget_amount) }}</span>
+                  {% endif %}
+                </td>
                 <td class="amount-col">${{ '%.2f'|format(row.actual) }}</td>
                 <td class="amount-col {{ 'budget-over' if row.remaining < 0 else '' }}">${{ '%.2f'|format(row.remaining) }}</td>
                 <td class="progress-col">
                   <span>{{ '%.1f'|format(row.progress) }}%</span>
                   <div class="budget-progress"><span style="width: {{ row.progress }}%"></span></div>
                 </td>
-                <td class="amount-col"><span class="budget-readonly-value">${{ '%.2f'|format(row.rollover_amount) }}</span></td>
+                <td class="amount-col">
+                  {% if row.editable %}
+                    <input class="amount-input" type="number" step="0.01" name="rollover_{{ row_key }}" value="{{ '%.2f'|format(row.rollover_amount) }}" aria-label="{{ row.category_name }} rollover amount">
+                  {% else %}
+                    <span class="budget-readonly-value">${{ '%.2f'|format(row.rollover_amount) }}</span>
+                  {% endif %}
+                </td>
                 <td class="amount-col">${{ '%.2f'|format(row.last_month_actual) }}</td>
               </tr>
               {% for child in row_group.children %}
                 {% set child_row_key = child.category_id ~ ':' ~ child.subcategory_id %}
-                <tr class="budget-sub-row" data-parent="{{ group_key }}">
+                <tr class="budget-sub-row" data-parent="{{ group_key }}" data-row-kind="{{ child.row_kind }}" data-category-id="{{ child.category_id }}" data-subcategory-id="{{ child.subcategory_id }}" data-row-key="{{ child_row_key }}">
                   <td class="category-col">
                     <span class="budget-collapse-spacer"></span>
                     <span class="budget-label budget-sub-label">{{ child.subcategory_name }}</span>
                   </td>
                   <td>
                     <input type="hidden" name="row_key" value="{{ child_row_key }}">
-                    <select name="type_{{ child_row_key }}">
+                    <select name="type_{{ child_row_key }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} budget type">
                       <option value="Fixed" {{ 'selected' if child.budget_type == 'Fixed' else '' }}>Fixed</option>
                       <option value="Flexible" {{ 'selected' if child.budget_type == 'Flexible' else '' }}>Flexible</option>
-                      <option value="Non-monthly" {{ 'selected' if child.budget_type == 'Non-monthly' else '' }}>Non-monthly</option>
-                      <option value="Personal" {{ 'selected' if child.budget_type == 'Personal' else '' }}>Personal</option>
                     </select>
                   </td>
-                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ child_row_key }}" value="{{ '%.2f'|format(child.budget_amount) }}"></td>
+                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ child_row_key }}" value="{{ '%.2f'|format(child.budget_amount) }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} budget amount"></td>
                   <td class="amount-col">${{ '%.2f'|format(child.actual) }}</td>
                   <td class="amount-col {{ 'budget-over' if child.remaining < 0 else '' }}">${{ '%.2f'|format(child.remaining) }}</td>
                   <td class="progress-col">
                     <span>{{ '%.1f'|format(child.progress) }}%</span>
                     <div class="budget-progress"><span style="width: {{ child.progress }}%"></span></div>
                   </td>
-                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="rollover_{{ child_row_key }}" value="{{ '%.2f'|format(child.rollover_amount) }}"></td>
+                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="rollover_{{ child_row_key }}" value="{{ '%.2f'|format(child.rollover_amount) }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} rollover amount"></td>
                   <td class="amount-col">${{ '%.2f'|format(child.last_month_actual) }}</td>
                 </tr>
               {% endfor %}
-            {% else %}
-              <tr><td colspan="8">No rows in this section.</td></tr>
             {% endfor %}
+            {% endif %}
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </form>
 
     <form method="post" action="{{ url_for('copy_budget_from_last_month') }}" class="inline-form">

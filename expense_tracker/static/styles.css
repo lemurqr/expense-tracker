@@ -192,6 +192,12 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 .budget-summary-card h3 { margin: 0; font-size: .95rem; }
 .budget-summary-card p { margin: .4rem 0 0; font-weight: 700; }
 .budget-over { color: #b42318; font-weight: 700; }
+.budget-toolbar { display: flex; align-items: center; gap: .65rem 1.25rem; flex-wrap: wrap; margin-bottom: .75rem; }
+.budget-row-toggle-group { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem; border: 1px solid #d6e1f5; border-radius: 8px; background: #f8faff; }
+.budget-row-toggle-group button { padding: .34rem .55rem; font-size: .82rem; line-height: 1.2; border-radius: 6px; }
+.budget-save-cluster { display: inline-flex; align-items: center; padding-left: 1rem; margin-left: .15rem; border-left: 1px solid #d8e0ee; }
+.budget-save-button { padding: .42rem .75rem; font-size: .88rem; border-radius: 6px; }
+.budget-table-wrap { overflow-x: auto; }
 .budget-table { width: 100%; font-size: .9rem; }
 .budget-table th { text-align: left; }
 .budget-table .amount-col { text-align: right; white-space: nowrap; }
@@ -221,3 +227,6 @@ th, td { border-bottom: 1px solid #e5e7ef; padding: .45rem; text-align: left; }
 }
 .budget-progress { width: 100%; max-width: 110px; height: 8px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
 .budget-progress span { display: block; height: 100%; background: #2a7cff; }
+@media (max-width: 640px) {
+  .budget-save-cluster { padding-left: 0; margin-left: 0; border-left: 0; }
+}

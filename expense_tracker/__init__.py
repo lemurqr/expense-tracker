@@ -1779,7 +1779,11 @@ def create_app(test_config=None):
                 params[key] = value
         return params
 
-    BUDGET_TYPES = {"Fixed", "Flexible", "Non-monthly", "Personal"}
+    BUDGET_TYPES = {"Fixed", "Flexible"}
+
+    def _normalize_budget_type(raw_value, default="Flexible"):
+        value = (raw_value or "").strip()
+        return value if value in BUDGET_TYPES else default
 
     def parse_budget_month(raw_value):
         value = (raw_value or "").strip()
@@ -1870,64 +1874,57 @@ def create_app(test_config=None):
         last_month = (datetime.strptime(f"{month_value}-01", "%Y-%m-%d").date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
         last_actual_map = _fetch_actual_map(db, last_month, view_mode, scope_mode)
 
+        default_type = "Flexible"
         parent_rows = []
-        child_rows = []
+        full_child_rows = []
+        child_rows_by_category = {}
+
+        def build_editable_budget_row(category, subcategory_id, subcategory_name, row_kind):
+            key = (category["id"], subcategory_id)
+            setting = settings_map.get(key)
+            budget_type = _normalize_budget_type(setting["budget_type"] if setting else default_type)
+            budget_amount = float(setting["budget_amount"] or 0) if setting else 0.0
+            rollover_amount = float(setting["rollover_amount"] or 0) if setting else 0.0
+            actual = abs(float(actual_map.get(key, 0.0)))
+            last_month_actual = abs(float(last_actual_map.get(key, 0.0)))
+            available = budget_amount + rollover_amount
+            return {
+                "category_id": category["id"],
+                "category_name": category["name"],
+                "subcategory_id": subcategory_id,
+                "subcategory_name": subcategory_name,
+                "budget_type": budget_type,
+                "budget_amount": round(budget_amount, 2),
+                "actual": round(actual, 2),
+                "remaining": round(available - actual, 2),
+                "progress": round(0 if available <= 0 else min(200, max(0, (actual / available) * 100)), 1),
+                "rollover_amount": round(rollover_amount, 2),
+                "last_month_actual": round(last_month_actual, 2),
+                "editable": True,
+                "is_rollup": False,
+                "row_kind": row_kind,
+            }
+
         for category in categories:
-            default_type = "Personal" if scope_mode == "personal" else "Flexible"
+            real_subcategories = subcategories_by_category.get(category["id"], [])
+            if not real_subcategories:
+                parent_rows.append(build_editable_budget_row(category, 0, "", "category"))
+                continue
+
             category_child_rows = []
 
             uncategorized_key = (category["id"], 0)
-            uncategorized_setting = settings_map.get(uncategorized_key)
-            uncategorized_budget_type = (
-                uncategorized_setting["budget_type"] if uncategorized_setting else default_type
+            uncategorized_has_values = (
+                uncategorized_key in settings_map
+                or abs(float(actual_map.get(uncategorized_key, 0.0))) >= 0.005
+                or abs(float(last_actual_map.get(uncategorized_key, 0.0))) >= 0.005
             )
-            uncategorized_budget_amount = float(uncategorized_setting["budget_amount"] or 0) if uncategorized_setting else 0.0
-            uncategorized_rollover_amount = float(uncategorized_setting["rollover_amount"] or 0) if uncategorized_setting else 0.0
-            uncategorized_actual = abs(float(actual_map.get(uncategorized_key, 0.0)))
-            uncategorized_last_actual = abs(float(last_actual_map.get(uncategorized_key, 0.0)))
-            uncategorized_available = uncategorized_budget_amount + uncategorized_rollover_amount
-            category_child_rows.append(
-                {
-                    "category_id": category["id"],
-                    "category_name": category["name"],
-                    "subcategory_id": 0,
-                    "subcategory_name": "No subcategory",
-                    "budget_type": uncategorized_budget_type,
-                    "budget_amount": round(uncategorized_budget_amount, 2),
-                    "actual": round(uncategorized_actual, 2),
-                    "remaining": round(uncategorized_available - uncategorized_actual, 2),
-                    "progress": round(
-                        0 if uncategorized_available <= 0 else min(200, max(0, (uncategorized_actual / uncategorized_available) * 100)),
-                        1,
-                    ),
-                    "rollover_amount": round(uncategorized_rollover_amount, 2),
-                    "last_month_actual": round(uncategorized_last_actual, 2),
-                }
-            )
+            if uncategorized_has_values:
+                category_child_rows.append(build_editable_budget_row(category, 0, "No subcategory", "no_subcategory"))
 
-            for subcategory in subcategories_by_category.get(category["id"], []):
-                key = (category["id"], subcategory["id"])
-                setting = settings_map.get(key)
-                budget_type = setting["budget_type"] if setting else default_type
-                budget_amount = float(setting["budget_amount"] or 0) if setting else 0.0
-                rollover_amount = float(setting["rollover_amount"] or 0) if setting else 0.0
-                actual = abs(float(actual_map.get(key, 0.0)))
-                last_month_actual = abs(float(last_actual_map.get(key, 0.0)))
-                available = budget_amount + rollover_amount
+            for subcategory in real_subcategories:
                 category_child_rows.append(
-                    {
-                        "category_id": category["id"],
-                        "category_name": category["name"],
-                        "subcategory_id": subcategory["id"],
-                        "subcategory_name": subcategory["name"],
-                        "budget_type": budget_type,
-                        "budget_amount": round(budget_amount, 2),
-                        "actual": round(actual, 2),
-                        "remaining": round(available - actual, 2),
-                        "progress": round(0 if available <= 0 else min(200, max(0, (actual / available) * 100)), 1),
-                        "rollover_amount": round(rollover_amount, 2),
-                        "last_month_actual": round(last_month_actual, 2),
-                    }
+                    build_editable_budget_row(category, subcategory["id"], subcategory["name"], "subcategory")
                 )
 
             parent_budget = round(sum(row["budget_amount"] for row in category_child_rows), 2)
@@ -1954,11 +1951,18 @@ def create_app(test_config=None):
                     "progress": round(0 if parent_available <= 0 else min(200, max(0, (parent_actual / parent_available) * 100)), 1),
                     "rollover_amount": parent_rollover,
                     "last_month_actual": parent_last_month,
+                    "editable": False,
+                    "is_rollup": True,
+                    "row_kind": "rollup",
                 }
             )
-            child_rows.extend(category_child_rows)
+            sorted_child_rows = tuple(
+                sorted(category_child_rows, key=lambda row: (row["subcategory_id"] != 0, row["subcategory_name"].lower()))
+            )
+            child_rows_by_category[category["id"]] = sorted_child_rows
+            full_child_rows.extend(sorted_child_rows)
 
-        groups = {"Fixed": [], "Flexible": [], "Non-monthly": [], "Personal": [], "Mixed": []}
+        groups = {"Fixed": [], "Flexible": [], "Mixed": []}
         for row in parent_rows:
             group_key = row["budget_type"] if row["budget_type"] in groups else "Flexible"
             groups[group_key].append(row)
@@ -1966,36 +1970,30 @@ def create_app(test_config=None):
         grouped_display_rows = {}
         for section_name, section_rows in groups.items():
             section_parent_rows = sorted(section_rows, key=lambda row: row["category_name"].lower())
-            child_rows_by_category = {}
-            for row in child_rows:
-                child_rows_by_category.setdefault(row["category_id"], []).append(row)
-            for child_rows in child_rows_by_category.values():
-                child_rows.sort(key=lambda row: (row["subcategory_id"] != 0, row["subcategory_name"].lower()))
-
             section_display_rows = []
             for parent_row in section_parent_rows:
-                child_rows = child_rows_by_category.get(parent_row["category_id"], [])
                 section_display_rows.append(
                     {
                         "parent": parent_row,
-                        "children": child_rows,
+                        "children": list(child_rows_by_category.get(parent_row["category_id"], ())),
                     }
                 )
             grouped_display_rows[section_name] = section_display_rows
 
-        budgeted_total = round(sum(row["budget_amount"] for row in parent_rows), 2)
-        actual_total = round(sum(row["actual"] for row in parent_rows), 2)
-        rollover_total = round(sum(row["rollover_amount"] for row in parent_rows), 2)
+        editable_rows = [row for row in parent_rows if row["editable"]] + full_child_rows
+        budgeted_total = round(sum(row["budget_amount"] for row in editable_rows), 2)
+        actual_total = round(sum(row["actual"] for row in editable_rows), 2)
+        rollover_total = round(sum(row["rollover_amount"] for row in editable_rows), 2)
         available_total = budgeted_total + rollover_total
         remaining_total = round(available_total - actual_total, 2)
         progress_total = 0 if available_total <= 0 else round(min(200, max(0, (actual_total / available_total) * 100)), 1)
-        fixed_budget_total = round(sum(row["budget_amount"] for row in parent_rows if row["budget_type"] == "Fixed"), 2)
-        flexible_left = round(sum(row["remaining"] for row in parent_rows if row["budget_type"] == "Flexible"), 2)
+        fixed_budget_total = round(sum(row["budget_amount"] for row in editable_rows if row["budget_type"] == "Fixed"), 2)
+        flexible_left = round(sum(row["remaining"] for row in editable_rows if row["budget_type"] == "Flexible"), 2)
 
         return {
             "groups": groups,
             "display_groups": grouped_display_rows,
-            "rows": parent_rows + child_rows,
+            "rows": parent_rows + full_child_rows,
             "summary": {
                 "budgeted": budgeted_total,
                 "actual": actual_total,
@@ -3323,9 +3321,7 @@ def create_app(test_config=None):
                 subcategory_id = int(subcategory_id_raw)
             except (ValueError, TypeError):
                 continue
-            budget_type = (request.form.get(f"type_{row_key}") or "Flexible").strip()
-            if budget_type not in BUDGET_TYPES:
-                budget_type = "Flexible"
+            budget_type = _normalize_budget_type(request.form.get(f"type_{row_key}"))
             budget_amount = parse_money(request.form.get(f"budget_{row_key}") or "")
             rollover_amount = parse_money(request.form.get(f"rollover_{row_key}") or "")
             budget_amount = round(float(budget_amount or 0), 2)

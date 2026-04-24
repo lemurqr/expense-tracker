@@ -1,0 +1,12 @@
+.tmp_pytest
+tests/.tmp_pytest
+**/.tmp_pytest
+.pytest_cache
+**/.pytest_cache
+__pycache__
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+*.pyc
