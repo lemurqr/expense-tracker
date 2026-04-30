@@ -1,0 +1,71 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <h2>Import budget CSV</h2>
+  <p>Upload your budget file, review the preview, then confirm import.</p>
+  <form method="post" enctype="multipart/form-data" class="inline-form">
+    <input type="hidden" name="action" value="preview">
+    <label>CSV file <input type="file" name="csv_file" accept=".csv" required></label>
+    <button type="submit">Preview import</button>
+  </form>
+</section>
+
+{% if preview %}
+<section class="card">
+  <h3>Preview</h3>
+  <p>Create: {{ preview.create_count }} | Update: {{ preview.update_count }} | Errors: {{ preview.error_count }}</p>
+  <p>Total budget amount: ${{ '%.2f'|format(preview.total_budget) }}</p>
+
+  {% if preview.rows %}
+  <div class="budget-table-wrap">
+    <table class="budget-table">
+      <thead>
+        <tr>
+          <th>Line</th>
+          <th>Month</th>
+          <th>View</th>
+          <th>Scope</th>
+          <th>Category</th>
+          <th>Subcategory</th>
+          <th>Type</th>
+          <th>Budget</th>
+          <th>Rollover</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in preview.rows %}
+        <tr>
+          <td>{{ row.line_number }}</td>
+          <td>{{ row.month }}</td>
+          <td>{{ row.view_mode }}</td>
+          <td>{{ row.scope_mode }}</td>
+          <td>{{ row.category_name }}</td>
+          <td>{{ row.subcategory_name or '—' }}</td>
+          <td>{{ row.budget_type }}</td>
+          <td>${{ '%.2f'|format(row.budget_amount) }}</td>
+          <td>${{ '%.2f'|format(row.rollover_amount) }}</td>
+          <td>
+            {% if row.action == 'error' %}
+              Error: {{ row.errors|join('; ') }}
+            {% elif row.action == 'update' %}
+              Update
+            {% else %}
+              Create
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="import">
+    <input type="hidden" name="preview_payload" value='{{ preview.valid_rows|tojson }}'>
+    <button type="submit" {% if not preview.valid_rows %}disabled{% endif %}>Import {{ preview.valid_rows|length }} valid row(s)</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
