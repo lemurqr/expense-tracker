@@ -2,6 +2,7 @@
 {% block content %}
 <section class="card">
   <h2>Budget</h2>
+  <p><a href="{{ url_for('budget_import_page', month=month_value, view=view_mode, scope=scope_mode) }}">Import budget CSV</a></p>
   <form method="get" class="inline-form">
     <label>Month <input type="month" name="month" value="{{ month_value }}"></label>
     <label>View

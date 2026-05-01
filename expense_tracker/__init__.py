@@ -1803,6 +1803,255 @@ def create_app(test_config=None):
             return value
         return "shared"
 
+
+    BUDGET_IMPORT_COLUMN_ALIASES = {
+        "year": {"year"},
+        "month": {"month"},
+        "view": {"view"},
+        "scope": {"scope"},
+        "category": {"category"},
+        "subcategory": {"subcategory"},
+        "type": {"type", "budget type"},
+        "budget": {"budget", "monthly budget", "amount"},
+        "rollover": {"rollover"},
+    }
+
+    def _normalize_budget_import_type(raw_value):
+        value = (raw_value or "").strip().lower()
+        if value == "fixed":
+            return "Fixed"
+        if value == "flexible":
+            return "Flexible"
+        return ""
+
+    def _build_budget_import_column_map(fieldnames):
+        normalized_to_original = {}
+        for fieldname in fieldnames or ():
+            normalized = normalize_header_match_key(fieldname)
+            if normalized and normalized not in normalized_to_original:
+                normalized_to_original[normalized] = fieldname
+        column_map = {}
+        for canonical, aliases in BUDGET_IMPORT_COLUMN_ALIASES.items():
+            matched_header = ""
+            for alias in aliases:
+                alias_key = normalize_header_match_key(alias)
+                if alias_key in normalized_to_original:
+                    matched_header = normalized_to_original[alias_key]
+                    break
+            column_map[canonical] = matched_header
+        return column_map
+
+    def _parse_budget_import_month(raw_year, raw_month):
+        year_text = (raw_year or "").strip()
+        month_text = (raw_month or "").strip()
+        if not year_text and re.fullmatch(r"\d{4}-\d{1,2}", month_text):
+            year_text, month_text = month_text.split("-", 1)
+        if not re.fullmatch(r"\d{4}", year_text):
+            return "", "Year must be a 4-digit year."
+        year_value = int(year_text)
+        if year_value < 2000 or year_value > 2100:
+            return "", "Year is out of supported range."
+        month_value = None
+        if re.fullmatch(r"\d{1,2}", month_text):
+            month_value = int(month_text)
+        else:
+            month_key = normalize_header_match_key(month_text)
+            month_lookup = {
+                "jan": 1,
+                "january": 1,
+                "feb": 2,
+                "february": 2,
+                "mar": 3,
+                "march": 3,
+                "apr": 4,
+                "april": 4,
+                "may": 5,
+                "jun": 6,
+                "june": 6,
+                "jul": 7,
+                "july": 7,
+                "aug": 8,
+                "august": 8,
+                "sep": 9,
+                "sept": 9,
+                "september": 9,
+                "oct": 10,
+                "october": 10,
+                "nov": 11,
+                "november": 11,
+                "dec": 12,
+                "december": 12,
+            }
+            month_value = month_lookup.get(month_key)
+        if month_value is None or month_value < 1 or month_value > 12:
+            return "", "Month must be 1-12 or a month name."
+        return f"{year_value:04d}-{month_value:02d}", ""
+
+    def _load_budget_import_preview(db, csv_text):
+        reader = csv.DictReader(io.StringIO(csv_text))
+        fieldnames = reader.fieldnames or []
+        column_map = _build_budget_import_column_map(fieldnames)
+        missing_headers = [
+            header
+            for header in ["year", "month", "view", "scope", "category", "type", "budget"]
+            if not column_map.get(header)
+        ]
+        if missing_headers:
+            return {
+                "rows": [],
+                "valid_rows": [],
+                "create_count": 0,
+                "update_count": 0,
+                "error_count": 0,
+                "total_budget": 0.0,
+                "header_errors": [f"Missing required column: {name}" for name in missing_headers],
+            }
+
+        categories = db.execute(
+            "SELECT id, name FROM categories WHERE user_id = ?",
+            (g.user["id"],),
+        ).fetchall()
+        category_lookup = {normalize_description(row["name"]): row for row in categories}
+        subcategory_rows = db.execute(
+            "SELECT id, category_id, name FROM subcategories WHERE user_id = ?",
+            (g.user["id"],),
+        ).fetchall()
+        subcategories_by_category = {}
+        for row in subcategory_rows:
+            subcategories_by_category.setdefault(row["category_id"], []).append(row)
+        subcategory_lookup = {}
+        for category_id, rows in subcategories_by_category.items():
+            subcategory_lookup[category_id] = {normalize_description(row["name"]): row for row in rows}
+
+        preview_rows = []
+        valid_rows = []
+        create_count = 0
+        update_count = 0
+        total_budget = 0.0
+
+        for idx, csv_row in enumerate(reader, start=2):
+            row_errors = []
+            category_name = (csv_row.get(column_map["category"], "") or "").strip()
+            subcategory_name = (csv_row.get(column_map["subcategory"], "") or "").strip() if column_map.get("subcategory") else ""
+            month_value, month_error = _parse_budget_import_month(
+                csv_row.get(column_map["year"], ""),
+                csv_row.get(column_map["month"], ""),
+            )
+            if month_error:
+                row_errors.append(month_error)
+
+            view_raw = (csv_row.get(column_map["view"], "") or "").strip()
+            view_mode = normalize_budget_view(view_raw)
+            if view_mode != view_raw.lower():
+                row_errors.append("View must be household, dk, or yz.")
+
+            scope_raw = (csv_row.get(column_map["scope"], "") or "").strip()
+            scope_mode = normalize_budget_scope(scope_raw)
+            if scope_mode != scope_raw.lower():
+                row_errors.append("Scope must be shared, personal, or all.")
+
+            budget_type = _normalize_budget_import_type(csv_row.get(column_map["type"], ""))
+            if not budget_type:
+                row_errors.append("Type must be Fixed or Flexible.")
+
+            budget_amount = parse_money(csv_row.get(column_map["budget"], ""))
+            if budget_amount is None:
+                row_errors.append("Budget must be a number.")
+            else:
+                budget_amount = round(float(budget_amount), 2)
+
+            rollover_amount = 0.0
+            if column_map.get("rollover"):
+                rollover_value = (csv_row.get(column_map["rollover"], "") or "").strip()
+                if rollover_value:
+                    parsed_rollover = parse_money(rollover_value)
+                    if parsed_rollover is None:
+                        row_errors.append("Rollover must be a number.")
+                    else:
+                        rollover_amount = round(float(parsed_rollover), 2)
+
+            category = category_lookup.get(normalize_description(category_name))
+            category_id = None
+            subcategory_id = 0
+            if not category:
+                row_errors.append("Unknown category.")
+            else:
+                category_id = category["id"]
+                category_subcategories = subcategories_by_category.get(category_id, [])
+                if subcategory_name:
+                    normalized_subcategory = normalize_description(subcategory_name)
+                    if normalized_subcategory == normalize_description("No subcategory"):
+                        subcategory_id = 0
+                    else:
+                        subcategory = (subcategory_lookup.get(category_id) or {}).get(normalized_subcategory)
+                        if not subcategory:
+                            row_errors.append("Unknown subcategory for category.")
+                        else:
+                            subcategory_id = subcategory["id"]
+                elif category_subcategories:
+                    subcategory_id = 0
+
+            exists = False
+            if not row_errors and category_id is not None:
+                exists = (
+                    db.execute(
+                        """
+                        SELECT 1
+                        FROM monthly_budgets
+                        WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ?
+                          AND category_id = ? AND subcategory_id = ?
+                        """,
+                        (g.household_id, month_value, view_mode, scope_mode, category_id, subcategory_id),
+                    ).fetchone()
+                    is not None
+                )
+
+            action = "error" if row_errors else ("update" if exists else "create")
+            if action == "create":
+                create_count += 1
+            elif action == "update":
+                update_count += 1
+            if not row_errors:
+                total_budget += budget_amount
+                valid_rows.append(
+                    {
+                        "month": month_value,
+                        "view_mode": view_mode,
+                        "scope_mode": scope_mode,
+                        "category_id": category_id,
+                        "subcategory_id": subcategory_id,
+                        "budget_type": budget_type,
+                        "budget_amount": budget_amount,
+                        "rollover_amount": rollover_amount,
+                    }
+                )
+
+            preview_rows.append(
+                {
+                    "line_number": idx,
+                    "month": month_value,
+                    "view_mode": view_mode,
+                    "scope_mode": scope_mode,
+                    "category_name": category_name,
+                    "subcategory_name": subcategory_name,
+                    "budget_type": budget_type or (csv_row.get(column_map["type"], "") or "").strip(),
+                    "budget_amount": budget_amount if budget_amount is not None else 0.0,
+                    "rollover_amount": rollover_amount,
+                    "action": action,
+                    "errors": row_errors,
+                }
+            )
+
+        return {
+            "rows": preview_rows,
+            "valid_rows": valid_rows,
+            "create_count": create_count,
+            "update_count": update_count,
+            "error_count": len([row for row in preview_rows if row["action"] == "error"]),
+            "total_budget": round(total_budget, 2),
+            "header_errors": [],
+        }
+
     def _budget_expense_filters(view_mode, scope_mode):
         where_parts = ["e.household_id = ?", "e.is_transfer = 0"]
         params = [g.household_id]
@@ -3304,6 +3553,107 @@ def create_app(test_config=None):
             summary=budget_data["summary"],
             last_month=budget_data["last_month"],
         )
+
+    @app.route("/budget/import", methods=["GET", "POST"])
+    @login_required
+    def budget_import_page():
+        preview = None
+        if request.method == "POST":
+            action = (request.form.get("action") or "preview").strip().lower()
+            if action == "preview":
+                csv_file = request.files.get("csv_file")
+                if not csv_file or not (csv_file.filename or "").strip():
+                    flash("Please choose a CSV file.")
+                    return render_template("budget_import.html", preview=None)
+                csv_text = csv_file.read().decode("utf-8-sig", errors="replace")
+                preview = _load_budget_import_preview(get_db(), csv_text)
+                if preview["header_errors"]:
+                    for message in preview["header_errors"]:
+                        flash(message)
+                elif not preview["rows"]:
+                    flash("No rows found in CSV.")
+            elif action == "import":
+                payload = (request.form.get("preview_payload") or "").strip()
+                if not payload:
+                    flash("Nothing to import. Please preview a CSV first.")
+                    return render_template("budget_import.html", preview=None)
+                try:
+                    valid_rows = json.loads(payload)
+                except ValueError:
+                    flash("Could not read import payload. Please preview again.")
+                    return render_template("budget_import.html", preview=None)
+                db = get_db()
+                created_count = 0
+                updated_count = 0
+                for row in valid_rows:
+                    exists = (
+                        db.execute(
+                            """
+                            SELECT 1
+                            FROM monthly_budgets
+                            WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ?
+                              AND category_id = ? AND subcategory_id = ?
+                            """,
+                            (
+                                g.household_id,
+                                row["month"],
+                                row["view_mode"],
+                                row["scope_mode"],
+                                row["category_id"],
+                                row["subcategory_id"],
+                            ),
+                        ).fetchone()
+                        is not None
+                    )
+                    if exists:
+                        updated_count += 1
+                    else:
+                        created_count += 1
+                    db.upsert(
+                        "monthly_budgets",
+                        [
+                            "household_id",
+                            "month",
+                            "view_mode",
+                            "scope_mode",
+                            "category_id",
+                            "subcategory_id",
+                            "budget_type",
+                            "budget_amount",
+                            "rollover_amount",
+                            "updated_at",
+                        ],
+                        [
+                            g.household_id,
+                            row["month"],
+                            row["view_mode"],
+                            row["scope_mode"],
+                            row["category_id"],
+                            row["subcategory_id"],
+                            row["budget_type"],
+                            row["budget_amount"],
+                            row["rollover_amount"],
+                            datetime.utcnow().isoformat(),
+                        ],
+                        ["household_id", "month", "view_mode", "scope_mode", "category_id", "subcategory_id"],
+                        ["budget_type", "budget_amount", "rollover_amount", "updated_at"],
+                    )
+                db.commit()
+                if not valid_rows:
+                    flash("No valid rows to import.")
+                    return render_template("budget_import.html", preview=None)
+                flash(f"Budget import complete. Created {created_count} row(s), updated {updated_count} row(s).")
+                first_row = valid_rows[0]
+                return redirect(
+                    url_for(
+                        "budget_page",
+                        month=first_row["month"],
+                        view=first_row["view_mode"],
+                        scope=first_row["scope_mode"],
+                    )
+                )
+
+        return render_template("budget_import.html", preview=preview)
 
     @app.post("/budget/save")
     @login_required

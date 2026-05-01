@@ -145,6 +145,15 @@ def extract_selected_row_ids_from_html(html):
     return re.findall(r'name="selected_row_ids" value="(\d+)"', html)
 
 
+def preview_budget_import(client, csv_content):
+    return client.post(
+        "/budget/import",
+        data={"action": "preview", "csv_file": (io.BytesIO(csv_content.encode("utf-8")), "budget.csv")},
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+
+
 def test_db_health_reports_backend_and_schema_version(client):
     response = client.get("/health/db")
     assert response.status_code == 200
@@ -6800,6 +6809,7 @@ def test_budget_page_renders_with_defaults(client):
     assert "Budget" in html
     assert "Save budget changes" in html
     assert "Copy from last month" in html
+    assert "Import budget CSV" in html
     assert 'class="budget-row-toggle-group"' in html
     assert 'class="budget-save-button"' in html
     assert html.index("budget-row-toggle-group") < html.index("budget-save-button")
@@ -7182,3 +7192,155 @@ def test_budget_category_without_subcategories_is_editable_and_type_persists(cli
         assert saved["budget_type"] == "Fixed"
         assert float(saved["budget_amount"]) == 125.50
         assert float(saved["rollover_amount"]) == 7.25
+
+
+def test_budget_import_preview_shows_create_update_errors_and_imports_upserted_rows(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id, household_id = get_test_user_context(db)
+        utilities = get_category_id(db, user_id, "Utilities")
+        groceries = get_category_id(db, user_id, "Groceries")
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries, "Produce"))
+        produce = db.last_insert_id()
+        db.execute(
+            """
+            INSERT INTO monthly_budgets (household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (household_id, "2026-03", "household", "shared", utilities, 0, "Flexible", 10.0, 0.0),
+        )
+        db.commit()
+
+    csv_content = """Year,Month,View,Scope,Category,Subcategory,Type,Budget,Rollover
+2026,3,household,shared,Utilities,,Fixed,150.50,6.00
+2026,03,household,shared,Groceries,Produce,Flexible,88.80,2
+2026,03,household,shared,Not Real,,Fixed,20,0
+"""
+    preview_response = preview_budget_import(client, csv_content)
+    preview_html = preview_response.get_data(as_text=True)
+    assert preview_response.status_code == 200
+    assert "Create: 1 | Update: 1 | Errors: 1" in preview_html
+    assert "Total budget amount: $239.30" in preview_html
+    assert "Unknown category." in preview_html
+
+    payload_match = re.search(r'name=\"preview_payload\" value=\'([^\']+)\'', preview_html)
+    assert payload_match is not None
+    import_response = client.post(
+        "/budget/import",
+        data={"action": "import", "preview_payload": payload_match.group(1)},
+        follow_redirects=True,
+    )
+    assert import_response.status_code == 200
+    import_html = import_response.get_data(as_text=True)
+    assert "Budget import complete. Created 1 row(s), updated 1 row(s)." in import_html
+    assert "Budget" in import_html
+    assert 'name="budget_' in import_html
+    assert 'value="150.50"' in import_html
+
+    repeat_response = client.post(
+        "/budget/import",
+        data={"action": "import", "preview_payload": payload_match.group(1)},
+        follow_redirects=True,
+    )
+    repeat_html = repeat_response.get_data(as_text=True)
+    assert "Budget import complete. Created 0 row(s), updated 2 row(s)." in repeat_html
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        utilities_row = db.execute(
+            """
+            SELECT budget_type, budget_amount, rollover_amount, scope_mode
+            FROM monthly_budgets
+            WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ? AND category_id = ? AND subcategory_id = 0
+            """,
+            (household_id, "2026-03", "household", "shared", utilities),
+        ).fetchone()
+        assert utilities_row["budget_type"] == "Fixed"
+        assert float(utilities_row["budget_amount"]) == 150.50
+        assert float(utilities_row["rollover_amount"]) == 6.00
+        assert utilities_row["scope_mode"] == "shared"
+        groceries_count = db.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM monthly_budgets
+            WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ? AND category_id = ? AND subcategory_id = ?
+            """,
+            (household_id, "2026-03", "household", "shared", groceries, produce),
+        ).fetchone()["c"]
+        assert groceries_count == 1
+
+
+def test_budget_import_preview_reports_unknown_subcategory_error(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id, _ = get_test_user_context(db)
+        groceries = get_category_id(db, user_id, "Groceries")
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries, "Produce"))
+        db.commit()
+
+    csv_content = """Year,Month,View,Scope,Category,Subcategory,Type,Budget,Rollover
+2026,3,household,shared,Groceries,Unknown Child,Flexible,70,0
+"""
+    response = preview_budget_import(client, csv_content)
+    html = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Errors: 1" in html
+    assert "Unknown subcategory for category." in html
+
+
+def test_budget_import_allows_category_level_row_when_category_has_no_subcategories(client):
+    register(client)
+    login(client)
+
+    csv_content = """Year,Month,View,Scope,Category,Subcategory,Type,Monthly Budget,Rollover
+2026,1,household,shared,Utilities,,Fixed,123.45,0
+"""
+    preview_response = preview_budget_import(client, csv_content)
+    preview_html = preview_response.get_data(as_text=True)
+    assert "Create: 1 | Update: 0 | Errors: 0" in preview_html
+
+    payload = re.search(r'name=\"preview_payload\" value=\'([^\']+)\'', preview_html).group(1)
+    client.post("/budget/import", data={"action": "import", "preview_payload": payload}, follow_redirects=True)
+    budget_html = client.get("/budget?month=2026-01&view=household&scope=shared").get_data(as_text=True)
+    assert "Utilities" in budget_html
+    assert "$123.45" in budget_html
+
+
+def test_budget_import_uses_subcategory_rows_for_category_with_children(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id, household_id = get_test_user_context(db)
+        groceries = get_category_id(db, user_id, "Groceries")
+        db.execute("INSERT INTO subcategories (user_id, category_id, name) VALUES (?, ?, ?)", (user_id, groceries, "Produce"))
+        produce = db.last_insert_id()
+        db.commit()
+
+    csv_content = """Year,Month,View,Scope,Category,Subcategory,Budget Type,Amount,Rollover
+2026,2,household,shared,Groceries,Produce,Flexible,77.77,1.23
+"""
+    preview_html = preview_budget_import(client, csv_content).get_data(as_text=True)
+    payload = re.search(r'name=\"preview_payload\" value=\'([^\']+)\'', preview_html).group(1)
+    client.post("/budget/import", data={"action": "import", "preview_payload": payload}, follow_redirects=True)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        row = db.execute(
+            """
+            SELECT budget_type, budget_amount, rollover_amount
+            FROM monthly_budgets
+            WHERE household_id = ? AND month = ? AND view_mode = ? AND scope_mode = ? AND category_id = ? AND subcategory_id = ?
+            """,
+            (household_id, "2026-02", "household", "shared", groceries, produce),
+        ).fetchone()
+        assert row["budget_type"] == "Flexible"
+        assert float(row["budget_amount"]) == 77.77
+        assert float(row["rollover_amount"]) == 1.23
