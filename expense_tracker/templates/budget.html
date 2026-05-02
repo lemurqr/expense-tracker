@@ -19,21 +19,31 @@
         <option value="all" {{ 'selected' if scope_mode == 'all' else '' }}>All</option>
       </select>
     </label>
+    <label>Period
+      <select name="period">
+        <option value="single" {{ 'selected' if period_mode == 'single' else '' }}>Single month</option>
+        <option value="ytd" {{ 'selected' if period_mode == 'ytd' else '' }}>YTD</option>
+        <option value="custom" {{ 'selected' if period_mode == 'custom' else '' }}>Custom range</option>
+      </select>
+    </label>
+    <label>Start month <input type="month" name="start_month" value="{{ start_month }}"></label>
+    <label>End month <input type="month" name="end_month" value="{{ end_month }}"></label>
+    <label><input type="checkbox" name="show_year_left" value="1" {{ 'checked' if show_year_left else '' }}> Show year-left column</label>
     <button type="submit">Apply</button>
   </form>
 </section>
 
 <section class="budget-summary-grid">
   <article class="card budget-summary-card">
-    <h3>Budgeted</h3>
+    <h3>{{ 'Budgeted' if period_mode == 'single' else ('YTD Budgeted' if period_mode == 'ytd' else 'Period Budgeted') }}</h3>
     <p>${{ '%.2f'|format(summary.budgeted) }}</p>
   </article>
   <article class="card budget-summary-card">
-    <h3>Actual</h3>
+    <h3>{{ 'Actual' if period_mode == 'single' else ('YTD Actual' if period_mode == 'ytd' else 'Period Actual') }}</h3>
     <p>${{ '%.2f'|format(summary.actual) }}</p>
   </article>
   <article class="card budget-summary-card {{ 'budget-over' if summary.is_over_budget else '' }}">
-    <h3>Remaining</h3>
+    <h3>{{ 'Remaining' if period_mode == 'single' else ('YTD Remaining' if period_mode == 'ytd' else 'Period Remaining') }}</h3>
     <p>${{ '%.2f'|format(summary.remaining) }}</p>
   </article>
   <article class="card budget-summary-card">
@@ -49,6 +59,12 @@
     <h3>Flexible left</h3>
     <p>${{ '%.2f'|format(summary.flexible_left) }}</p>
   </article>
+  {% if period_mode != 'single' %}
+  <article class="card budget-summary-card">
+    <h3>Total year budget left</h3>
+    <p>${{ '%.2f'|format(summary.year_budget_left) }}</p>
+  </article>
+  {% endif %}
 </section>
 
 <section class="card">
@@ -59,7 +75,11 @@
         <button type="button" class="button button-secondary" id="collapse-all-budget-rows">Collapse all</button>
       </div>
       <div class="budget-save-cluster">
+        {% if period_mode == 'single' %}
         <button type="submit" form="budget-settings-form" class="budget-save-button">Save budget changes</button>
+        {% else %}
+        <span class="budget-readonly-value">Switch to Single month to edit monthly budget values.</span>
+        {% endif %}
       </div>
     </div>
     <form method="post" action="{{ url_for('save_budget_settings') }}" id="budget-settings-form">
@@ -73,19 +93,19 @@
           <tr>
             <th>Category</th>
             <th>Type</th>
-            <th class="amount-col">Budget</th>
-            <th class="amount-col">Actual</th>
-            <th class="amount-col">Remaining</th>
+            <th class="amount-col">{{ 'Budget' if period_mode == 'single' else ('YTD Budget' if period_mode == 'ytd' else 'Period Budget') }}</th>
+            <th class="amount-col">{{ 'Actual' if period_mode == 'single' else ('YTD Actual' if period_mode == 'ytd' else 'Period Actual') }}</th>
+            <th class="amount-col">{{ 'Remaining' if period_mode == 'single' else ('YTD Remaining' if period_mode == 'ytd' else 'Period Remaining') }}</th>
+            {% if show_year_left %}<th class="amount-col">Year Budget Left</th>{% endif %}
             <th>Progress</th>
-            <th class="amount-col">Rollover</th>
-            <th class="amount-col">Last month</th>
+            {% if period_mode == 'single' %}<th class="amount-col">Rollover</th><th class="amount-col">Last month</th>{% endif %}
           </tr>
         </thead>
         <tbody>
           {% for section_name, display_rows in budget_display_groups.items() %}
             {% if display_rows %}
             <tr class="budget-section-row">
-              <td colspan="8"><strong>{{ section_name }}</strong></td>
+              <td colspan="{{ 9 if show_year_left and period_mode == 'single' else (8 if period_mode == 'single' else (7 if show_year_left else 6)) }}"><strong>{{ section_name }}</strong></td>
             </tr>
             {% for row_group in display_rows %}
               {% set row = row_group.parent %}
@@ -102,7 +122,7 @@
                   <span class="budget-label">{{ row.category_name }}</span>
                 </td>
                 <td>
-                  {% if row.editable %}
+                  {% if row.editable and period_mode == 'single' %}
                     <input type="hidden" name="row_key" value="{{ row_key }}">
                     <select name="type_{{ row_key }}" aria-label="{{ row.category_name }} budget type">
                       <option value="Fixed" {{ 'selected' if row.budget_type == 'Fixed' else '' }}>Fixed</option>
@@ -113,7 +133,7 @@
                   {% endif %}
                 </td>
                 <td class="amount-col">
-                  {% if row.editable %}
+                  {% if row.editable and period_mode == 'single' %}
                     <input class="amount-input" type="number" step="0.01" name="budget_{{ row_key }}" value="{{ '%.2f'|format(row.budget_amount) }}" aria-label="{{ row.category_name }} budget amount">
                   {% else %}
                     <span class="budget-readonly-value">${{ '%.2f'|format(row.budget_amount) }}</span>
@@ -121,18 +141,21 @@
                 </td>
                 <td class="amount-col">${{ '%.2f'|format(row.actual) }}</td>
                 <td class="amount-col {{ 'budget-over' if row.remaining < 0 else '' }}">${{ '%.2f'|format(row.remaining) }}</td>
+                {% if show_year_left %}<td class="amount-col">{{ '$%.2f'|format(row.year_budget_left) }}</td>{% endif %}
                 <td class="progress-col">
                   <span>{{ '%.1f'|format(row.progress) }}%</span>
                   <div class="budget-progress"><span style="width: {{ row.progress }}%"></span></div>
                 </td>
+                {% if period_mode == 'single' %}
                 <td class="amount-col">
-                  {% if row.editable %}
+                  {% if row.editable and period_mode == 'single' %}
                     <input class="amount-input" type="number" step="0.01" name="rollover_{{ row_key }}" value="{{ '%.2f'|format(row.rollover_amount) }}" aria-label="{{ row.category_name }} rollover amount">
                   {% else %}
                     <span class="budget-readonly-value">${{ '%.2f'|format(row.rollover_amount) }}</span>
                   {% endif %}
                 </td>
                 <td class="amount-col">${{ '%.2f'|format(row.last_month_actual) }}</td>
+                {% endif %}
               </tr>
               {% for child in row_group.children %}
                 {% set child_row_key = child.category_id ~ ':' ~ child.subcategory_id %}
@@ -142,21 +165,24 @@
                     <span class="budget-label budget-sub-label">{{ child.subcategory_name }}</span>
                   </td>
                   <td>
-                    <input type="hidden" name="row_key" value="{{ child_row_key }}">
-                    <select name="type_{{ child_row_key }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} budget type">
+                    {% if period_mode == 'single' %}<input type="hidden" name="row_key" value="{{ child_row_key }}">{% endif %}
+                    <select name="type_{{ child_row_key }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} budget type" {{ 'disabled' if period_mode != 'single' else '' }}>
                       <option value="Fixed" {{ 'selected' if child.budget_type == 'Fixed' else '' }}>Fixed</option>
                       <option value="Flexible" {{ 'selected' if child.budget_type == 'Flexible' else '' }}>Flexible</option>
                     </select>
                   </td>
-                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ child_row_key }}" value="{{ '%.2f'|format(child.budget_amount) }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} budget amount"></td>
+                  <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ child_row_key }}" value="{{ '%.2f'|format(child.budget_amount) }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} budget amount" {{ 'disabled' if period_mode != 'single' else '' }}></td>
                   <td class="amount-col">${{ '%.2f'|format(child.actual) }}</td>
                   <td class="amount-col {{ 'budget-over' if child.remaining < 0 else '' }}">${{ '%.2f'|format(child.remaining) }}</td>
+                  {% if show_year_left %}<td class="amount-col">{{ '$%.2f'|format(child.year_budget_left) }}</td>{% endif %}
                   <td class="progress-col">
                     <span>{{ '%.1f'|format(child.progress) }}%</span>
                     <div class="budget-progress"><span style="width: {{ child.progress }}%"></span></div>
                   </td>
+                  {% if period_mode == 'single' %}
                   <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="rollover_{{ child_row_key }}" value="{{ '%.2f'|format(child.rollover_amount) }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} rollover amount"></td>
                   <td class="amount-col">${{ '%.2f'|format(child.last_month_actual) }}</td>
+                  {% endif %}
                 </tr>
               {% endfor %}
             {% endfor %}
@@ -167,6 +193,7 @@
       </div>
     </form>
 
+    {% if period_mode == 'single' %}
     <form method="post" action="{{ url_for('copy_budget_from_last_month') }}" class="inline-form">
       <input type="hidden" name="month" value="{{ month_value }}">
       <input type="hidden" name="view" value="{{ view_mode }}">
@@ -185,6 +212,7 @@
       <input type="hidden" name="scope" value="{{ scope_mode }}">
       <button type="submit">Copy this month to remaining months</button>
     </form>
+    {% endif %}
   </div>
 </section>
 <script>
