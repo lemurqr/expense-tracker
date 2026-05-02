@@ -7197,7 +7197,7 @@ def test_budget_category_without_subcategories_is_editable_and_type_persists(cli
 def test_budget_ytd_mode_is_read_only_and_shows_year_left(client):
     register(client)
     login(client)
-    response = client.get("/budget?month=2026-04&period=ytd&view=household&scope=shared")
+    response = client.get("/budget?month=2026-04&period=ytd&view=household&scope=shared&show_year_left=1")
     html = response.get_data(as_text=True)
     assert response.status_code == 200
     assert "YTD Budget" in html
@@ -7206,6 +7206,55 @@ def test_budget_ytd_mode_is_read_only_and_shows_year_left(client):
     assert "Save budget changes" not in html
 
 
+
+
+def test_budget_ytd_mode_hides_year_left_when_checkbox_unchecked(client):
+    register(client)
+    login(client)
+    response = client.get("/budget?month=2026-04&period=ytd&view=household&scope=shared")
+    html = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "YTD Budget" in html
+    assert "Year Budget Left" not in html
+
+
+def test_budget_range_query_handles_mixed_budget_types_without_grouping_error(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id, household_id = get_test_user_context(db)
+        utilities = get_category_id(db, user_id, "Utilities")
+        db.execute(
+            """
+            INSERT INTO monthly_budgets (household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (household_id, "2026-01", "household", "shared", utilities, 0, "Fixed", 100.0, 0.0),
+        )
+        db.execute(
+            """
+            INSERT INTO monthly_budgets (household_id, month, view_mode, scope_mode, category_id, subcategory_id, budget_type, budget_amount, rollover_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (household_id, "2026-02", "household", "shared", utilities, 0, "Flexible", 50.0, 0.0),
+        )
+        db.commit()
+
+    ytd_response = client.get("/budget?month=2026-02&period=ytd&view=household&scope=shared")
+    assert ytd_response.status_code == 200
+    ytd_html = ytd_response.get_data(as_text=True)
+    assert "YTD Budget" in ytd_html
+    assert "$150.00" in ytd_html
+
+    custom_response = client.get(
+        "/budget?month=2026-02&period=custom&start_month=2026-01&end_month=2026-02&view=household&scope=shared"
+    )
+    assert custom_response.status_code == 200
+    custom_html = custom_response.get_data(as_text=True)
+    assert "Period Budget" in custom_html
+    assert "$150.00" in custom_html
 def test_budget_custom_range_rejects_end_before_start(client):
     register(client)
     login(client)

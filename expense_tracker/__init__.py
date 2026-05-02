@@ -2078,7 +2078,7 @@ def create_app(test_config=None):
     def _fetch_budget_settings_for_range(db, start_month, end_month, view_mode, scope_mode):
         rows = db.execute(
             """
-            SELECT category_id, subcategory_id, budget_type, COALESCE(SUM(budget_amount), 0) AS budget_amount, COALESCE(SUM(rollover_amount), 0) AS rollover_amount
+            SELECT category_id, subcategory_id, COALESCE(SUM(budget_amount), 0) AS budget_amount, COALESCE(SUM(rollover_amount), 0) AS rollover_amount
             FROM monthly_budgets
             WHERE household_id = ? AND month >= ? AND month <= ? AND view_mode = ? AND scope_mode = ?
             GROUP BY category_id, subcategory_id
@@ -3601,8 +3601,8 @@ def create_app(test_config=None):
             period_mode = "single"
             start_month = month_value
             end_month = month_value
-        show_year_left = request.args.get("show_year_left")
-        show_year_left = (period_mode in {"ytd", "custom"}) if show_year_left is None else show_year_left == "1"
+        show_year_left_values = request.args.getlist("show_year_left")
+        show_year_left = "1" in show_year_left_values if show_year_left_values else False
         budget_data = _build_budget_rows(get_db(), month_value, view_mode, scope_mode, period_mode, start_month, end_month)
         return render_template(
             "budget.html",
