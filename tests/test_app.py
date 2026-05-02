@@ -7194,6 +7194,28 @@ def test_budget_category_without_subcategories_is_editable_and_type_persists(cli
         assert float(saved["rollover_amount"]) == 7.25
 
 
+def test_budget_ytd_mode_is_read_only_and_shows_year_left(client):
+    register(client)
+    login(client)
+    response = client.get("/budget?month=2026-04&period=ytd&view=household&scope=shared")
+    html = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "YTD Budget" in html
+    assert "Year Budget Left" in html
+    assert "Switch to Single month to edit monthly budget values." in html
+    assert "Save budget changes" not in html
+
+
+def test_budget_custom_range_rejects_end_before_start(client):
+    register(client)
+    login(client)
+    response = client.get("/budget?month=2026-04&period=custom&start_month=2026-06&end_month=2026-04", follow_redirects=True)
+    html = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "End month cannot be before start month." in html
+    assert "Budget" in html
+
+
 def test_budget_import_preview_shows_create_update_errors_and_imports_upserted_rows(client):
     register(client)
     login(client)

@@ -2075,6 +2075,18 @@ def create_app(test_config=None):
         ).fetchall()
         return {(row["category_id"], row["subcategory_id"]): row for row in rows}
 
+    def _fetch_budget_settings_for_range(db, start_month, end_month, view_mode, scope_mode):
+        rows = db.execute(
+            """
+            SELECT category_id, subcategory_id, budget_type, COALESCE(SUM(budget_amount), 0) AS budget_amount, COALESCE(SUM(rollover_amount), 0) AS rollover_amount
+            FROM monthly_budgets
+            WHERE household_id = ? AND month >= ? AND month <= ? AND view_mode = ? AND scope_mode = ?
+            GROUP BY category_id, subcategory_id
+            """,
+            (g.household_id, start_month, end_month, view_mode, scope_mode),
+        ).fetchall()
+        return {(row["category_id"], row["subcategory_id"]): row for row in rows}
+
     def _expense_allocation_rows_sql(where_sql):
         return """
             SELECT e.id AS expense_id, e.date AS expense_date, e.category_id, e.subcategory_id, e.amount
@@ -2102,7 +2114,22 @@ def create_app(test_config=None):
         ).fetchall()
         return {(row["category_id"], row["subcategory_id"]): float(row["actual"] or 0) for row in rows}
 
-    def _build_budget_rows(db, month_value, view_mode, scope_mode):
+    def _fetch_actual_map_for_dates(db, start_date, end_date, view_mode, scope_mode):
+        where_parts, params = _budget_expense_filters(view_mode, scope_mode)
+        where_parts.append("e.date >= ?")
+        where_parts.append("e.date <= ?")
+        params.extend([start_date, end_date])
+        rows = db.execute(
+            """
+            SELECT alloc.category_id, COALESCE(alloc.subcategory_id, 0) AS subcategory_id, COALESCE(SUM(-alloc.amount), 0) AS actual
+            FROM ({allocation_sql}) alloc
+            GROUP BY alloc.category_id, COALESCE(alloc.subcategory_id, 0)
+            """.format(allocation_sql=_expense_allocation_rows_sql(" AND ".join(where_parts))),
+            tuple(params + params),
+        ).fetchall()
+        return {(row["category_id"], row["subcategory_id"]): float(row["actual"] or 0) for row in rows}
+
+    def _build_budget_rows(db, month_value, view_mode, scope_mode, period_mode="single", start_month=None, end_month=None):
         categories = db.execute(
             "SELECT id, name FROM categories WHERE user_id = ? ORDER BY name",
             (g.user["id"],),
@@ -2117,8 +2144,22 @@ def create_app(test_config=None):
         for rows in subcategories_by_category.values():
             rows.sort(key=lambda row: row["name"].lower())
 
-        settings_map = _fetch_budget_settings(db, month_value, view_mode, scope_mode)
-        actual_map = _fetch_actual_map(db, month_value, view_mode, scope_mode)
+        year = int(month_value.split("-")[0])
+        period_start_month = month_value
+        period_end_month = month_value
+        if period_mode == "ytd":
+            period_start_month = f"{year}-01"
+        elif period_mode == "custom":
+            period_start_month = start_month or month_value
+            period_end_month = end_month or month_value
+        if period_mode == "single":
+            settings_map = _fetch_budget_settings(db, month_value, view_mode, scope_mode)
+            actual_map = _fetch_actual_map(db, month_value, view_mode, scope_mode)
+        else:
+            settings_map = _fetch_budget_settings_for_range(db, period_start_month, period_end_month, view_mode, scope_mode)
+            actual_map = _fetch_actual_map_for_dates(db, f"{period_start_month}-01", f"{period_end_month}-31", view_mode, scope_mode)
+        full_year_settings_map = _fetch_budget_settings_for_range(db, f"{year}-01", f"{year}-12", view_mode, scope_mode)
+        year_actual_map = _fetch_actual_map_for_dates(db, f"{year}-01-01", f"{period_end_month}-31", view_mode, scope_mode)
 
         last_month = (datetime.strptime(f"{month_value}-01", "%Y-%m-%d").date().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
         last_actual_map = _fetch_actual_map(db, last_month, view_mode, scope_mode)
@@ -2137,6 +2178,9 @@ def create_app(test_config=None):
             actual = abs(float(actual_map.get(key, 0.0)))
             last_month_actual = abs(float(last_actual_map.get(key, 0.0)))
             available = budget_amount + rollover_amount
+            full_year_setting = full_year_settings_map.get(key)
+            full_year_budget = float(full_year_setting["budget_amount"] or 0) if full_year_setting else 0.0
+            year_left = full_year_budget - abs(float(year_actual_map.get(key, 0.0)))
             return {
                 "category_id": category["id"],
                 "category_name": category["name"],
@@ -2149,6 +2193,7 @@ def create_app(test_config=None):
                 "progress": round(0 if available <= 0 else min(200, max(0, (actual / available) * 100)), 1),
                 "rollover_amount": round(rollover_amount, 2),
                 "last_month_actual": round(last_month_actual, 2),
+                "year_budget_left": round(year_left, 2),
                 "editable": True,
                 "is_rollup": False,
                 "row_kind": row_kind,
@@ -2180,6 +2225,7 @@ def create_app(test_config=None):
             parent_actual = round(sum(row["actual"] for row in category_child_rows), 2)
             parent_rollover = round(sum(row["rollover_amount"] for row in category_child_rows), 2)
             parent_last_month = round(sum(row["last_month_actual"] for row in category_child_rows), 2)
+            parent_year_left = round(sum(row["year_budget_left"] for row in category_child_rows), 2)
             parent_available = parent_budget + parent_rollover
             child_types = {row["budget_type"] for row in category_child_rows}
             if len(child_types) == 1:
@@ -2200,6 +2246,7 @@ def create_app(test_config=None):
                     "progress": round(0 if parent_available <= 0 else min(200, max(0, (parent_actual / parent_available) * 100)), 1),
                     "rollover_amount": parent_rollover,
                     "last_month_actual": parent_last_month,
+                    "year_budget_left": parent_year_left,
                     "editable": False,
                     "is_rollup": True,
                     "row_kind": "rollup",
@@ -2238,6 +2285,7 @@ def create_app(test_config=None):
         progress_total = 0 if available_total <= 0 else round(min(200, max(0, (actual_total / available_total) * 100)), 1)
         fixed_budget_total = round(sum(row["budget_amount"] for row in editable_rows if row["budget_type"] == "Fixed"), 2)
         flexible_left = round(sum(row["remaining"] for row in editable_rows if row["budget_type"] == "Flexible"), 2)
+        total_year_budget_left = round(sum(row["year_budget_left"] for row in editable_rows), 2)
 
         return {
             "groups": groups,
@@ -2251,6 +2299,7 @@ def create_app(test_config=None):
                 "fixed_budget": fixed_budget_total,
                 "flexible_left": flexible_left,
                 "is_over_budget": remaining_total < 0,
+                "year_budget_left": total_year_budget_left,
             },
             "last_month": last_month,
         }
@@ -3542,12 +3591,28 @@ def create_app(test_config=None):
         month_value = parse_budget_month(request.args.get("month"))
         view_mode = normalize_budget_view(request.args.get("view"))
         scope_mode = normalize_budget_scope(request.args.get("scope"))
-        budget_data = _build_budget_rows(get_db(), month_value, view_mode, scope_mode)
+        period_mode = (request.args.get("period") or "single").strip().lower()
+        if period_mode not in {"single", "ytd", "custom"}:
+            period_mode = "single"
+        start_month = parse_budget_month(request.args.get("start_month") or month_value)
+        end_month = parse_budget_month(request.args.get("end_month") or month_value)
+        if period_mode == "custom" and end_month < start_month:
+            flash("End month cannot be before start month.")
+            period_mode = "single"
+            start_month = month_value
+            end_month = month_value
+        show_year_left = request.args.get("show_year_left")
+        show_year_left = (period_mode in {"ytd", "custom"}) if show_year_left is None else show_year_left == "1"
+        budget_data = _build_budget_rows(get_db(), month_value, view_mode, scope_mode, period_mode, start_month, end_month)
         return render_template(
             "budget.html",
             month_value=month_value,
             view_mode=view_mode,
             scope_mode=scope_mode,
+            period_mode=period_mode,
+            start_month=start_month,
+            end_month=end_month,
+            show_year_left=show_year_left,
             budget_groups=budget_data["groups"],
             budget_display_groups=budget_data["display_groups"],
             summary=budget_data["summary"],
