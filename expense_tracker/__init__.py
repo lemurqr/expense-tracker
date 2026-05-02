@@ -2078,7 +2078,15 @@ def create_app(test_config=None):
     def _fetch_budget_settings_for_range(db, start_month, end_month, view_mode, scope_mode):
         rows = db.execute(
             """
-            SELECT category_id, subcategory_id, COALESCE(SUM(budget_amount), 0) AS budget_amount, COALESCE(SUM(rollover_amount), 0) AS rollover_amount
+            SELECT
+                category_id,
+                subcategory_id,
+                CASE
+                    WHEN COUNT(DISTINCT budget_type) = 1 THEN MIN(budget_type)
+                    ELSE 'Mixed'
+                END AS budget_type,
+                COALESCE(SUM(budget_amount), 0) AS budget_amount,
+                COALESCE(SUM(rollover_amount), 0) AS rollover_amount
             FROM monthly_budgets
             WHERE household_id = ? AND month >= ? AND month <= ? AND view_mode = ? AND scope_mode = ?
             GROUP BY category_id, subcategory_id
@@ -3596,6 +3604,9 @@ def create_app(test_config=None):
             period_mode = "single"
         start_month = parse_budget_month(request.args.get("start_month") or month_value)
         end_month = parse_budget_month(request.args.get("end_month") or month_value)
+        if period_mode == "ytd":
+            start_month = month_value
+            end_month = month_value
         if period_mode == "custom" and end_month < start_month:
             flash("End month cannot be before start month.")
             period_mode = "single"
