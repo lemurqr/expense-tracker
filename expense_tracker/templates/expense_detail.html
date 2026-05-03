@@ -3,7 +3,7 @@
 <section class="card">
   <h2>Expense Detail</h2>
   <p><strong>Date:</strong> {{ expense.date }}</p>
-  <p><strong>Amount:</strong> ${{ '%.2f'|format(expense.amount) }}</p>
+  <p><strong>Amount:</strong> {{ expense.amount|money }}</p>
   <p><strong>Category:</strong> {% if split_rows %}Split{% else %}{{ expense.category }}{% endif %}</p>
   <p><strong>Subcategory:</strong> {% if split_rows %}Multiple{% else %}{{ expense.subcategory or "—" }}{% endif %}</p>
   <p><strong>Paid by:</strong> {{ expense.paid_by or '—' }}</p>
@@ -18,7 +18,7 @@
       <tr>
         <td>{{ split.category_name }}</td>
         <td>{{ split.subcategory_name or '—' }}</td>
-        <td>${{ '%.2f'|format(split.amount) }}</td>
+        <td>{{ split.amount|money }}</td>
         <td>{{ split.note or '—' }}</td>
       </tr>
       {% endfor %}

@@ -203,6 +203,23 @@ PET_CATEGORIES = [
 ]
 
 
+
+
+def format_currency_whole_dollars(value):
+    if value in (None, ""):
+        return "$0"
+
+    try:
+        amount = Decimal(str(value))
+    except Exception:
+        return "$0"
+
+    rounded = amount.quantize(Decimal("1"))
+    whole = int(rounded)
+    sign = "-" if whole < 0 else ""
+    return f"{sign}${abs(whole):,}"
+
+
 def normalize_header_name(value):
     return " ".join((value or "").strip().lower().split())
 
@@ -6371,6 +6388,7 @@ def create_app(test_config=None):
         except DatabaseInitError:
             pass
 
+    app.jinja_env.filters["money"] = format_currency_whole_dollars
     app.get_db = get_db
     app.init_db = init_db
     return app

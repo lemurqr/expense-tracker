@@ -36,15 +36,15 @@
 <section class="budget-summary-grid">
   <article class="card budget-summary-card">
     <h3>{{ 'Budgeted' if period_mode == 'single' else ('YTD Budgeted' if period_mode == 'ytd' else 'Period Budgeted') }}</h3>
-    <p>${{ '%.2f'|format(summary.budgeted) }}</p>
+    <p>{{ summary.budgeted|money }}</p>
   </article>
   <article class="card budget-summary-card">
     <h3>{{ 'Actual' if period_mode == 'single' else ('YTD Actual' if period_mode == 'ytd' else 'Period Actual') }}</h3>
-    <p>${{ '%.2f'|format(summary.actual) }}</p>
+    <p>{{ summary.actual|money }}</p>
   </article>
   <article class="card budget-summary-card {{ 'budget-over' if summary.is_over_budget else '' }}">
     <h3>{{ 'Remaining' if period_mode == 'single' else ('YTD Remaining' if period_mode == 'ytd' else 'Period Remaining') }}</h3>
-    <p>${{ '%.2f'|format(summary.remaining) }}</p>
+    <p>{{ summary.remaining|money }}</p>
   </article>
   <article class="card budget-summary-card">
     <h3>Progress</h3>
@@ -53,16 +53,16 @@
   </article>
   <article class="card budget-summary-card">
     <h3>Fixed budget</h3>
-    <p>${{ '%.2f'|format(summary.fixed_budget) }}</p>
+    <p>{{ summary.fixed_budget|money }}</p>
   </article>
   <article class="card budget-summary-card">
     <h3>Flexible left</h3>
-    <p>${{ '%.2f'|format(summary.flexible_left) }}</p>
+    <p>{{ summary.flexible_left|money }}</p>
   </article>
   {% if period_mode != 'single' %}
   <article class="card budget-summary-card">
     <h3>Total year budget left</h3>
-    <p>${{ '%.2f'|format(summary.year_budget_left) }}</p>
+    <p>{{ summary.year_budget_left|money }}</p>
   </article>
   {% endif %}
 </section>
@@ -136,12 +136,12 @@
                   {% if row.editable and period_mode == 'single' %}
                     <input class="amount-input" type="number" step="0.01" name="budget_{{ row_key }}" value="{{ '%.2f'|format(row.budget_amount) }}" aria-label="{{ row.category_name }} budget amount">
                   {% else %}
-                    <span class="budget-readonly-value">${{ '%.2f'|format(row.budget_amount) }}</span>
+                    <span class="budget-readonly-value">{{ row.budget_amount|money }}</span>
                   {% endif %}
                 </td>
-                <td class="amount-col">${{ '%.2f'|format(row.actual) }}</td>
-                <td class="amount-col {{ 'budget-over' if row.remaining < 0 else '' }}">${{ '%.2f'|format(row.remaining) }}</td>
-                {% if show_year_left %}<td class="amount-col">{{ '$%.2f'|format(row.year_budget_left) }}</td>{% endif %}
+                <td class="amount-col">{{ row.actual|money }}</td>
+                <td class="amount-col {{ 'budget-over' if row.remaining < 0 else '' }}">{{ row.remaining|money }}</td>
+                {% if show_year_left %}<td class="amount-col">{{ row.year_budget_left|money }}</td>{% endif %}
                 <td class="progress-col">
                   <span>{{ '%.1f'|format(row.progress) }}%</span>
                   <div class="budget-progress"><span style="width: {{ row.progress }}%"></span></div>
@@ -151,10 +151,10 @@
                   {% if row.editable and period_mode == 'single' %}
                     <input class="amount-input" type="number" step="0.01" name="rollover_{{ row_key }}" value="{{ '%.2f'|format(row.rollover_amount) }}" aria-label="{{ row.category_name }} rollover amount">
                   {% else %}
-                    <span class="budget-readonly-value">${{ '%.2f'|format(row.rollover_amount) }}</span>
+                    <span class="budget-readonly-value">{{ row.rollover_amount|money }}</span>
                   {% endif %}
                 </td>
-                <td class="amount-col">${{ '%.2f'|format(row.last_month_actual) }}</td>
+                <td class="amount-col">{{ row.last_month_actual|money }}</td>
                 {% endif %}
               </tr>
               {% for child in row_group.children %}
@@ -172,16 +172,16 @@
                     </select>
                   </td>
                   <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="budget_{{ child_row_key }}" value="{{ '%.2f'|format(child.budget_amount) }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} budget amount" {{ 'disabled' if period_mode != 'single' else '' }}></td>
-                  <td class="amount-col">${{ '%.2f'|format(child.actual) }}</td>
-                  <td class="amount-col {{ 'budget-over' if child.remaining < 0 else '' }}">${{ '%.2f'|format(child.remaining) }}</td>
-                  {% if show_year_left %}<td class="amount-col">{{ '$%.2f'|format(child.year_budget_left) }}</td>{% endif %}
+                  <td class="amount-col">{{ child.actual|money }}</td>
+                  <td class="amount-col {{ 'budget-over' if child.remaining < 0 else '' }}">{{ child.remaining|money }}</td>
+                  {% if show_year_left %}<td class="amount-col">{{ child.year_budget_left|money }}</td>{% endif %}
                   <td class="progress-col">
                     <span>{{ '%.1f'|format(child.progress) }}%</span>
                     <div class="budget-progress"><span style="width: {{ child.progress }}%"></span></div>
                   </td>
                   {% if period_mode == 'single' %}
                   <td class="amount-col"><input class="amount-input" type="number" step="0.01" name="rollover_{{ child_row_key }}" value="{{ '%.2f'|format(child.rollover_amount) }}" aria-label="{{ child.category_name }} {{ child.subcategory_name }} rollover amount"></td>
-                  <td class="amount-col">${{ '%.2f'|format(child.last_month_actual) }}</td>
+                  <td class="amount-col">{{ child.last_month_actual|money }}</td>
                   {% endif %}
                 </tr>
               {% endfor %}

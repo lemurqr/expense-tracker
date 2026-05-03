@@ -30,8 +30,8 @@
   </div>
   <p class="card-subtitle" id="spend-details-subtitle">Shared categories for {{ shared_category_analytics.period_label }}</p>
   <div class="spend-summary-row" id="spend-summary-row">
-    <div class="spend-summary-item"><span class="spend-summary-label">Total spend</span><strong id="spend-summary-total">$0.00</strong></div>
-    <div class="spend-summary-item"><span class="spend-summary-label">Avg / month</span><strong id="spend-summary-average">$0.00</strong></div>
+    <div class="spend-summary-item"><span class="spend-summary-label">Total spend</span><strong id="spend-summary-total">$0</strong></div>
+    <div class="spend-summary-item"><span class="spend-summary-label">Avg / month</span><strong id="spend-summary-average">$0</strong></div>
     <label class="spend-category-filter">Category
       <select id="spend-category-select">
         <option value="">All categories</option>
@@ -85,25 +85,25 @@
           <button type="button" class="row-toggle" data-row-toggle="{{ row.id }}" aria-expanded="false" title="Expand category details">▸</button>
           <strong>{{ row.label }}</strong>
         </td>
-        <td>${{ '%.2f'|format(row.current_month) }}</td>
-        <td>${{ '%.2f'|format(row.last_month) }}</td>
-        <td>${{ '%.2f'|format(row.year_to_date) }}</td>
+        <td>{{ row.current_month|money }}</td>
+        <td>{{ row.last_month|money }}</td>
+        <td>{{ row.year_to_date|money }}</td>
       </tr>
       {% if row.subcategories %}
       {% for subcategory in row.subcategories %}
       <tr class="subcategory-row" data-subcategory-group="{{ row.id }}" hidden>
         <td class="subcategory-cell">{{ subcategory.label }}</td>
-        <td>${{ '%.2f'|format(subcategory.current_month) }}</td>
-        <td>${{ '%.2f'|format(subcategory.last_month) }}</td>
-        <td>${{ '%.2f'|format(subcategory.year_to_date) }}</td>
+        <td>{{ subcategory.current_month|money }}</td>
+        <td>{{ subcategory.last_month|money }}</td>
+        <td>{{ subcategory.year_to_date|money }}</td>
       </tr>
       {% endfor %}
       {% else %}
       <tr class="subcategory-row" data-subcategory-group="{{ row.id }}" hidden>
         <td class="subcategory-cell">No subcategories yet</td>
-        <td>$0.00</td>
-        <td>$0.00</td>
-        <td>$0.00</td>
+        <td>$0</td>
+        <td>$0</td>
+        <td>$0</td>
       </tr>
       {% endif %}
       {% else %}
@@ -135,32 +135,32 @@
       <thead><tr><th>Metric</th><th>Value</th></tr></thead>
       <tbody>
         <tr><td>Period</td><td>{{ start_date or selected_month or 'All time' }}{% if end_date %} → {{ end_date }}{% endif %}</td></tr>
-        <tr><td>Total shared expenses (DK+YZ)</td><td>${{ '%.2f'|format(settlement.total_shared) }}</td></tr>
-        <tr><td>DK paid (shared)</td><td>${{ '%.2f'|format(settlement.dk_paid_shared) }}</td></tr>
-        <tr><td>YZ paid (shared)</td><td>${{ '%.2f'|format(settlement.yz_paid_shared) }}</td></tr>
-        <tr><td>Each share (50/50)</td><td>${{ '%.2f'|format(settlement.each_share) }}</td></tr>
+        <tr><td>Total shared expenses (DK+YZ)</td><td>{{ settlement.total_shared|money }}</td></tr>
+        <tr><td>DK paid (shared)</td><td>{{ settlement.dk_paid_shared|money }}</td></tr>
+        <tr><td>YZ paid (shared)</td><td>{{ settlement.yz_paid_shared|money }}</td></tr>
+        <tr><td>Each share (50/50)</td><td>{{ settlement.each_share|money }}</td></tr>
         <tr>
           <td>Shared settlement</td>
           <td>
             {% if settlement.shared_delta < 0 %}
-              DK→YZ ${{ '%.2f'|format(settlement.shared_delta|abs) }}
+              DK→YZ {{ settlement.shared_delta|abs|money }}
             {% elif settlement.shared_delta > 0 %}
-              YZ→DK ${{ '%.2f'|format(settlement.shared_delta) }}
+              YZ→DK {{ settlement.shared_delta|money }}
             {% else %}
-              $0.00
+              $0
             {% endif %}
           </td>
         </tr>
-        <tr><td>Pet reimbursement (YZ→DK)</td><td>YZ→DK ${{ '%.2f'|format(settlement.pet_paid_by_dk) }}</td></tr>
+        <tr><td>Pet reimbursement (YZ→DK)</td><td>YZ→DK {{ settlement.pet_paid_by_dk|money }}</td></tr>
         <tr>
           <td>Net settlement (this period)</td>
           <td>
             {% if settlement.period_net_delta < 0 %}
-              DK→YZ ${{ '%.2f'|format(settlement.period_net_delta|abs) }}
+              DK→YZ {{ settlement.period_net_delta|abs|money }}
             {% elif settlement.period_net_delta > 0 %}
-              YZ→DK ${{ '%.2f'|format(settlement.period_net_delta) }}
+              YZ→DK {{ settlement.period_net_delta|money }}
             {% else %}
-              $0.00
+              $0
             {% endif %}
           </td>
         </tr>
@@ -174,11 +174,11 @@
       <tbody>
         <tr><td>1</td><td>Opening balance (before period)</td><td>{{ '%+.2f'|format(settlement.opening_balance) }}</td></tr>
         <tr><td>2</td><td>Net settlement delta from expenses (this period)</td><td>{{ '%+.2f'|format(settlement.period_net_delta) }}</td></tr>
-        <tr><td>3</td><td>Repayments DK→YZ (this period)</td><td>${{ '%.2f'|format(settlement.repayments_dk_to_yz) }}</td></tr>
-        <tr><td>4</td><td>Repayments YZ→DK (this period)</td><td>${{ '%.2f'|format(settlement.repayments_yz_to_dk) }}</td></tr>
+        <tr><td>3</td><td>Repayments DK→YZ (this period)</td><td>{{ settlement.repayments_dk_to_yz|money }}</td></tr>
+        <tr><td>4</td><td>Repayments YZ→DK (this period)</td><td>{{ settlement.repayments_yz_to_dk|money }}</td></tr>
         <tr><td>5</td><td>Closing balance (life-to-date)</td><td>{{ '%+.2f'|format(settlement.closing_balance) }}</td></tr>
-        <tr><td>6</td><td>Current outstanding: DK owes</td><td>${{ '%.2f'|format(settlement.dk_owes_now) }}</td></tr>
-        <tr><td>7</td><td>Current outstanding: YZ owes</td><td>${{ '%.2f'|format(settlement.yz_owes_now) }}</td></tr>
+        <tr><td>6</td><td>Current outstanding: DK owes</td><td>{{ settlement.dk_owes_now|money }}</td></tr>
+        <tr><td>7</td><td>Current outstanding: YZ owes</td><td>{{ settlement.yz_owes_now|money }}</td></tr>
       </tbody>
     </table>
   </div>
@@ -276,7 +276,7 @@
           <td>{{ repayment.date }}</td>
           <td>{{ repayment.from_person }}</td>
           <td>{{ repayment.to_person }}</td>
-          <td>${{ '%.2f'|format(repayment.amount) }}</td>
+          <td>{{ repayment.amount|money }}</td>
           <td>{{ repayment.note or '' }}</td>
           <td>
             <a href="{{ url_for('dashboard', month=selected_month, start=start_date or '', end=end_date or '', tx_date_from=tx_filter_values.tx_date_from, tx_date_to=tx_filter_values.tx_date_to, tx_amount_min=tx_filter_values.tx_amount_min, tx_amount_max=tx_filter_values.tx_amount_max, tx_paid_by=tx_filter_values.tx_paid_by, tx_scope=tx_filter_values.tx_scope, tx_category_id=tx_filter_values.tx_category_id, tx_vendor_q=tx_filter_values.tx_vendor_q, tx_description_q=tx_filter_values.tx_description_q, tx_confidence_bucket=tx_filter_values.tx_confidence_bucket, tx_source=tx_filter_values.tx_source, tx_transfer_mode=tx_filter_values.tx_transfer_mode, settlement_tab=dashboard_state_params.settlement_tab or '', spend_mode=dashboard_state_params.spend_mode or '', edit_repayment_id=repayment.id) }}">Edit</a>
@@ -329,11 +329,11 @@
         {% for row in settlement.monthly_breakdown %}
         <tr>
           <td>{{ row.month }}</td>
-          <td>${{ '%.2f'|format(row.total_expenses) }}</td>
-          <td>${{ '%.2f'|format(row.dk_owes) }}</td>
-          <td>${{ '%.2f'|format(row.yz_owes) }}</td>
-          <td>${{ '%.2f'|format(row.repayments_dk_to_yz) }}</td>
-          <td>${{ '%.2f'|format(row.repayments_yz_to_dk) }}</td>
+          <td>{{ row.total_expenses|money }}</td>
+          <td>{{ row.dk_owes|money }}</td>
+          <td>{{ row.yz_owes|money }}</td>
+          <td>{{ row.repayments_dk_to_yz|money }}</td>
+          <td>{{ row.repayments_yz_to_dk|money }}</td>
           <td>{{ '%+.2f'|format(row.net_delta) }}</td>
           <td>{{ '%+.2f'|format(row.running_balance) }}</td>
         </tr>
@@ -342,11 +342,11 @@
         {% endfor %}
         <tr>
           <td><strong>Total</strong></td>
-          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.total_expenses) }}</strong></td>
-          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.dk_owes) }}</strong></td>
-          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.yz_owes) }}</strong></td>
-          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.repayments_dk_to_yz) }}</strong></td>
-          <td><strong>${{ '%.2f'|format(settlement.monthly_totals.repayments_yz_to_dk) }}</strong></td>
+          <td><strong>{{ settlement.monthly_totals.total_expenses|money }}</strong></td>
+          <td><strong>{{ settlement.monthly_totals.dk_owes|money }}</strong></td>
+          <td><strong>{{ settlement.monthly_totals.yz_owes|money }}</strong></td>
+          <td><strong>{{ settlement.monthly_totals.repayments_dk_to_yz|money }}</strong></td>
+          <td><strong>{{ settlement.monthly_totals.repayments_yz_to_dk|money }}</strong></td>
           <td><strong>{{ '%+.2f'|format(settlement.monthly_totals.net_delta) }}</strong></td>
           <td></td>
         </tr>
@@ -511,7 +511,7 @@
       <tr>
         <td><input type="checkbox" class="expense-checkbox" name="selected_ids" value="{{ expense.id }}" aria-label="Select expense {{ expense.id }}"></td>
         <td>{{ expense.date }}</td>
-        <td>${{ '%.2f'|format(expense.amount) }}</td>
+        <td>{{ expense.amount|money }}</td>
         <td>{{ expense.paid_by or '—' }}</td>
         <td>{% if expense.scope == 'dk_personal' %}DK Personal{% elif expense.scope == 'yz_personal' %}YZ Personal{% else %}Shared{% endif %}</td>
         <td>{% if expense.split_count and expense.split_count > 0 %}Split{% else %}{{ expense.category or 'Uncategorized' }}{% endif %}</td>
@@ -854,7 +854,7 @@
         const number = Number(value || 0);
         if (number > 0) return `+$${number.toFixed(2)}`;
         if (number < 0) return `-$${Math.abs(number).toFixed(2)}`;
-        return '$0.00';
+        return '$0';
       }
 
       function renderYoyComparisonTable(state) {
