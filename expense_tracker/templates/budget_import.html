@@ -14,7 +14,7 @@
 <section class="card">
   <h3>Preview</h3>
   <p>Create: {{ preview.create_count }} | Update: {{ preview.update_count }} | Errors: {{ preview.error_count }}</p>
-  <p>Total budget amount: ${{ '%.2f'|format(preview.total_budget) }}</p>
+  <p>Total budget amount: {{ preview.total_budget|money }}</p>
 
   {% if preview.rows %}
   <div class="budget-table-wrap">
@@ -43,8 +43,8 @@
           <td>{{ row.category_name }}</td>
           <td>{{ row.subcategory_name or '—' }}</td>
           <td>{{ row.budget_type }}</td>
-          <td>${{ '%.2f'|format(row.budget_amount) }}</td>
-          <td>${{ '%.2f'|format(row.rollover_amount) }}</td>
+          <td>{{ row.budget_amount|money }}</td>
+          <td>{{ row.rollover_amount|money }}</td>
           <td>
             {% if row.action == 'error' %}
               Error: {{ row.errors|join('; ') }}
