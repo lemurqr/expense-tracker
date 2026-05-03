@@ -7218,6 +7218,24 @@ def test_budget_ytd_mode_hides_year_left_when_checkbox_unchecked(client):
     assert "Year Budget Left" not in html
 
 
+def test_budget_period_modes_return_200(client):
+    register(client)
+    login(client)
+
+    single_response = client.get("/budget?month=2026-04&view=household&scope=shared&period=single")
+    assert single_response.status_code == 200
+
+    ytd_response = client.get(
+        "/budget?month=2026-04&view=household&scope=shared&period=ytd&start_month=2026-02&end_month=2026-03"
+    )
+    assert ytd_response.status_code == 200
+
+    custom_response = client.get(
+        "/budget?period=custom&start_month=2026-04&end_month=2026-06&view=household&scope=shared"
+    )
+    assert custom_response.status_code == 200
+
+
 def test_budget_range_query_handles_mixed_budget_types_without_grouping_error(client):
     register(client)
     login(client)
