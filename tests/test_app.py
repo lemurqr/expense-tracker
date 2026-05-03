@@ -4084,6 +4084,49 @@ def test_dashboard_scope_filter(client):
     assert "Shared Row" not in html
 
 
+def test_dashboard_filters_show_subcategory_and_hide_transfers(client):
+    register(client)
+    login(client)
+
+    response = client.get("/dashboard?month=2026-03")
+    html = response.get_data(as_text=True)
+    assert '<span class="form-label">Subcategory</span>' in html
+    assert '<span class="form-label">Transfers</span>' not in html
+
+
+def test_dashboard_subcategory_filters_work_and_preserve_state(client):
+    register(client)
+    login(client)
+
+    with client.application.app_context():
+        db = client.application.get_db()
+        user_id = db.execute("SELECT id FROM users WHERE username = 'user1'").fetchone()["id"]
+        groceries = db.execute("SELECT id FROM categories WHERE user_id = ? AND name = 'Groceries'", (user_id,)).fetchone()
+        produce = db.execute("SELECT id FROM subcategories WHERE user_id = ? AND category_id = ? ORDER BY id LIMIT 1", (user_id, groceries["id"])).fetchone()
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, description, paid_by, scope, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+            (user_id, 1, "2026-03-01", -12.0, groceries["id"], produce["id"], "Produce expense", "DK", "shared"),
+        )
+        db.execute(
+            "INSERT INTO expenses (user_id, household_id, date, amount, category_id, subcategory_id, description, paid_by, scope, is_transfer, is_personal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+            (user_id, 1, "2026-03-02", -9.0, groceries["id"], None, "No subcategory expense", "DK", "shared"),
+        )
+        db.commit()
+
+    response = client.get(f"/dashboard?month=2026-03&tx_category_id={groceries['id']}&tx_subcategory_id={produce['id']}")
+    html = response.get_data(as_text=True)
+    assert "Produce expense" in html
+    assert "No subcategory expense" not in html
+    assert f'name="tx_subcategory_id"' in html
+    assert f'value="{produce["id"]}" selected' in html
+    assert "Active filters: 2" in html
+
+    no_subcategory_response = client.get("/dashboard?month=2026-03&tx_subcategory_id=none")
+    no_subcategory_html = no_subcategory_response.get_data(as_text=True)
+    assert no_subcategory_response.status_code == 200
+    assert "No subcategory expense" in no_subcategory_html
+    assert "Produce expense" not in no_subcategory_html
+
 def test_settlement_uses_scope_and_excludes_personal_scopes(client):
     register(client)
     login(client)
