@@ -468,6 +468,15 @@
             {% endfor %}
           </select>
         </label>
+        <label class="tx-filter-group"><span class="form-label">Subcategory</span>
+          <select class="form-select" form="tx-filters-form" name="tx_subcategory_id">
+            <option value="" {% if not tx_filter_values.tx_subcategory_id %}selected{% endif %}>All</option>
+            <option value="none" {% if tx_filter_values.tx_subcategory_id == 'none' %}selected{% endif %}>No subcategory</option>
+            {% for subcategory in all_subcategories %}
+            <option value="{{ subcategory.id }}" {% if tx_filter_values.tx_subcategory_id == subcategory.id|string %}selected{% endif %}>{{ subcategory.category_name }} — {{ subcategory.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
         <label class="tx-filter-group tx-description-filter"><span class="form-label">Vendor contains</span><input type="text" class="form-control" form="tx-filters-form" name="tx_vendor_q" value="{{ tx_filter_values.tx_vendor_q }}"></label>
         <label class="tx-filter-group tx-description-filter"><span class="form-label">Description contains</span><input type="text" class="form-control" form="tx-filters-form" name="tx_description_q" value="{{ tx_filter_values.tx_description_q }}"></label>
         <label class="tx-filter-group"><span class="form-label">Confidence</span>
@@ -483,13 +492,6 @@
             {% for source in tx_sources %}
             <option value="{{ source }}" {% if tx_filter_values.tx_source == source %}selected{% endif %}>{{ source }}</option>
             {% endfor %}
-          </select>
-        </label>
-        <label class="tx-filter-group"><span class="form-label">Transfers</span>
-          <select class="form-select" form="tx-filters-form" name="tx_transfer_mode">
-            <option value="all" {% if tx_filter_values.tx_transfer_mode == 'all' %}selected{% endif %}>All</option>
-            <option value="only" {% if tx_filter_values.tx_transfer_mode == 'only' %}selected{% endif %}>Only transfers</option>
-            <option value="exclude" {% if tx_filter_values.tx_transfer_mode == 'exclude' %}selected{% endif %}>Exclude transfers</option>
           </select>
         </label>
       </div>

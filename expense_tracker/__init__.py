@@ -1569,6 +1569,7 @@ def create_app(test_config=None):
         tx_paid_by = (args.get("tx_paid_by") or "").strip().upper()
         tx_scope = normalize_expense_scope(args.get("tx_scope"), default="")
         tx_category_id = (args.get("tx_category_id") or "").strip()
+        tx_subcategory_id = (args.get("tx_subcategory_id") or "").strip()
         tx_vendor_q = (args.get("tx_vendor_q") or "").strip()
         tx_description_q = (args.get("tx_description_q") or "").strip()
         tx_q = (args.get("tx_q") or "").strip()
@@ -1693,6 +1694,17 @@ def create_app(test_config=None):
                 if tx_category_id_int:
                     tx_sql_parts.append("e.category_id = ?")
                     tx_params.append(tx_category_id_int)
+        if tx_subcategory_id:
+            if tx_subcategory_id == "none":
+                tx_sql_parts.append("e.subcategory_id IS NULL")
+            else:
+                try:
+                    tx_subcategory_id_int = int(tx_subcategory_id)
+                except ValueError:
+                    tx_subcategory_id_int = None
+                if tx_subcategory_id_int:
+                    tx_sql_parts.append("e.subcategory_id = ?")
+                    tx_params.append(tx_subcategory_id_int)
 
         if tx_vendor_q:
             tx_sql_parts.append("LOWER(COALESCE(e.vendor, '')) LIKE ?")
@@ -1738,6 +1750,7 @@ def create_app(test_config=None):
             "tx_paid_by": tx_paid_by if tx_paid_by in {"DK", "YZ", "BLANK"} else "",
             "tx_scope": tx_scope if tx_scope in EXPENSE_SCOPE_OPTIONS else "",
             "tx_category_id": tx_category_id,
+            "tx_subcategory_id": tx_subcategory_id,
             "tx_vendor_q": tx_vendor_q,
             "tx_description_q": tx_description_q,
             "tx_confidence_bucket": tx_confidence_bucket,
@@ -1785,6 +1798,7 @@ def create_app(test_config=None):
             "tx_paid_by",
             "tx_scope",
             "tx_category_id",
+            "tx_subcategory_id",
             "tx_vendor_q",
             "tx_description_q",
             "tx_confidence_bucket",
